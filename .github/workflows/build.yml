@@ -84,9 +84,6 @@ jobs:
           choco install -y llvm
           "C:\\Program Files\\LLVM\\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Install Node.js dependencies
-        run: npm ci
-
       - name: Compile & Test (${{ matrix.platform }})
         shell: bash
         env:
@@ -171,6 +168,5 @@ jobs:
       - name: Publish Release Artefacts (jvm/js/native)
         env:
           PUBLISH_USER: ${{ secrets.PUBLISH_USER }}
-          PUBLISH_USER_PASSPHRASE: ${{ secrets.PUBLISH_USER_PASSPHRASE }}
           SIGNING_KEY_ID: ${{ secrets.SIGNING_KEY_ID }}
         run: sbt -Dsbt.ci=true "clean; publishSigned; sonatypeBundleRelease"
