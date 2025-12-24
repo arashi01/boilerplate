@@ -52,9 +52,9 @@ class EffSuite extends CatsEffectSuite:
     val eff = Eff[IO].fail("boom")
     runEff(eff).map(result => assertEquals(result, Left("boom")))
 
-  test("Eff[F].fromEither lifts pure Either"):
-    val right = Eff[IO].fromEither(Right(42): Either[String, Int])
-    val left = Eff[IO].fromEither(Left("boom"): Either[String, Int])
+  test("Eff[F].from lifts pure Either"):
+    val right = Eff[IO].from(Right(42): Either[String, Int])
+    val left = Eff[IO].from(Left("boom"): Either[String, Int])
     for
       r <- runEff(right)
       l <- runEff(left)

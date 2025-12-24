@@ -72,8 +72,8 @@ object EffR:
       EffR.fail[F, R, E, A](e)
 
     /** Lifts a pure `Either` into the reader layer. */
-    inline def fromEither[E, A](either: Either[E, A])(using Applicative[F]): EffR[F, R, E, A] =
-      EffR.fromEither[F, R, E, A](either)
+    inline def from[E, A](either: Either[E, A])(using Applicative[F]): EffR[F, R, E, A] =
+      EffR.from[F, R, E, A](either)
 
     /** Lifts an `Eff` by discarding the environment. */
     inline def lift[E, A](eff: Eff[F, E, A]): EffR[F, R, E, A] =
@@ -100,12 +100,12 @@ object EffR:
     (_: R) => eff
 
   /** Lifts a pure `Either` into the reader layer. */
-  inline def fromEither[F[_]: Applicative, R, E, A](either: Either[E, A]): EffR[F, R, E, A] =
-    (_: R) => Eff.fromEither(either)
+  inline def from[F[_]: Applicative, R, E, A](either: Either[E, A]): EffR[F, R, E, A] =
+    (_: R) => Eff.from(either)
 
   /** Wraps an existing `F[Either]` result without recomputation. */
-  inline def fromEither[F[_], R, E, A](fea: F[Either[E, A]]): EffR[F, R, E, A] =
-    (_: R) => Eff.fromEither(fea)
+  inline def liftEither[F[_], R, E, A](fea: F[Either[E, A]]): EffR[F, R, E, A] =
+    (_: R) => Eff.lift(fea)
 
   /** Successful computation that ignores the environment. */
   inline def succeed[F[_]: Applicative, R, E, A](a: A): EffR[F, R, E, A] =
@@ -120,8 +120,8 @@ object EffR:
     (_: R) => Eff.fromOption(opt, ifNone)
 
   /** Converts `F[Option]`, supplying an error when empty. */
-  inline def fromOption[F[_]: Functor, R, E, A](fo: F[Option[A]], ifNone: => E): EffR[F, R, E, A] =
-    (_: R) => Eff.fromOption(fo, ifNone)
+  inline def liftOption[F[_]: Functor, R, E, A](fo: F[Option[A]], ifNone: => E): EffR[F, R, E, A] =
+    (_: R) => Eff.liftOption(fo, ifNone)
 
   /** Canonical successful unit value. */
   inline def unit[F[_]: Applicative, R, E]: EffR[F, R, E, Unit] =

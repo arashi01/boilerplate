@@ -29,20 +29,20 @@ import cats.MonadError
 extension [E, A](either: Either[E, A])
   /** Converts this `Either` into [[boilerplate.effect.Eff Eff]]. */
   inline def eff[F[_]: Applicative]: Eff[F, E, A] =
-    Eff.fromEither(either)
+    Eff.from(either)
 
   /** Converts this `Either` into [[boilerplate.effect.EffR EffR]]. */
   inline def effR[F[_]: Applicative, R]: EffR[F, R, E, A] =
-    EffR.fromEither(either)
+    EffR.from(either)
 
 extension [F[_], E, A](fea: F[Either[E, A]])
   /** Wraps an `F[Either]` as [[boilerplate.effect.Eff Eff]]. */
   inline def eff: Eff[F, E, A] =
-    Eff.fromEither(fea)
+    Eff.lift(fea)
 
   /** Wraps an `F[Either]` as [[boilerplate.effect.EffR EffR]]. */
   inline def effR[R]: EffR[F, R, E, A] =
-    EffR.fromEither(fea)
+    EffR.liftEither(fea)
 
 extension [A](opt: Option[A])
   /** Elevates an `Option` into [[boilerplate.effect.Eff Eff]], supplying an error when empty. */
@@ -56,11 +56,11 @@ extension [A](opt: Option[A])
 extension [F[_]: Functor, A](fo: F[Option[A]])
   /** Elevates an `F[Option]` into [[boilerplate.effect.Eff Eff]]. */
   inline def eff[E](ifNone: => E): Eff[F, E, A] =
-    Eff.fromOption(fo, ifNone)
+    Eff.liftOption(fo, ifNone)
 
   /** Elevates an `F[Option]` into [[boilerplate.effect.EffR EffR]]. */
   inline def effR[R, E](ifNone: => E): EffR[F, R, E, A] =
-    EffR.fromOption(fo, ifNone)
+    EffR.liftOption(fo, ifNone)
 
 extension [A](result: Try[A])
   /** Converts a `Try` into [[boilerplate.effect.Eff Eff]], translating failures. */
