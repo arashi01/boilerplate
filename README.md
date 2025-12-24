@@ -9,6 +9,12 @@ A collection of utilities and common patterns that tend to be repeated across Sc
 Utilities for working with Scala 3's explicit nulls feature. When strict equality is enabled, inline null checks become
 verbose without a `CanEqual` instance. These extensions provide a concise, type-safe way to handle nullable values.
 
+#### Dependency Coordinates
+
+```scala
+libraryDependencies += "io.github.arashi01" %% /* or `%%%` */ "boilerplate" % "<version>"
+```
+
 #### Extensions on `A | Null`
 
 | Method              | Description                                                                          |
@@ -60,6 +66,12 @@ result.flattenNull("null value") // Either[String, String]
 ### effect
 
 Zero-cost typed-error effects layered on top of Cats / Cats Effect. The module exposes an opaque representation for `Eff[F[_], E, A] = F[Either[E, A]]` with inline constructors, plus an environment-aware variant `EffR[F[_], R, E, A] = R => Eff[F, E, A]`. Both erase at runtime yet keep the typechecker aware of the error and environment channels.
+
+#### Dependency Coordinates
+
+```scala
+libraryDependencies += "io.github.arashi01" %% /* or `%%%` */ "boilerplate-effect" % "<version>"
+```
 
 #### Type Aliases
 
@@ -235,20 +247,6 @@ Importing `boilerplate.effect.*` provides top-level extensions that convert comm
 | `F[A].effR(mapper)`       | `EffR[F, R, E, A]`           |
 
 These helpers are inline, introducing no runtime penalty.
-
-## Installation
-
-Add the dependency to your `build.sbt`:
-
-```scala
-libraryDependencies += "io.github.arashi01" %% "boilerplate" % "<version>"
-```
-
-For cross-platform projects (Scala.js or Scala Native):
-
-```scala
-libraryDependencies += "io.github.arashi01" %%% "boilerplate" % "<version>"
-```
 
 ## Licence
 
