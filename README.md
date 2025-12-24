@@ -95,7 +95,7 @@ import cats.effect.IO
 // Ergonomic syntax — effect type inferred, error channel polymorphic
 val ok  = Eff[IO].succeed(42)        // UEff[IO, Int]
 val err = Eff[IO].fail("boom")       // Eff[IO, String, Nothing]
-val either = Eff[IO].fromEither(Right(1))
+val either = Eff[IO].from(Right(1))
 val lifted = Eff[IO].liftF(IO.pure(42))
 val u   = Eff[IO].unit               // UEff[IO, Unit]
 
@@ -104,7 +104,7 @@ Eff.succeed[IO, String, Int](42)
 Eff.fail[IO, String, Int]("boom")
 ```
 
-**Constructors:** `succeed`, `fail`, `fromEither`, `fromOption`, `fromTry`, `liftF`, `attempt`, `defer`, `unit`.
+**Constructors:** `succeed`, `fail`, `from`, `fromOption` (pure), `lift` (F[Either]), `liftOption` (F[Option]), `fromTry`, `liftF`, `attempt`, `defer`, `unit`.
 
 **Combinators:**
 
@@ -148,7 +148,7 @@ val prog = EffR[IO, Config].succeed(42)
 val env  = EffR[IO, Config].service  // retrieves the Config
 ```
 
-**Constructors:** `succeed`, `fail`, `fromEither`, `lift`, `service` (alias: `ask`), `fromOption`, `fromTry`, `attempt`, `defer`, `unit`, `wrap`, `fromContext`.
+**Constructors:** `succeed`, `fail`, `from` (pure Either), `liftEither` (F[Either]), `lift` (Eff), `service` (alias: `ask`), `fromOption` (pure), `liftOption` (F[Option]), `fromTry`, `attempt`, `defer`, `unit`, `wrap`, `fromContext`.
 
 **Combinators:**
 
@@ -176,7 +176,7 @@ val fetchUser: EffR[IO, Database, String, User] =
   for
     db   <- EffR[IO, Database].service
     user <- EffR[IO, Database].lift(
-              Eff.fromOption(db.findUser(42), "not found")
+              Eff.liftOption(db.findUser(42), "not found")
             )
   yield user
 

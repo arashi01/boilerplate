@@ -48,6 +48,9 @@ object Eff:
   /** Wraps a pre-existing `F[Either[E, A]]` without allocation. */
   inline def apply[F[_], E, A](fa: F[Either[E, A]]): Eff[F, E, A] = fa
 
+  /** Lifts an existing `F[Either[E, A]]` value without recomputation. */
+  inline def lift[F[_], E, A](fea: F[Either[E, A]]): Eff[F, E, A] = fea
+
   /** Returns a partially-applied constructor fixing the effect type `F`. */
   def apply[F[_]]: EffPartiallyApplied[F] = new EffPartiallyApplied[F]
 
@@ -62,7 +65,7 @@ object Eff:
       F.pure(Left(e))
 
     /** Lifts a pure `Either` into the effect. */
-    inline def fromEither[E, A](either: Either[E, A])(using F: Applicative[F]): Eff[F, E, A] =
+    inline def from[E, A](either: Either[E, A])(using F: Applicative[F]): Eff[F, E, A] =
       F.pure(either)
 
     /** Embeds any `F[A]`, treating values as successes. */
@@ -192,11 +195,8 @@ object Eff:
   end extension
 
   /** Lifts a pure `Either` into the effect via `pure`. */
-  inline def fromEither[F[_]: Applicative, E, A](either: Either[E, A]): Eff[F, E, A] =
+  inline def from[F[_]: Applicative, E, A](either: Either[E, A]): Eff[F, E, A] =
     Applicative[F].pure(either)
-
-  /** Wraps an existing `F[Either]` result without recomputation. */
-  inline def fromEither[F[_], E, A](fea: F[Either[E, A]]): Eff[F, E, A] = fea
 
   /** Creates a successful computation. */
   inline def succeed[F[_]: Applicative, E, A](a: A): Eff[F, E, A] =
@@ -215,7 +215,7 @@ object Eff:
     Applicative[F].pure(opt.toRight(ifNone))
 
   /** Converts an `F[Option]`, supplying an error when empty. */
-  inline def fromOption[F[_]: Functor, E, A](fo: F[Option[A]], ifNone: => E): Eff[F, E, A] =
+  inline def liftOption[F[_]: Functor, E, A](fo: F[Option[A]], ifNone: => E): Eff[F, E, A] =
     Functor[F].map(fo)(_.toRight(ifNone))
 
   /** Canonical successful unit value. */
@@ -227,7 +227,7 @@ object Eff:
 
   /** Captures throwables raised in `F`, translating them via `ifFailure`. */
   inline def attempt[F[_], E, A](fa: F[A], ifFailure: Throwable => E)(using ME: MonadError[F, Throwable]): Eff[F, E, A] =
-    fromEither(ME.map(ME.attempt(fa))(_.leftMap(ifFailure)))
+    lift(ME.map(ME.attempt(fa))(_.leftMap(ifFailure)))
 
   /** Suspends evaluation until demanded. */
   inline def defer[F[_]: Defer, E, A](thunk: => Eff[F, E, A]): Eff[F, E, A] =
