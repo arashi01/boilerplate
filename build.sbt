@@ -37,14 +37,38 @@ val `boilerplate` =
     .settings(fileHeaderSettings)
     .settings(publishSettings)
 
+val `boilerplate-jvm` =
+  project
+    .in(file(".jvm"))
+    .settings(publish / skip := true)
+    .aggregate(
+      `boilerplate`.jvm
+    )
+
+val `boilerplate-js` =
+  project
+    .in(file(".js"))
+    .settings(publish / skip := true)
+    .aggregate(
+      `boilerplate`.js
+    )
+
+val `boilerplate-native` =
+  project
+    .in(file(".native"))
+    .settings(publish / skip := true)
+    .aggregate(
+      `boilerplate`.native
+    )
+
 val `boilerplate-root` =
   project
     .in(file("."))
     .settings(publish / skip := true)
     .aggregate(
-      `boilerplate`.jvm,
-      `boilerplate`.js,
-      `boilerplate`.native
+      `boilerplate-jvm`,
+      `boilerplate-js`,
+      `boilerplate-native`
     )
 
 def baseCompilerOptions = List(
