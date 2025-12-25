@@ -65,7 +65,45 @@ result.flattenNull("null value") // Either[String, String]
 
 ### effect
 
-Zero-cost typed-error effects layered atop Cats / Cats Effect. The module provides `Eff[F[_], E, A]`, an opaque wrapper over `F[Either[E, A]]`, and `EffR[F[_], R, E, A]`, a reader-style variant adding an environment channel. Both erase at runtime whilst maintaining compile-time awareness of error and environment types.
+Zero-cost typed-error effects layered atop Cats / Cats Effect. Standard `MonadError[F, Throwable]` conflates recoverable domain errors with fatal defects, forcing defensive `recover` blocks or losing type safety. `Eff[F[_], E, A]` provides an explicit, compile-time-tracked error channel `E` separate from `Throwable`, enabling exhaustive pattern matching on failure cases whilst preserving full Cats Effect integration.
+
+The module provides:
+- **`Eff[F, E, A]`** — an opaque wrapper over `F[Either[E, A]]` with zero runtime overhead
+- **`EffR[F, R, E, A]`** — a reader-style variant adding an environment channel
+
+Both erase at runtime whilst maintaining compile-time awareness of error and environment types.
+
+```scala
+import boilerplate.effect.*
+import cats.effect.IO
+
+// Domain errors are explicit in the type signature
+sealed trait AppError
+case class NotFound(id: String) extends AppError
+case class InvalidInput(msg: String) extends AppError
+
+def findUser(id: String): Eff[IO, NotFound, User] = ???
+def validateAge(user: User): Eff[IO, InvalidInput, ValidUser] = ???
+
+// Compose with for-comprehensions; errors are tracked and unified
+val workflow: Eff[IO, AppError, ValidUser] = for
+  user  <- findUser("123").widenError[AppError]
+  valid <- validateAge(user).widenError[AppError]
+yield valid
+
+// Handle each error case exhaustively
+val result: IO[String] = workflow.fold(
+  {
+    case NotFound(id)      => s"User $id not found"
+    case InvalidInput(msg) => s"Invalid: $msg"
+  },
+  user => s"Welcome ${user.name}"
+)
+
+// Or recover specific errors whilst preserving others
+val recovered: Eff[IO, InvalidInput, ValidUser] =
+  workflow.recover { case NotFound(_) => defaultUser }
+```
 
 #### Dependency
 
@@ -99,10 +137,13 @@ Eff[IO].liftF(IO.pure(42))    // UEff[IO, Int]
 Eff[IO].unit                  // UEff[IO, Unit]
 ```
 
-Full constructors with explicit type parameters remain available:
-- **Pure conversions** (`from`): `Eff.from(Either)`, `Eff.from(Option, ifNone)`, `Eff.from(Try, ifFailure)`, `Eff.from(EitherT)`
-- **Effectful conversions** (`lift`): `Eff.lift(F[Either])`, `Eff.lift(F[Option], ifNone)`
-- **Value constructors**: `Eff.succeed`, `Eff.fail`, `Eff.unit`, `Eff.liftF`, `Eff.attempt`, `Eff.defer`
+Full constructors with explicit type parameters:
+
+| Category   | Methods                                                                  |
+|------------|--------------------------------------------------------------------------|
+| Pure       | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)` |
+| Effectful  | `lift(F[Either])`, `lift(F[Option], ifNone)`                             |
+| Values     | `succeed`, `fail`, `unit`, `liftF`, `attempt`, `defer`                   |
 
 ##### Combinators
 
@@ -122,18 +163,6 @@ Full constructors with explicit type parameters remain available:
 
 `Eff.Of[F, E]` (a type lambda `[A] =>> Eff[F, E, A]`) derives `Functor`, `Monad`, `MonadError[_, E]`, and `MonadCancel` from the underlying `F`. This enables seamless integration with Cats Effect APIs such as `Resource` and `IOApp`.
 
-##### Example
-
-```scala
-val service: Eff[IO, String, Int] =
-  for
-    a <- Eff[IO].succeed(21)
-    b <- Eff[IO].liftF(IO.pure(21))
-  yield a + b
-
-service.either  // IO[Either[String, Int]]
-```
-
 #### `EffR[F, R, E, A]`
 
 Adds an immutable environment channel, representationally equivalent to `R => Eff[F, E, A]`.
@@ -150,10 +179,13 @@ EffR[IO, Config].ask           // alias for service
 ```
 
 Full constructors:
-- **Pure conversions** (`from`): `EffR.from(Either)`, `EffR.from(Option, ifNone)`, `EffR.from(Try, ifFailure)`, `EffR.from(EitherT)`
-- **Effectful conversions** (`lift`): `EffR.lift(Eff)`, `EffR.lift(F[Either])`, `EffR.lift(F[Option], ifNone)`
-- **Value constructors**: `EffR.succeed`, `EffR.fail`, `EffR.unit`, `EffR.attempt`, `EffR.defer`
-- **Environment**: `EffR.service`, `EffR.ask`, `EffR.wrap`, `EffR.fromContext`
+
+| Category    | Methods                                                                  |
+|-------------|--------------------------------------------------------------------------|
+| Pure        | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)` |
+| Effectful   | `lift(Eff)`, `lift(F[Either])`, `lift(F[Option], ifNone)`                |
+| Values      | `succeed`, `fail`, `unit`, `attempt`, `defer`                            |
+| Environment | `service`, `ask`, `wrap`, `fromContext`                                  |
 
 ##### Combinators
 
@@ -167,40 +199,56 @@ Mirrors `Eff` combinators, plus environment-specific operations:
 | Alternative    | `alt`                                            |
 | Conversion     | `either`, `rethrow`, `absolve`, `kleisli`        |
 
-##### Layer Composition
+#### Cats-Effect Primitive Interop
+
+Transform cats-effect primitives to operate in the `Eff` context via `Eff.lift` overloads or extension methods:
 
 ```scala
-// Narrow environment via contramap
-val narrow: EffR[IO, AppConfig, E, A] = prog.contramap[AppConfig](_.database)
+import boilerplate.effect.*
+import cats.effect.IO
+import cats.effect.kernel.{Ref, Resource, Deferred}
+import cats.effect.std.{Queue, Semaphore}
 
-// Chain readers: output of first becomes environment of second
-val composed: EffR[IO, Int, E, String] = intToDouble.andThen(doubleToString)
+// Companion object methods
+Eff.lift[IO, MyError, A](resource)   // Resource[Eff.Of[IO, MyError], A]
+Eff.lift[IO, MyError, A](ref)        // Ref[Eff.Of[IO, MyError], A]
+Eff.lift[IO, MyError, A](deferred)   // Deferred[Eff.Of[IO, MyError], A]
+Eff.lift[IO, MyError, A](queue)      // Queue[Eff.Of[IO, MyError], A]
+Eff.lift[IO, MyError](semaphore)     // Semaphore[Eff.Of[IO, MyError]]
 
-// Effectful environment provision
-val provided: Eff[IO, E, A] = program.provide(buildDatabase)
+// Extension syntax (equivalent)
+resource.lift[MyError]
+ref.lift[MyError]
+deferred.lift[MyError]
+queue.lift[MyError]
+semaphore.lift[MyError]
+
+// Natural transformation for custom mapK usage
+val fk: IO ~> Eff.Of[IO, MyError] = Eff.functionK[IO, MyError]
 ```
 
-##### Kleisli Interop
+| Primitive   | Lifted Type                          | Constraints                    |
+|-------------|--------------------------------------|--------------------------------|
+| `Resource`  | `Resource[Eff.Of[F, E], A]`          | `MonadCancel[F, Throwable]`    |
+| `Ref`       | `Ref[Eff.Of[F, E], A]`               | `Functor[F]`                   |
+| `Deferred`  | `Deferred[Eff.Of[F, E], A]`          | `Functor[F]`                   |
+| `Queue`     | `Queue[Eff.Of[F, E], A]`             | `Functor[F]`                   |
+| `Semaphore` | `Semaphore[Eff.Of[F, E]]`            | `MonadCancel[F, Throwable]`    |
 
-`EffR` is representationally equivalent to `Kleisli[Eff.Of[F, E], R, A]`. For ecosystem familiarity:
+Lifted primitives compose naturally with `Eff` for-comprehensions and preserve typed error semantics:
 
 ```scala
-import cats.data.Kleisli
-
-type MyApp[A] = Kleisli[Eff.Of[IO, AppError], AppEnv, A]
-
-val program: MyApp[User] =
-  for
-    env  <- Kleisli.ask[Eff.Of[IO, AppError], AppEnv]
-    user <- Kleisli.liftF(Eff.succeed[IO, AppError, User](env.defaultUser))
-  yield user
-
-program.run(appEnv).either  // IO[Either[AppError, User]]
+val workflow: Eff[IO, AppError, Unit] = for
+  ref   <- Eff.liftF(Ref.of[IO, Int](0)).map(_.lift[AppError])
+  _     <- ref.update(_ + 1)
+  value <- ref.get
+  _     <- if value < 0 then Eff.fail(AppError.InvalidState) else Eff.unit
+yield ()
 ```
 
 #### Syntax Extensions
 
-Importing `boilerplate.effect.*` provides inline extensions for common conversions:
+Importing `boilerplate.effect.*` provides inline extensions:
 
 | Extension                  | Result Type        |
 |----------------------------|--------------------|
@@ -209,13 +257,8 @@ Importing `boilerplate.effect.*` provides inline extensions for common conversio
 | `F[Either[E, A]].eff`      | `Eff[F, E, A]`     |
 | `F[Either[E, A]].effR[R]`  | `EffR[F, R, E, A]` |
 | `Option[A].eff[F, E](err)` | `Eff[F, E, A]`     |
-| `Option[A].effR[F,R,E](e)` | `EffR[F, R, E, A]` |
-| `F[Option[A]].eff[E](err)` | `Eff[F, E, A]`     |
-| `F[Option[A]].effR[R,E](e)`| `EffR[F, R, E, A]` |
 | `Try[A].eff[F, E](f)`      | `Eff[F, E, A]`     |
-| `Try[A].effR[F, R, E](f)`  | `EffR[F, R, E, A]` |
 | `F[A].eff[E](f)`           | `Eff[F, E, A]`     |
-| `F[A].effR[R, E](f)`       | `EffR[F, R, E, A]` |
 
 ---
 

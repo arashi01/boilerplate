@@ -24,10 +24,16 @@ import scala.annotation.targetName
 import scala.util.Try
 
 import cats.*
+import cats.arrow.FunctionK
 import cats.data.EitherT
+import cats.effect.kernel.Deferred
 import cats.effect.kernel.MonadCancel
 import cats.effect.kernel.Outcome
 import cats.effect.kernel.Poll
+import cats.effect.kernel.Ref
+import cats.effect.kernel.Resource
+import cats.effect.std.Queue
+import cats.effect.std.Semaphore
 import cats.syntax.all.*
 
 /** Zero-cost typed error channel abstraction represented as `F[Either[E, A]]`. Refer to
@@ -336,6 +342,39 @@ object Eff:
   /** Suspends evaluation until demanded. */
   inline def defer[F[_]: Defer, E, A](thunk: => Eff[F, E, A]): Eff[F, E, A] =
     Defer[F].defer(thunk)
+
+  // --- Natural Transformation ----------------------------------------------
+
+  /** Creates a `FunctionK` that lifts `F[A]` into `Eff[F, E, A]` treating values as successes.
+    *
+    * This is the canonical way to transform `Resource[F, A]` and other cats-effect primitives to
+    * work with `Eff`.
+    */
+  def functionK[F[_]: Functor, E]: F ~> Of[F, E] =
+    new FunctionK[F, Of[F, E]]:
+      def apply[A](fa: F[A]): Eff[F, E, A] = liftF(fa)
+
+  // --- Cats-Effect Primitive Lifts -----------------------------------------
+
+  /** Transforms a `Resource[F, A]` to `Resource[Eff.Of[F, E], A]`. */
+  inline def lift[F[_], E, A](resource: Resource[F, A])(using F: MonadCancel[F, Throwable]): Resource[Of[F, E], A] =
+    resource.mapK(functionK[F, E])(using F, given_MonadCancel_Of_EE[F, E, Throwable])
+
+  /** Transforms a `Ref[F, A]` to `Ref[Eff.Of[F, E], A]`. */
+  inline def lift[F[_]: Functor, E, A](ref: Ref[F, A]): Ref[Of[F, E], A] =
+    ref.mapK(functionK[F, E])
+
+  /** Transforms a `Deferred[F, A]` to `Deferred[Eff.Of[F, E], A]`. */
+  inline def lift[F[_]: Functor, E, A](deferred: Deferred[F, A]): Deferred[Of[F, E], A] =
+    deferred.mapK(functionK[F, E])
+
+  /** Transforms a `Queue[F, A]` to `Queue[Eff.Of[F, E], A]`. */
+  inline def lift[F[_]: Functor, E, A](queue: Queue[F, A]): Queue[Of[F, E], A] =
+    queue.mapK(functionK[F, E])
+
+  /** Transforms a `Semaphore[F]` to `Semaphore[Eff.Of[F, E]]`. */
+  inline def lift[F[_], E](semaphore: Semaphore[F])(using F: MonadCancel[F, Throwable]): Semaphore[Of[F, E]] =
+    semaphore.mapK(functionK[F, E])(using given_MonadCancel_Of_EE[F, E, Throwable])
 
   // --- Typeclass instances -------------------------------------------------
 

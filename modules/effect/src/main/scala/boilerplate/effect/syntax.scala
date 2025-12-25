@@ -25,6 +25,54 @@ import scala.util.Try
 import cats.Applicative
 import cats.Functor
 import cats.MonadError
+import cats.effect.kernel.Deferred
+import cats.effect.kernel.MonadCancel
+import cats.effect.kernel.Ref
+import cats.effect.kernel.Resource
+import cats.effect.std.Queue
+import cats.effect.std.Semaphore
+
+// ============================================================================
+// Cats-Effect Primitive Interop (delegates to Eff companion)
+// ============================================================================
+
+extension [F[_], A](resource: Resource[F, A])
+  /** Transforms this `Resource[F, A]` to `Resource[Eff.Of[F, E], A]`.
+    *
+    * The resulting resource operates in the `Eff` context, treating all values from `F` as
+    * successes in the typed error channel.
+    */
+  inline def lift[E](using MonadCancel[F, Throwable]): Resource[Eff.Of[F, E], A] =
+    Eff.lift(resource)
+
+extension [F[_], A](ref: Ref[F, A])
+  /** Returns a `Ref` operating in the `Eff` context.
+    *
+    * The transformation is pure; no effects are executed.
+    */
+  inline def lift[E](using Functor[F]): Ref[Eff.Of[F, E], A] =
+    Eff.lift(ref)
+
+extension [F[_], A](deferred: Deferred[F, A])
+  /** Returns a `Deferred` operating in the `Eff` context.
+    *
+    * The transformation is pure; no effects are executed.
+    */
+  inline def lift[E](using Functor[F]): Deferred[Eff.Of[F, E], A] =
+    Eff.lift(deferred)
+
+extension [F[_], A](queue: Queue[F, A])
+  /** Returns a `Queue` operating in the `Eff` context.
+    *
+    * The transformation is pure; no effects are executed.
+    */
+  inline def lift[E](using Functor[F]): Queue[Eff.Of[F, E], A] =
+    Eff.lift(queue)
+
+extension [F[_]](semaphore: Semaphore[F])
+  /** Returns a `Semaphore` operating in the `Eff` context. */
+  inline def lift[E](using MonadCancel[F, Throwable]): Semaphore[Eff.Of[F, E]] =
+    Eff.lift(semaphore)
 
 extension [E, A](either: Either[E, A])
   /** Converts this `Either` into [[boilerplate.effect.Eff Eff]]. */
