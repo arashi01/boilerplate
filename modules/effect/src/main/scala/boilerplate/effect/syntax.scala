@@ -42,34 +42,34 @@ extension [F[_], E, A](fea: F[Either[E, A]])
 
   /** Wraps an `F[Either]` as [[boilerplate.effect.EffR EffR]]. */
   inline def effR[R]: EffR[F, R, E, A] =
-    EffR.liftEither(fea)
+    EffR.lift(fea)
 
 extension [A](opt: Option[A])
   /** Elevates an `Option` into [[boilerplate.effect.Eff Eff]], supplying an error when empty. */
   inline def eff[F[_]: Applicative, E](ifNone: => E): Eff[F, E, A] =
-    Eff.fromOption(opt, ifNone)
+    Eff.from(opt, ifNone)
 
   /** Elevates an `Option` into [[boilerplate.effect.EffR EffR]], supplying an error when empty. */
   inline def effR[F[_]: Applicative, R, E](ifNone: => E): EffR[F, R, E, A] =
-    EffR.fromOption(opt, ifNone)
+    EffR.from(opt, ifNone)
 
 extension [F[_]: Functor, A](fo: F[Option[A]])
   /** Elevates an `F[Option]` into [[boilerplate.effect.Eff Eff]]. */
   inline def eff[E](ifNone: => E): Eff[F, E, A] =
-    Eff.liftOption(fo, ifNone)
+    Eff.lift(fo, ifNone)
 
   /** Elevates an `F[Option]` into [[boilerplate.effect.EffR EffR]]. */
   inline def effR[R, E](ifNone: => E): EffR[F, R, E, A] =
-    EffR.liftOption(fo, ifNone)
+    EffR.lift(fo, ifNone)
 
 extension [A](result: Try[A])
   /** Converts a `Try` into [[boilerplate.effect.Eff Eff]], translating failures. */
   inline def eff[F[_]: Applicative, E](ifFailure: Throwable => E): Eff[F, E, A] =
-    Eff.fromTry(result, ifFailure)
+    Eff.from(result, ifFailure)
 
   /** Converts a `Try` into [[boilerplate.effect.EffR EffR]], translating failures. */
   inline def effR[F[_]: Applicative, R, E](ifFailure: Throwable => E): EffR[F, R, E, A] =
-    EffR.fromTry(result, ifFailure)
+    EffR.from(result, ifFailure)
 
 extension [F[_], A](fa: F[A])
   /** Captures throwable failures in `F` into [[boilerplate.effect.Eff Eff]]. */

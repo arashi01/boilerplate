@@ -30,8 +30,8 @@ import munit.CatsEffectSuite
 class SyntaxSuite extends CatsEffectSuite:
   import boilerplate.effect.*
 
-  private def runEff[E, A](eff: Eff[IO, E, A]): IO[Either[E, A]] = eff.value
-  private def runEffR[R, E, A](eff: EffR[IO, R, E, A], env: R): IO[Either[E, A]] = eff.run(env).value
+  private def runEff[E, A](eff: Eff[IO, E, A]): IO[Either[E, A]] = eff.either
+  private def runEffR[R, E, A](eff: EffR[IO, R, E, A], env: R): IO[Either[E, A]] = eff.run(env).either
 
   test("Either.eff mirrors Eff.from"):
     val either: Either[String, Int] = Right(42)
@@ -52,16 +52,16 @@ class SyntaxSuite extends CatsEffectSuite:
   test("Eff.from with Id is unambiguous"):
     val value: Eff[Id, String, Int] = Eff.from[Id, String, Int](Right(9))
     val failure: Eff[Id, String, Int] = Eff.from[Id, String, Int](Left("err"))
-    assertEquals(value.value, Right(9))
-    assertEquals(failure.value, Left("err"))
+    assertEquals(value.either, Right(9))
+    assertEquals(failure.either, Left("err"))
 
-  test("Eff.liftOption with Id lifts missing values"):
+  test("Eff.from(Option) with Id lifts missing values"):
     val none: Option[Int] = None
     val some: Option[Int] = Some(3)
-    val missing: Eff[Id, String, Int] = Eff.liftOption[Id, String, Int](none, "missing")
-    val present: Eff[Id, String, Int] = Eff.liftOption[Id, String, Int](some, "missing")
-    assertEquals(missing.value, Left("missing"))
-    assertEquals(present.value, Right(3))
+    val missing: Eff[Id, String, Int] = Eff.from[Id, String, Int](none, "missing")
+    val present: Eff[Id, String, Int] = Eff.from[Id, String, Int](some, "missing")
+    assertEquals(missing.either, Left("missing"))
+    assertEquals(present.either, Right(3))
 
   test("F[Option].effR lifts missing values"):
     val fo = IO.pure(Option.empty[Int])
@@ -71,7 +71,26 @@ class SyntaxSuite extends CatsEffectSuite:
     val boom = new RuntimeException("boom")
     runEff(Try(throw boom).eff[IO, String](_.getMessage)).map(result => assertEquals(result, Left("boom"))) // scalafix:ok DisableSyntax.throw
 
+  test("Try.eff converts success"):
+    runEff(Try(42).eff[IO, String](_.getMessage)).map(result => assertEquals(result, Right(42)))
+
   test("F[A].eff captures throwable failures"):
     val failing = IO.raiseError[Int](new RuntimeException("boom"))
     runEff(failing.eff[String](_.getMessage)).map(result => assertEquals(result, Left("boom")))
+
+  test("F[A].eff passes through success"):
+    val success = IO.pure(42)
+    runEff(success.eff[String](_.getMessage)).map(result => assertEquals(result, Right(42)))
+
+  test("F[A].effR captures throwable failures with environment"):
+    val failing = IO.raiseError[Int](new RuntimeException("boom"))
+    runEffR(failing.effR[Unit, String](_.getMessage), ()).map(result => assertEquals(result, Left("boom")))
+
+  test("Option.eff converts present values"):
+    val some: Option[Int] = Some(42)
+    runEff(some.eff[IO, String]("missing")).map(result => assertEquals(result, Right(42)))
+
+  test("F[Either].effR preserves structure"):
+    val fea = IO.pure[Either[String, Int]](Left("boom"))
+    runEffR(fea.effR[Unit], ()).map(result => assertEquals(result, Left("boom")))
 end SyntaxSuite

@@ -20,6 +20,7 @@
  */
 package boilerplate.effect
 
+import scala.annotation.targetName
 import scala.util.Try
 
 import cats.Applicative
@@ -104,8 +105,25 @@ object EffR:
     (_: R) => Eff.from(either)
 
   /** Wraps an existing `F[Either]` result without recomputation. */
-  inline def liftEither[F[_], R, E, A](fea: F[Either[E, A]]): EffR[F, R, E, A] =
+  @targetName("liftFEither")
+  inline def lift[F[_], R, E, A](fea: F[Either[E, A]]): EffR[F, R, E, A] =
     (_: R) => Eff.lift(fea)
+
+  /** Converts an `Option`, supplying an error when empty. */
+  inline def from[F[_]: Applicative, R, E, A](opt: Option[A], ifNone: => E): EffR[F, R, E, A] =
+    (_: R) => Eff.from(opt, ifNone)
+
+  /** Converts `F[Option]`, supplying an error when empty. */
+  inline def lift[F[_]: Functor, R, E, A](fo: F[Option[A]], ifNone: => E): EffR[F, R, E, A] =
+    (_: R) => Eff.lift(fo, ifNone)
+
+  /** Converts `Try`, mapping throwables into the domain-specific error. */
+  inline def from[F[_]: Applicative, R, E, A](result: Try[A], ifFailure: Throwable => E): EffR[F, R, E, A] =
+    (_: R) => Eff.from(result, ifFailure)
+
+  /** Extracts the computation from an `EitherT`. */
+  inline def from[F[_], R, E, A](et: EitherT[F, E, A]): EffR[F, R, E, A] =
+    (_: R) => Eff.from(et)
 
   /** Successful computation that ignores the environment. */
   inline def succeed[F[_]: Applicative, R, E, A](a: A): EffR[F, R, E, A] =
@@ -115,21 +133,9 @@ object EffR:
   inline def fail[F[_]: Applicative, R, E, A](e: E): EffR[F, R, E, A] =
     (_: R) => Eff.fail[F, E, A](e)
 
-  /** Converts an `Option`, supplying an error when empty. */
-  inline def fromOption[F[_]: Applicative, R, E, A](opt: Option[A], ifNone: => E): EffR[F, R, E, A] =
-    (_: R) => Eff.fromOption(opt, ifNone)
-
-  /** Converts `F[Option]`, supplying an error when empty. */
-  inline def liftOption[F[_]: Functor, R, E, A](fo: F[Option[A]], ifNone: => E): EffR[F, R, E, A] =
-    (_: R) => Eff.liftOption(fo, ifNone)
-
   /** Canonical successful unit value. */
   inline def unit[F[_]: Applicative, R, E]: EffR[F, R, E, Unit] =
     (_: R) => Eff.unit[F, E]
-
-  /** Converts `Try`, mapping throwables into the domain-specific error. */
-  inline def fromTry[F[_]: Applicative, R, E, A](result: Try[A], ifFailure: Throwable => E): EffR[F, R, E, A] =
-    (_: R) => Eff.fromTry(result, ifFailure)
 
   /** Captures throwables raised in `F`, translating them via `ifFailure`. */
   inline def attempt[F[_], R, E, A](fa: F[A], ifFailure: Throwable => E)(using ME: MonadError[F, Throwable]): EffR[F, R, E, A] =
@@ -146,10 +152,6 @@ object EffR:
   /** Suspends evaluation until demanded. */
   inline def defer[F[_]: Defer, R, E, A](thunk: => EffR[F, R, E, A]): EffR[F, R, E, A] =
     (r: R) => Eff.defer(thunk(r))
-
-  /** Extracts the computation from an `EitherT`. */
-  inline def fromEitherT[F[_], R, E, A](et: EitherT[F, E, A]): EffR[F, R, E, A] =
-    (_: R) => Eff.fromEitherT(et)
 
   extension [F[_], R, E, A](self: EffR[F, R, E, A])
     /** Supplies an environment and yields the underlying `Eff`. */
@@ -212,10 +214,6 @@ object EffR:
     inline def semiflatMap[B](f: A => F[B])(using Monad[F]): EffR[F, R, E, B] =
       (r: R) => self(r).semiflatMap(f)
 
-    /** Chains a recovery function over the error channel. */
-    inline def leftFlatMap[E2](f: E => EffR[F, R, E2, A])(using Monad[F]): EffR[F, R, E2, A] =
-      (r: R) => self(r).leftFlatMap(e => f(e).run(r))
-
     /** Chains a pure `Either`-returning function over success. */
     inline def subflatMap[E2 >: E, B](f: A => Either[E2, B])(using Functor[F]): EffR[F, R, E2, B] =
       (r: R) => self(r).subflatMap(f)
@@ -231,6 +229,144 @@ object EffR:
     /** Fails with error computed from value if `predicate` is false on success. */
     inline def ensureOr(onFailure: A => E)(predicate: A => Boolean)(using Functor[F]): EffR[F, R, E, A] =
       (r: R) => self(r).ensureOr(onFailure)(predicate)
+
+    // --- Composition Operators ---
+
+    /** Sequences this computation with `that`, discarding the result of `this`. */
+    @targetName("productR")
+    inline def *>[B](that: => EffR[F, R, E, B])(using Monad[F]): EffR[F, R, E, B] =
+      (r: R) => self(r) *> that.run(r)
+
+    /** Sequences this computation with `that`, discarding the result of `that`. */
+    @targetName("productL")
+    inline def <*[B](that: => EffR[F, R, E, B])(using Monad[F]): EffR[F, R, E, A] =
+      (r: R) => self(r) <* that.run(r)
+
+    /** Sequences this computation with `that`, discarding the result of `this`. Named alternative
+      * to `*>`.
+      */
+    inline def productR[B](that: => EffR[F, R, E, B])(using Monad[F]): EffR[F, R, E, B] =
+      self *> that
+
+    /** Sequences this computation with `that`, discarding the result of `that`. Named alternative
+      * to `<*`.
+      */
+    inline def productL[B](that: => EffR[F, R, E, B])(using Monad[F]): EffR[F, R, E, A] =
+      self <* that
+
+    /** Discards the success value, returning `Unit`. */
+    inline def void(using Functor[F]): EffR[F, R, E, Unit] =
+      (r: R) => self(r).void
+
+    /** Replaces the success value with `b`. */
+    inline def as[B](b: B)(using Functor[F]): EffR[F, R, E, B] =
+      (r: R) => self(r).as(b)
+
+    /** Applies an effectful function to the success value, discarding its result. */
+    inline def flatTap[B](f: A => EffR[F, R, E, B])(using Monad[F]): EffR[F, R, E, A] =
+      (r: R) => self(r).flatTap(a => f(a).run(r))
+
+    /** Combines this computation with `that` into a tuple. */
+    inline def product[B](that: EffR[F, R, E, B])(using Monad[F]): EffR[F, R, E, (A, B)] =
+      (r: R) => self(r).product(that.run(r))
+
+    // --- Error Recovery Operators ---
+
+    /** Recovers from all errors by mapping them to a success value. */
+    inline def recover(f: E => A)(using Functor[F]): UEffR[F, R, A] =
+      (r: R) => self(r).recover(f)
+
+    /** Handles any failure by switching to an alternative computation. */
+    inline def catchAll[E2, B >: A](f: E => EffR[F, R, E2, B])(using Monad[F]): EffR[F, R, E2, B] =
+      (r: R) => self(r).catchAll(e => f(e).run(r))
+
+    /** Recovers from certain errors by mapping them to a success value. */
+    inline def recover[A1 >: A](pf: PartialFunction[E, A1])(using Functor[F]): EffR[F, R, E, A1] =
+      (r: R) => self(r).recover(pf)
+
+    /** Recovers from certain errors by switching to a new computation. */
+    inline def recoverWith[E2 >: E](pf: PartialFunction[E, EffR[F, R, E2, A]])(using Monad[F]): EffR[F, R, E2, A] =
+      (r: R) =>
+        Eff.lift(
+          Monad[F].flatMap(self(r).either) {
+            case Left(e) if pf.isDefinedAt(e) => pf(e).run(r).either
+            case Left(e)                      => Monad[F].pure(Left(e))
+            case Right(a)                     => Monad[F].pure(Right(a))
+          }
+        )
+
+    /** Executes an effect when a matching error occurs, then re-raises the error.
+      *
+      * Aligns with cats' `onError` semantics using `PartialFunction`.
+      */
+    inline def onError(pf: PartialFunction[E, EffR[F, R, E, Unit]])(using Monad[F]): EffR[F, R, E, A] =
+      (r: R) => self(r).onError { case e if pf.isDefinedAt(e) => pf(e).run(r) }
+
+    /** Transforms certain errors using `pf` and re-raises them. */
+    inline def adaptError(pf: PartialFunction[E, E])(using Functor[F]): EffR[F, R, E, A] =
+      (r: R) => self(r).adaptError(pf)
+
+    /** Fallback to an alternative computation when this one fails. */
+    inline def alt[E2, B >: A](that: => EffR[F, R, E2, B])(using Monad[F]): EffR[F, R, E2, B] =
+      (r: R) =>
+        Eff.lift(
+          Monad[F].flatMap(self(r).either) {
+            case Left(_)  => that.run(r).either
+            case Right(a) => Monad[F].pure(Right(a))
+          }
+        )
+
+    // --- Conversion Utilities ---
+
+    /** Unwraps to the underlying `R => F[Either[E, A]]`. */
+    inline def either: R => F[Either[E, A]] =
+      (r: R) => self(r).either
+
+    /** Re-throws the error into `F` when `E <:< Throwable`. */
+    inline def rethrow(using ME: MonadError[F, Throwable], ev: E <:< Throwable): R => F[A] =
+      (r: R) => self(r).rethrow
+
+    /** Absorbs an error into `F` when `E` matches the error type of `F`. */
+    inline def absolve[EE](using ME: MonadError[F, EE], ev: E <:< EE): R => F[A] =
+      (r: R) => self(r).absolve
+
+    /** Folds over both channels, returning to the base effect. */
+    inline def fold[B](fe: E => B, fa: A => B)(using Functor[F]): R => F[B] =
+      (r: R) => self(r).fold(fe, fa)
+
+    /** Effectfully folds both channels, allowing different continuations. */
+    inline def foldF[B](fe: E => F[B], fa: A => F[B])(using Monad[F]): R => F[B] =
+      (r: R) => self(r).foldF(fe, fa)
+
+    /** Maps both error and success channels simultaneously. */
+    inline def bimap[E2, B](fe: E => E2, fb: A => B)(using Functor[F]): EffR[F, R, E2, B] =
+      (r: R) => self(r).bimap(fe, fb)
+
+    /** Transforms the error channel, akin to `leftMap`. */
+    inline def mapError[E2](f: E => E2)(using Functor[F]): EffR[F, R, E2, A] =
+      (r: R) => self(r).mapError(f)
+
+    /** Handles both error and success with pure functions, always succeeding. */
+    inline def redeem[B](fe: E => B, fa: A => B)(using Functor[F]): UEffR[F, R, B] =
+      (r: R) => self(r).redeem(fe, fa)
+
+    /** Handles both error and success with effectful functions, allowing error type change.
+      *
+      * Unlike cats' `redeemWith` which preserves the error type, this combinator allows
+      * transitioning to a new error type `E2` via both handlers.
+      */
+    inline def redeemAll[E2, B](fe: E => EffR[F, R, E2, B], fa: A => EffR[F, R, E2, B])(using Monad[F]): EffR[F, R, E2, B] =
+      (r: R) =>
+        Eff.lift(
+          Monad[F].flatMap(self(r).either) {
+            case Left(e)  => fe(e).run(r).either
+            case Right(a) => fa(a).run(r).either
+          }
+        )
+
+    /** Observes failures in the underlying effect without altering the result. */
+    inline def tapError(f: E => F[Unit])(using Monad[F]): EffR[F, R, E, A] =
+      (r: R) => self(r).tapError(f)
   end extension
 
   private type Base[F[_], E] = [A] =>> Eff[F, E, A]
