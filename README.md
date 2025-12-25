@@ -65,17 +65,15 @@ result.flattenNull("null value") // Either[String, String]
 
 ### effect
 
-Zero-cost typed-error effects layered on top of Cats / Cats Effect. The module exposes an opaque representation for `Eff[F[_], E, A] = F[Either[E, A]]` with inline constructors, plus an environment-aware variant `EffR[F[_], R, E, A] = R => Eff[F, E, A]`. Both erase at runtime yet keep the typechecker aware of the error and environment channels.
+Zero-cost typed-error effects layered atop Cats / Cats Effect. The module provides `Eff[F[_], E, A]`, an opaque wrapper over `F[Either[E, A]]`, and `EffR[F[_], R, E, A]`, a reader-style variant adding an environment channel. Both erase at runtime whilst maintaining compile-time awareness of error and environment types.
 
-#### Dependency Coordinates
+#### Dependency
 
 ```scala
-libraryDependencies += "io.github.arashi01" %% /* or `%%%` */ "boilerplate-effect" % "<version>"
+libraryDependencies += "io.github.arashi01" %% "boilerplate-effect" % "<version>"
 ```
 
 #### Type Aliases
-
-Convenience aliases reduce verbosity for common error channel configurations:
 
 | Alias            | Expansion                  | Description                     |
 |------------------|----------------------------|---------------------------------|
@@ -84,136 +82,112 @@ Convenience aliases reduce verbosity for common error channel configurations:
 | `UEffR[F, R, A]` | `EffR[F, R, Nothing, A]`   | Infallible reader effect        |
 | `TEffR[F, R, A]` | `EffR[F, R, Throwable, A]` | Throwable-errored reader effect |
 
-#### `Eff`: Typed Error Channel
+#### `Eff[F, E, A]`
 
-Partially-applied constructors allow ergonomic value creation with minimal type annotations:
+##### Constructors
+
+Partially-applied constructors minimise type annotations:
 
 ```scala
 import boilerplate.effect.*
 import cats.effect.IO
 
-// Ergonomic syntax — effect type inferred, error channel polymorphic
-val ok  = Eff[IO].succeed(42)        // UEff[IO, Int]
-val err = Eff[IO].fail("boom")       // Eff[IO, String, Nothing]
-val either = Eff[IO].from(Right(1))
-val lifted = Eff[IO].liftF(IO.pure(42))
-val u   = Eff[IO].unit               // UEff[IO, Unit]
-
-// Full constructors remain available when explicit types are needed
-Eff.succeed[IO, String, Int](42)
-Eff.fail[IO, String, Int]("boom")
+Eff[IO].succeed(42)           // UEff[IO, Int]
+Eff[IO].fail("boom")          // Eff[IO, String, Nothing]
+Eff[IO].from(Right(1))        // Eff[IO, Nothing, Int]
+Eff[IO].liftF(IO.pure(42))    // UEff[IO, Int]
+Eff[IO].unit                  // UEff[IO, Unit]
 ```
 
-**Constructors:** `succeed`, `fail`, `from`, `fromOption` (pure), `lift` (F[Either]), `liftOption` (F[Option]), `fromTry`, `liftF`, `attempt`, `defer`, `unit`.
+Full constructors with explicit type parameters remain available:
+- **Pure conversions** (`from`): `Eff.from(Either)`, `Eff.from(Option, ifNone)`, `Eff.from(Try, ifFailure)`, `Eff.from(EitherT)`
+- **Effectful conversions** (`lift`): `Eff.lift(F[Either])`, `Eff.lift(F[Option], ifNone)`
+- **Value constructors**: `Eff.succeed`, `Eff.fail`, `Eff.unit`, `Eff.liftF`, `Eff.attempt`, `Eff.defer`
 
-**Combinators:**
+##### Combinators
 
-| Category           | Methods                                                                    |
-|--------------------|----------------------------------------------------------------------------|
-| Mapping            | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `transform`                 |
-| Error handling     | `catchAll`, `leftFlatMap`, `redeem`, `fold`, `foldF`, `tapError`, `orElse` |
-| Guards             | `ensure`, `ensureOr`                                                       |
-| Variance           | `widen`, `widenError`, `assume`, `assumeError`                             |
-| Interop            | `eitherT`                                                                  |
+| Category       | Methods                                                                           |
+|----------------|-----------------------------------------------------------------------------------|
+| Mapping        | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `bimap`, `mapError`, `transform`   |
+| Composition    | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`            |
+| Recovery       | `recover` (total/partial), `catchAll`, `recoverWith`, `onError`, `adaptError`     |
+| Folding        | `fold`, `foldF`, `redeem`, `redeemAll`                                            |
+| Alternative    | `alt`                                                                             |
+| Guards         | `ensure`, `ensureOr`                                                              |
+| Observation    | `tapError`                                                                        |
+| Variance       | `widen`, `widenError`, `assume`, `assumeError`                                    |
+| Conversion     | `either`, `rethrow`, `absolve`, `eitherT`                                         |
 
-**Type classes:** via the partially-applied `Eff.Of[F, E]`, the module derives `Functor`, `Monad`, `MonadError`, and `MonadCancel` instances automatically from the underlying `F`. This makes `Eff` slot into any Cats / Cats Effect API (e.g. `Resource`, `IOApp`).
+##### Type Class Instances
 
-Example:
+`Eff.Of[F, E]` (a type lambda `[A] =>> Eff[F, E, A]`) derives `Functor`, `Monad`, `MonadError[_, E]`, and `MonadCancel` from the underlying `F`. This enables seamless integration with Cats Effect APIs such as `Resource` and `IOApp`.
+
+##### Example
 
 ```scala
-import boilerplate.effect.*
-import cats.effect.IO
-
 val service: Eff[IO, String, Int] =
   for
     a <- Eff[IO].succeed(21)
     b <- Eff[IO].liftF(IO.pure(21))
   yield a + b
 
-service.value // IO[Either[String, Int]] = IO.pure(Right(42))
+service.either  // IO[Either[String, Int]]
 ```
 
-#### `EffR`: Reader-Style Environment
+#### `EffR[F, R, E, A]`
 
-Adds an immutable environment parameter without leaving the typed-error world. Partially-applied constructors pin both effect and environment types:
+Adds an immutable environment channel, representationally equivalent to `R => Eff[F, E, A]`.
+
+##### Constructors
 
 ```scala
-import boilerplate.effect.*
-import cats.effect.IO
-
 type Config = String
 
-// Ergonomic syntax — effect and environment types fixed
-val prog = EffR[IO, Config].succeed(42)
-val env  = EffR[IO, Config].service  // retrieves the Config
+EffR[IO, Config].succeed(42)   // UEffR[IO, Config, Int]
+EffR[IO, Config].fail("err")   // EffR[IO, Config, String, Nothing]
+EffR[IO, Config].service       // EffR[IO, Config, Nothing, Config] — retrieves environment
+EffR[IO, Config].ask           // alias for service
 ```
 
-**Constructors:** `succeed`, `fail`, `from` (pure Either), `liftEither` (F[Either]), `lift` (Eff), `service` (alias: `ask`), `fromOption` (pure), `liftOption` (F[Option]), `fromTry`, `attempt`, `defer`, `unit`, `wrap`, `fromContext`.
+Full constructors:
+- **Pure conversions** (`from`): `EffR.from(Either)`, `EffR.from(Option, ifNone)`, `EffR.from(Try, ifFailure)`, `EffR.from(EitherT)`
+- **Effectful conversions** (`lift`): `EffR.lift(Eff)`, `EffR.lift(F[Either])`, `EffR.lift(F[Option], ifNone)`
+- **Value constructors**: `EffR.succeed`, `EffR.fail`, `EffR.unit`, `EffR.attempt`, `EffR.defer`
+- **Environment**: `EffR.service`, `EffR.ask`, `EffR.wrap`, `EffR.fromContext`
 
-**Combinators:**
+##### Combinators
 
-| Category            | Methods                                                                            |
-|---------------------|------------------------------------------------------------------------------------|
-| Environment         | `provide` (overloaded for layers), `contramap`, `andThen`                          |
-| Mapping             | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `transform`                         |
-| Error handling      | `leftFlatMap`                                                                      |
-| Guards              | `ensure`, `ensureOr`                                                               |
-| Variance            | `widen`, `widenError`, `assume`, `assumeError`, `widenEnv`, `assumeEnv`            |
-| Interop             | `kleisli`                                                                          |
+Mirrors `Eff` combinators, plus environment-specific operations:
 
-**Type classes:** `Functor`, `Monad`, `MonadError`, `MonadCancel` instances delegate via `Kleisli`, so any Cats Effect API expecting those abstractions works out of the box.
+| Category       | Methods                                          |
+|----------------|--------------------------------------------------|
+| Environment    | `provide`, `contramap`, `andThen`, `run`         |
+| Recovery       | `catchAll`, `recover`, `recoverWith`, `onError`  |
+| Folding        | `fold`, `foldF`, `redeem`, `redeemAll`           |
+| Alternative    | `alt`                                            |
+| Conversion     | `either`, `rethrow`, `absolve`, `kleisli`        |
 
-Example:
-
-```scala
-import boilerplate.effect.*
-import cats.effect.IO
-
-trait Database:
-  def findUser(id: Int): IO[Option[User]]
-
-val fetchUser: EffR[IO, Database, String, User] =
-  for
-    db   <- EffR[IO, Database].service
-    user <- EffR[IO, Database].lift(
-              Eff.liftOption(db.findUser(42), "not found")
-            )
-  yield user
-
-fetchUser.provide(prodDatabase).value // IO[Either[String, User]]
-```
-
-#### Layer Composition
-
-`EffR` supports ZIO-style layer composition via `provide` (overloaded for layers), `contramap`, and `andThen`:
+##### Layer Composition
 
 ```scala
-// Transform environment
-val narrow: EffR[IO, AppConfig, E, A] = base.contramap[AppConfig](_.database)
+// Narrow environment via contramap
+val narrow: EffR[IO, AppConfig, E, A] = prog.contramap[AppConfig](_.database)
 
 // Chain readers: output of first becomes environment of second
 val composed: EffR[IO, Int, E, String] = intToDouble.andThen(doubleToString)
 
-// Effectful environment construction via provide overload
-val provided: EffR[IO, Unit, E, A] = program.provide(buildDatabase)
+// Effectful environment provision
+val provided: Eff[IO, E, A] = program.provide(buildDatabase)
 ```
 
-#### Using Kleisli Directly
+##### Kleisli Interop
 
-`EffR[F, R, E, A]` is representationally equivalent to `Kleisli[Eff.Of[F, E], R, A]`. If you prefer the standard Cats abstraction, you can use `Kleisli` directly with `Eff`:
+`EffR` is representationally equivalent to `Kleisli[Eff.Of[F, E], R, A]`. For ecosystem familiarity:
 
 ```scala
 import cats.data.Kleisli
-import cats.effect.IO
-import boilerplate.effect.*
 
-// Define your program type as Kleisli over Eff
 type MyApp[A] = Kleisli[Eff.Of[IO, AppError], AppEnv, A]
-
-// Kleisli provides the same capabilities with different naming:
-// - Kleisli.ask       ≈ EffR.service (or EffR.ask)
-// - Kleisli.local     ≈ EffR.contramap
-// - Kleisli.liftF     ≈ EffR.lift
 
 val program: MyApp[User] =
   for
@@ -221,32 +195,29 @@ val program: MyApp[User] =
     user <- Kleisli.liftF(Eff.succeed[IO, AppError, User](env.defaultUser))
   yield user
 
-// Run by providing the environment
-program.run(appEnv).value // IO[Either[AppError, User]]
+program.run(appEnv).either  // IO[Either[AppError, User]]
 ```
-
-All `MonadCancel`, `MonadError`, and `Monad` instances compose automatically. Choose `EffR` for ZIO-style ergonomics or `Kleisli` for ecosystem familiarity.
 
 #### Syntax Extensions
 
-Importing `boilerplate.effect.*` provides top-level extensions that convert common datatypes into `Eff`/`EffR` without extra ceremony:
+Importing `boilerplate.effect.*` provides inline extensions for common conversions:
 
-| Extension                 | Result Type                  |
-|---------------------------|------------------------------|
-| `Either[E, A].eff`        | `Eff[F, E, A]`               |
-| `Either[E, A].effR`       | `EffR[F, R, E, A]`           |
-| `F[Either[E, A]].eff`     | `Eff[F, E, A]`               |
-| `F[Either[E, A]].effR`    | `EffR[F, R, E, A]`           |
-| `Option[A].eff(ifNone)`   | `Eff[F, E, A]`               |
-| `Option[A].effR(ifNone)`  | `EffR[F, R, E, A]`           |
-| `F[Option[A]].eff(ifNone)`| `Eff[F, E, A]`               |
-| `F[Option[A]].effR(ifNone)`| `EffR[F, R, E, A]`          |
-| `Try[A].eff(mapper)`      | `Eff[F, E, A]`               |
-| `Try[A].effR(mapper)`     | `EffR[F, R, E, A]`           |
-| `F[A].eff(mapper)`        | `Eff[F, E, A]` (captures throwables) |
-| `F[A].effR(mapper)`       | `EffR[F, R, E, A]`           |
+| Extension                  | Result Type        |
+|----------------------------|--------------------|
+| `Either[E, A].eff[F]`      | `Eff[F, E, A]`     |
+| `Either[E, A].effR[F, R]`  | `EffR[F, R, E, A]` |
+| `F[Either[E, A]].eff`      | `Eff[F, E, A]`     |
+| `F[Either[E, A]].effR[R]`  | `EffR[F, R, E, A]` |
+| `Option[A].eff[F, E](err)` | `Eff[F, E, A]`     |
+| `Option[A].effR[F,R,E](e)` | `EffR[F, R, E, A]` |
+| `F[Option[A]].eff[E](err)` | `Eff[F, E, A]`     |
+| `F[Option[A]].effR[R,E](e)`| `EffR[F, R, E, A]` |
+| `Try[A].eff[F, E](f)`      | `Eff[F, E, A]`     |
+| `Try[A].effR[F, R, E](f)`  | `EffR[F, R, E, A]` |
+| `F[A].eff[E](f)`           | `Eff[F, E, A]`     |
+| `F[A].effR[R, E](f)`       | `EffR[F, R, E, A]` |
 
-These helpers are inline, introducing no runtime penalty.
+---
 
 ## Licence
 

@@ -20,6 +20,7 @@
  */
 package boilerplate.effect
 
+import scala.annotation.targetName
 import scala.util.Try
 
 import cats.*
@@ -48,9 +49,6 @@ object Eff:
   /** Wraps a pre-existing `F[Either[E, A]]` without allocation. */
   inline def apply[F[_], E, A](fa: F[Either[E, A]]): Eff[F, E, A] = fa
 
-  /** Lifts an existing `F[Either[E, A]]` value without recomputation. */
-  inline def lift[F[_], E, A](fea: F[Either[E, A]]): Eff[F, E, A] = fea
-
   /** Returns a partially-applied constructor fixing the effect type `F`. */
   def apply[F[_]]: EffPartiallyApplied[F] = new EffPartiallyApplied[F]
 
@@ -78,8 +76,8 @@ object Eff:
   end EffPartiallyApplied
 
   extension [F[_], E, A](self: Eff[F, E, A])
-    /** Reveals the underlying `F[Either[E, A]]`. */
-    inline def value: F[Either[E, A]] = self
+    /** Unwraps to the underlying `F[Either[E, A]]`. */
+    inline def either: F[Either[E, A]] = self
 
     /** Maps the success channel while preserving the error type. */
     inline def map[B](f: A => B)(using Functor[F]): Eff[F, E, B] =
@@ -115,8 +113,16 @@ object Eff:
     inline def foldF[B](fe: E => F[B], fa: A => F[B])(using Monad[F]): F[B] =
       Monad[F].flatMap(self)(_.fold(fe, fa))
 
-    /** Recovers or maps to a new `Eff`, mirroring ZIO's `redeem`. */
-    inline def redeem[B](fe: E => Eff[F, E, B], fa: A => Eff[F, E, B])(using Monad[F]): Eff[F, E, B] =
+    /** Handles both error and success with pure functions, always succeeding. */
+    inline def redeem[B](fe: E => B, fa: A => B)(using Functor[F]): UEff[F, B] =
+      Functor[F].map(self)(_.fold(fe, fa).asRight)
+
+    /** Handles both error and success with effectful functions, allowing error type change.
+      *
+      * Unlike cats' `redeemWith` which preserves the error type, this combinator allows
+      * transitioning to a new error type `E2` via both handlers.
+      */
+    inline def redeemAll[E2, B](fe: E => Eff[F, E2, B], fa: A => Eff[F, E2, B])(using Monad[F]): Eff[F, E2, B] =
       Monad[F].flatMap(self) {
         case Left(e)  => fe(e)
         case Right(a) => fa(a)
@@ -125,12 +131,12 @@ object Eff:
     /** Observes failures without altering the result. */
     inline def tapError(f: E => F[Unit])(using Monad[F]): Eff[F, E, A] =
       Monad[F].flatMap(self) {
-        case Left(e)  => f(e) *> Monad[F].pure(Left(e))
+        case Left(e)  => Monad[F].flatMap(f(e))(_ => Monad[F].pure(Left(e)))
         case Right(a) => Monad[F].pure(Right(a))
       }
 
-    /** Fallback to another computation when this one fails. */
-    inline def orElse[E2, B >: A](that: => Eff[F, E2, B])(using Monad[F]): Eff[F, E2, B] =
+    /** Fallback to an alternative computation when this one fails. */
+    inline def alt[E2, B >: A](that: => Eff[F, E2, B])(using Monad[F]): Eff[F, E2, B] =
       Monad[F].flatMap(self) {
         case Left(_)  => that
         case Right(a) => Monad[F].pure(Right(a))
@@ -141,13 +147,6 @@ object Eff:
       Monad[F].flatMap(self) {
         case Right(a) => Monad[F].map(f(a))(Right(_))
         case Left(e)  => Monad[F].pure(Left(e))
-      }
-
-    /** Flat-maps the error channel, allowing recovery with a different error type. */
-    inline def leftFlatMap[E2, B >: A](f: E => Eff[F, E2, B])(using Monad[F]): Eff[F, E2, B] =
-      Monad[F].flatMap(self) {
-        case Left(e)  => f(e)
-        case Right(a) => Monad[F].pure(Right(a))
       }
 
     /** Flat-maps the success through a pure `Either`-returning function. */
@@ -175,28 +174,145 @@ object Eff:
     /** Converts to `EitherT` for ecosystem interop. */
     inline def eitherT: EitherT[F, E, A] = EitherT(self)
 
+    // --- Composition Operators ---
+
+    /** Sequences this computation with `that`, discarding the result of `this`. */
+    @targetName("productR")
+    inline def *>[B](that: => Eff[F, E, B])(using Monad[F]): Eff[F, E, B] =
+      self.flatMap(_ => that)
+
+    /** Sequences this computation with `that`, discarding the result of `that`. */
+    @targetName("productL")
+    inline def <*[B](that: => Eff[F, E, B])(using Monad[F]): Eff[F, E, A] =
+      self.flatMap(a => that.map(_ => a))
+
+    /** Sequences this computation with `that`, discarding the result of `this`. Named alternative
+      * to `*>`.
+      */
+    inline def productR[B](that: => Eff[F, E, B])(using Monad[F]): Eff[F, E, B] =
+      self *> that
+
+    /** Sequences this computation with `that`, discarding the result of `that`. Named alternative
+      * to `<*`.
+      */
+    inline def productL[B](that: => Eff[F, E, B])(using Monad[F]): Eff[F, E, A] =
+      self <* that
+
+    /** Discards the success value, returning `Unit`. */
+    inline def void(using Functor[F]): Eff[F, E, Unit] =
+      self.map(_ => ())
+
+    /** Replaces the success value with `b`. */
+    inline def as[B](b: B)(using Functor[F]): Eff[F, E, B] =
+      self.map(_ => b)
+
+    /** Applies an effectful function to the success value, discarding its result. */
+    inline def flatTap[B](f: A => Eff[F, E, B])(using Monad[F]): Eff[F, E, A] =
+      self.flatMap(a => f(a).map(_ => a))
+
+    /** Combines this computation with `that` into a tuple. */
+    inline def product[B](that: Eff[F, E, B])(using Monad[F]): Eff[F, E, (A, B)] =
+      self.flatMap(a => that.map(b => (a, b)))
+
+    // --- Error Recovery Operators ---
+
+    /** Recovers from all errors by mapping them to a success value. */
+    inline def recover(f: E => A)(using Functor[F]): UEff[F, A] =
+      Functor[F].map(self) {
+        case Left(e)  => Right(f(e))
+        case Right(a) => Right(a)
+      }
+
+    /** Recovers from certain errors by mapping them to a success value. */
+    inline def recover[A1 >: A](pf: PartialFunction[E, A1])(using Functor[F]): Eff[F, E, A1] =
+      Functor[F].map(self) {
+        case Left(e) if pf.isDefinedAt(e) => Right(pf(e))
+        case Left(e)                      => Left(e)
+        case Right(a)                     => Right(a)
+      }
+
+    /** Recovers from certain errors by switching to a new computation. */
+    inline def recoverWith[E2 >: E](pf: PartialFunction[E, Eff[F, E2, A]])(using Monad[F]): Eff[F, E2, A] =
+      Monad[F].flatMap(self) {
+        case Left(e) if pf.isDefinedAt(e) => pf(e)
+        case Left(e)                      => Monad[F].pure(Left(e))
+        case Right(a)                     => Monad[F].pure(Right(a))
+      }
+
+    /** Executes an effect when a matching error occurs, then re-raises the error.
+      *
+      * Aligns with cats' `onError` semantics using `PartialFunction`.
+      */
+    inline def onError(pf: PartialFunction[E, Eff[F, E, Unit]])(using Monad[F]): Eff[F, E, A] =
+      Monad[F].flatMap(self) {
+        case Left(e) if pf.isDefinedAt(e) => pf(e).flatMap(_ => Monad[F].pure(Left(e)))
+        case Left(e)                      => Monad[F].pure(Left(e))
+        case Right(a)                     => Monad[F].pure(Right(a))
+      }
+
+    /** Transforms certain errors using `pf` and re-raises them. */
+    inline def adaptError(pf: PartialFunction[E, E])(using Functor[F]): Eff[F, E, A] =
+      Functor[F].map(self) {
+        case Left(e) if pf.isDefinedAt(e) => Left(pf(e))
+        case other                        => other
+      }
+
+    // --- Conversion Utilities ---
+
+    /** Re-throws the error into `F` when `E <:< Throwable`. */
+    inline def rethrow(using ME: MonadError[F, Throwable], ev: E <:< Throwable): F[A] =
+      Monad[F].flatMap(self) {
+        case Left(e)  => ME.raiseError(ev(e))
+        case Right(a) => Monad[F].pure(a)
+      }
+
+    /** Absorbs an error into `F` when `E` matches the error type of `F`. */
+    inline def absolve[EE](using ME: MonadError[F, EE], ev: E <:< EE): F[A] =
+      Monad[F].flatMap(self) {
+        case Left(e)  => ME.raiseError(ev(e))
+        case Right(a) => Monad[F].pure(a)
+      }
+
     // scalafix:off DisableSyntax.asInstanceOf
     /** Widens only the error type without allocating. */
     transparent inline def widenError[E2 >: E]: Eff[F, E2, A] =
-      Eff(self.value.asInstanceOf[F[Either[E2, A]]])
+      Eff(self.either.asInstanceOf[F[Either[E2, A]]])
 
     /** Treats the error type as a subtype, for trusted casts. */
     transparent inline def assumeError[E2 <: E]: Eff[F, E2, A] =
-      Eff(self.value.asInstanceOf[F[Either[E2, A]]])
+      Eff(self.either.asInstanceOf[F[Either[E2, A]]])
 
     /** Widens the success channel when the consumer expects a supertype. */
     transparent inline def widen[B >: A]: Eff[F, E, B] =
-      Eff(self.value.asInstanceOf[F[Either[E, B]]])
+      Eff(self.either.asInstanceOf[F[Either[E, B]]])
 
     /** Treats the success channel as a subtype, for trusted casts. */
     transparent inline def assume[B <: A]: Eff[F, E, B] =
-      Eff(self.value.asInstanceOf[F[Either[E, B]]])
+      Eff(self.either.asInstanceOf[F[Either[E, B]]])
     // scalafix:on
   end extension
 
   /** Lifts a pure `Either` into the effect via `pure`. */
   inline def from[F[_]: Applicative, E, A](either: Either[E, A]): Eff[F, E, A] =
     Applicative[F].pure(either)
+
+  /** Wraps an existing `F[Either[E, A]]` without recomputation. */
+  inline def lift[F[_], E, A](fea: F[Either[E, A]]): Eff[F, E, A] = fea
+
+  /** Converts an `Option`, supplying an error when empty. */
+  inline def from[F[_]: Applicative, E, A](opt: Option[A], ifNone: => E): Eff[F, E, A] =
+    Applicative[F].pure(opt.toRight(ifNone))
+
+  /** Converts an `F[Option]`, supplying an error when empty. */
+  inline def lift[F[_]: Functor, E, A](fo: F[Option[A]], ifNone: => E): Eff[F, E, A] =
+    Functor[F].map(fo)(_.toRight(ifNone))
+
+  /** Converts `Try`, mapping throwables into the domain-specific error. */
+  inline def from[F[_]: Applicative, E, A](result: Try[A], ifFailure: Throwable => E): Eff[F, E, A] =
+    result.fold(th => fail(ifFailure(th)), succeed(_))
+
+  /** Extracts the underlying computation from `EitherT`. */
+  inline def from[F[_], E, A](et: EitherT[F, E, A]): Eff[F, E, A] = et.value
 
   /** Creates a successful computation. */
   inline def succeed[F[_]: Applicative, E, A](a: A): Eff[F, E, A] =
@@ -210,20 +326,8 @@ object Eff:
   inline def liftF[F[_]: Functor, E, A](fa: F[A]): Eff[F, E, A] =
     Functor[F].map(fa)(Right(_))
 
-  /** Converts an `Option`, supplying an error when empty. */
-  inline def fromOption[F[_]: Applicative, E, A](opt: Option[A], ifNone: => E): Eff[F, E, A] =
-    Applicative[F].pure(opt.toRight(ifNone))
-
-  /** Converts an `F[Option]`, supplying an error when empty. */
-  inline def liftOption[F[_]: Functor, E, A](fo: F[Option[A]], ifNone: => E): Eff[F, E, A] =
-    Functor[F].map(fo)(_.toRight(ifNone))
-
   /** Canonical successful unit value. */
   inline def unit[F[_]: Applicative, E]: Eff[F, E, Unit] = succeed(())
-
-  /** Converts `Try`, mapping throwables into the domain-specific error. */
-  inline def fromTry[F[_]: Applicative, E, A](result: Try[A], ifFailure: Throwable => E): Eff[F, E, A] =
-    result.fold(th => fail(ifFailure(th)), succeed(_))
 
   /** Captures throwables raised in `F`, translating them via `ifFailure`. */
   inline def attempt[F[_], E, A](fa: F[A], ifFailure: Throwable => E)(using ME: MonadError[F, Throwable]): Eff[F, E, A] =
@@ -232,9 +336,6 @@ object Eff:
   /** Suspends evaluation until demanded. */
   inline def defer[F[_]: Defer, E, A](thunk: => Eff[F, E, A]): Eff[F, E, A] =
     Defer[F].defer(thunk)
-
-  /** Extracts the underlying computation from `EitherT`. */
-  inline def fromEitherT[F[_], E, A](et: EitherT[F, E, A]): Eff[F, E, A] = et.value
 
   // --- Typeclass instances -------------------------------------------------
 
@@ -332,12 +433,12 @@ object Eff:
       MC.guaranteeCase(fa) {
         case Outcome.Succeeded(success) =>
           val lifted = Outcome.succeeded[Of[F, E0], EE, A](success)
-          fin(lifted).value.void
+          fin(lifted).either.void
         case Outcome.Errored(err) =>
           val lifted = Outcome.errored[Of[F, E0], EE, A](err)
-          fin(lifted).value.void.handleError(_ => ())
+          MC.map(fin(lifted).either)(_ => ())
         case Outcome.Canceled() =>
-          fin(Outcome.canceled[Of[F, E0], EE, A]).value.void
+          fin(Outcome.canceled[Of[F, E0], EE, A]).either.void
       }
   end given
 end Eff
