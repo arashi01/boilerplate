@@ -20,7 +20,9 @@
  */
 package boilerplate.effect
 
+import scala.annotation.publicInBinary
 import scala.annotation.targetName
+import scala.concurrent.duration.FiniteDuration
 import scala.util.Try
 
 import cats.Applicative
@@ -28,12 +30,16 @@ import cats.Defer
 import cats.Functor
 import cats.Monad
 import cats.MonadError
+import cats.Parallel
+import cats.arrow.FunctionK
 import cats.data.EitherT
 import cats.data.Kleisli
+import cats.effect.kernel.GenTemporal
 import cats.effect.kernel.MonadCancel
 import cats.effect.kernel.Outcome
 import cats.effect.kernel.Poll
 import cats.syntax.all.*
+import cats.~>
 
 /** Reader-style wrapper represented as `R => Eff[F, E, A]`.
   *
@@ -81,8 +87,8 @@ object EffR:
       EffR.lift[F, R, E, A](eff)
 
     /** Retrieves the environment as a value. */
-    inline def service[E](using Applicative[F]): EffR[F, R, E, R] =
-      EffR.service[F, R, E]
+    inline def ask[E](using Applicative[F]): EffR[F, R, E, R] =
+      EffR.ask[F, R, E]
 
     /** Canonical successful unit value. */
     inline def unit[E](using Applicative[F]): EffR[F, R, E, Unit] =
@@ -125,6 +131,10 @@ object EffR:
   inline def from[F[_], R, E, A](et: EitherT[F, E, A]): EffR[F, R, E, A] =
     (_: R) => Eff.from(et)
 
+  /** Converts a `Kleisli[Eff.Of[F, E], R, A]` to `EffR`. */
+  inline def from[F[_], R, E, A](k: Kleisli[Eff.Of[F, E], R, A]): EffR[F, R, E, A] =
+    (r: R) => k.run(r)
+
   /** Successful computation that ignores the environment. */
   inline def succeed[F[_]: Applicative, R, E, A](a: A): EffR[F, R, E, A] =
     (_: R) => Eff.succeed[F, E, A](a)
@@ -141,13 +151,9 @@ object EffR:
   inline def attempt[F[_], R, E, A](fa: F[A], ifFailure: Throwable => E)(using ME: MonadError[F, Throwable]): EffR[F, R, E, A] =
     (_: R) => Eff.attempt(fa, ifFailure)
 
-  /** Retrieves the current environment as a value. Alias: [[ask]]. */
-  inline def service[F[_]: Applicative, R, E]: EffR[F, R, E, R] =
-    (r: R) => Eff.succeed[F, E, R](r)
-
-  /** Retrieves the current environment as a value. Alias for [[service]]. */
+  /** Retrieves the current environment as a value. */
   inline def ask[F[_]: Applicative, R, E]: EffR[F, R, E, R] =
-    service[F, R, E]
+    (r: R) => Eff.succeed[F, E, R](r)
 
   /** Suspends evaluation until demanded. */
   inline def defer[F[_]: Defer, R, E, A](thunk: => EffR[F, R, E, A]): EffR[F, R, E, A] =
@@ -164,9 +170,6 @@ object EffR:
     /** Sequences environment-dependent computations. */
     inline def flatMap[B](f: A => EffR[F, R, E, B])(using Monad[F]): EffR[F, R, E, B] =
       (r: R) => self(r).flatMap(a => f(a).run(r))
-
-    /** Supplies a concrete environment immediately. */
-    inline def provide(env: R): Eff[F, E, A] = run(env)
 
     /** Supplies an environment built effectfully from another layer. */
     inline def provide[R0](layer: EffR[F, R0, E, R])(using Monad[F]): EffR[F, R0, E, A] =
@@ -242,17 +245,13 @@ object EffR:
     inline def <*[B](that: => EffR[F, R, E, B])(using Monad[F]): EffR[F, R, E, A] =
       (r: R) => self(r) <* that.run(r)
 
-    /** Sequences this computation with `that`, discarding the result of `this`. Named alternative
-      * to `*>`.
-      */
+    /** Sequences this computation with `that`, discarding the result of `this`. */
     inline def productR[B](that: => EffR[F, R, E, B])(using Monad[F]): EffR[F, R, E, B] =
-      self *> that
+      (r: R) => self(r).productR(that.run(r))
 
-    /** Sequences this computation with `that`, discarding the result of `that`. Named alternative
-      * to `<*`.
-      */
+    /** Sequences this computation with `that`, discarding the result of `that`. */
     inline def productL[B](that: => EffR[F, R, E, B])(using Monad[F]): EffR[F, R, E, A] =
-      self <* that
+      (r: R) => self(r).productL(that.run(r))
 
     /** Discards the success value, returning `Unit`. */
     inline def void(using Functor[F]): EffR[F, R, E, Unit] =
@@ -272,9 +271,13 @@ object EffR:
 
     // --- Error Recovery Operators ---
 
-    /** Recovers from all errors by mapping them to a success value. */
-    inline def recover(f: E => A)(using Functor[F]): UEffR[F, R, A] =
-      (r: R) => self(r).recover(f)
+    /** Recovers from all errors by mapping them to a success value.
+      *
+      * Similar to `getOrElse` for `Option` or `Validated.valueOr`. Named `valueOr` to avoid
+      * collision with cats' `recover` which takes `PartialFunction`.
+      */
+    inline def valueOr(f: E => A)(using Functor[F]): UEffR[F, R, A] =
+      (r: R) => self(r).valueOr(f)
 
     /** Handles any failure by switching to an alternative computation. */
     inline def catchAll[E2, B >: A](f: E => EffR[F, R, E2, B])(using Monad[F]): EffR[F, R, E2, B] =
@@ -352,8 +355,8 @@ object EffR:
 
     /** Handles both error and success with effectful functions, allowing error type change.
       *
-      * Unlike cats' `redeemWith` which preserves the error type, this combinator allows
-      * transitioning to a new error type `E2` via both handlers.
+      * Named `redeemAll` to distinguish from cats' `redeemWith` which preserves error type. This
+      * combinator allows transitioning to a new error type `E2` via both handlers.
       */
     inline def redeemAll[E2, B](fe: E => EffR[F, R, E2, B], fa: A => EffR[F, R, E2, B])(using Monad[F]): EffR[F, R, E2, B] =
       (r: R) =>
@@ -364,96 +367,248 @@ object EffR:
           }
         )
 
-    /** Observes failures in the underlying effect without altering the result. */
+    /** Observes failures in the underlying effect without altering the result.
+      *
+      * The side effect is a raw `F[Unit]` that cannot itself produce typed errors. For fallible
+      * side effects, use [[flatTapError]].
+      */
     inline def tapError(f: E => F[Unit])(using Monad[F]): EffR[F, R, E, A] =
       (r: R) => self(r).tapError(f)
+
+    /** Observes success values via an effectful function.
+      *
+      * Unlike `flatTap`, this uses a plain `F[Unit]` effect and does not participate in the error
+      * channel. Useful for logging or metrics.
+      */
+    inline def tap(f: A => F[Unit])(using Monad[F]): EffR[F, R, E, A] =
+      (r: R) => self(r).tap(f)
+
+    /** Observes failures using an `EffR` side effect, propagating side effect failure.
+      *
+      * If the original computation fails with `e` and the side effect `f(e)` also fails, the
+      * resulting error is from the side effect. For infallible side effects, use [[tapError]].
+      */
+    inline def flatTapError(f: E => EffR[F, R, E, Unit])(using Monad[F]): EffR[F, R, E, A] =
+      (r: R) =>
+        Eff.lift(
+          Monad[F].flatMap(self(r).either) {
+            case Left(e)  => Monad[F].map(f(e).run(r).either)(_.fold(_ => Left(e), _ => Left(e)))
+            case Right(a) => Monad[F].pure(Right(a))
+          }
+        )
+
+    /** Recovers from any failure by returning the provided success value. */
+    inline def orElseSucceed[B >: A](fallback: => B)(using Functor[F]): UEffR[F, R, B] =
+      (r: R) => self(r).orElseSucceed(fallback)
+
+    /** Recovers from any failure by failing with a different error. */
+    inline def orElseFail[E2](newError: => E2)(using Functor[F]): EffR[F, R, E2, A] =
+      (r: R) => self(r).orElseFail(newError)
+
+    /** Discards the error channel, returning `None` for failures and `Some(a)` for success.
+      *
+      * This is useful when you want to handle failures by absence rather than by error values,
+      * similar to converting `Either` to `Option`.
+      */
+    inline def option(using Functor[F]): UEffR[F, R, Option[A]] =
+      (r: R) => self(r).option
+
+    /** Extracts the inner value from `Option[B]` success, failing with `ifNone` if empty.
+      *
+      * Useful for sequencing optional results where `None` indicates an expected failure.
+      */
+    inline def collectSome[B](ifNone: => E)(using F: Functor[F])(using ev: A <:< Option[B]): EffR[F, R, E, B] =
+      (r: R) => self(r).collectSome(ifNone)
+
+    /** Extracts the `Right` value from `Either[L, B]` success, failing with `ifLeft` if `Left`.
+      *
+      * Useful for integrating with APIs that return `Either` for validation.
+      */
+    inline def collectRight[L, B](ifLeft: L => E)(using F: Functor[F])(using ev: A <:< Either[L, B]): EffR[F, R, E, B] =
+      (r: R) => self(r).collectRight(ifLeft)
+
+    /** Ensures resource cleanup regardless of outcome (success, failure, or cancellation).
+      *
+      * The `release` function receives the acquired resource and is guaranteed to run even if `use`
+      * fails or is canceled. This is the reader-aware variant of `bracket`.
+      *
+      * @param use The computation that uses the acquired resource.
+      * @param release The cleanup function, executed unconditionally.
+      * @return A computation that safely manages the resource lifecycle.
+      */
+    inline def bracket[B](use: A => EffR[F, R, E, B])(release: A => F[Unit])(using MC: MonadCancel[F, Throwable]): EffR[F, R, E, B] =
+      (r: R) => self(r).bracket(a => use(a).run(r))(release)
+
+    /** Variant of `bracket` that provides the outcome to the release function.
+      *
+      * The `release` function receives both the acquired resource and the outcome of the `use`
+      * computation, enabling conditional cleanup logic.
+      *
+      * @param use The computation that uses the acquired resource.
+      * @param release The cleanup function, receiving resource and outcome.
+      * @return A computation that safely manages the resource lifecycle.
+      */
+    inline def bracketCase[B](use: A => EffR[F, R, E, B])(release: (A, Outcome[F, Throwable, Either[E, B]]) => F[Unit])(using
+      MC: MonadCancel[F, Throwable]
+    ): EffR[F, R, E, B] =
+      (r: R) => self(r).bracketCase(a => use(a).run(r))(release)
+
+    /** Fails with `onTimeout` if this computation does not complete within `duration`.
+      *
+      * Uses `GenTemporal` from cats-effect for time-based operations. On timeout, the original
+      * computation is canceled and the error value is returned.
+      *
+      * @param duration Maximum time to wait for completion.
+      * @param onTimeout Error value to return on timeout.
+      * @return The original result or the timeout error.
+      */
+    inline def timeout(duration: FiniteDuration, onTimeout: => E)(using GT: GenTemporal[F, Throwable]): EffR[F, R, E, A] =
+      (r: R) => self(r).timeout(duration, onTimeout)
   end extension
 
+  /** Creates a natural transformation from `EffR.Of[F, R, E]` to any `G[_]`.
+    *
+    * This is useful for interoperating with APIs that require `FunctionK`, such as `Resource.mapK`
+    * or http4s' `HttpRoutes.translate`.
+    *
+    * @param env The environment to provide to each `EffR` computation.
+    * @param f The transformation applied to the resulting `Eff[F, E, *]` values.
+    * @return A `FunctionK` suitable for natural transformation pipelines.
+    */
+  inline def functionK[F[_], R, E, G[_]](env: R)(f: FunctionK[Eff.Of[F, E], G]): FunctionK[Of[F, R, E], G] =
+    new FunctionKImpl(env, f)
+
+  private[effect] class FunctionKImpl[F[_], R, E, G[_]] @publicInBinary() (
+    env: R,
+    f: FunctionK[Eff.Of[F, E], G]
+  ) extends FunctionK[Of[F, R, E], G]:
+    def apply[A](fa: EffR[F, R, E, A]): G[A] = f(fa.run(env))
+
+  // ---------------------------------------------------------------------------
+  // Typeclass Instances
+  // ---------------------------------------------------------------------------
+  // These are implemented directly on EffR without Kleisli delegation to maintain
+  // zero-allocation semantics. The pattern `(r: R) => ...` is inlined at compile time.
+
   private type Base[F[_], E] = [A] =>> Eff[F, E, A]
-  private type Kle[F[_], R, E] = [A] =>> Kleisli[Base[F, E], R, A]
 
-  private inline def toK[F[_], R, E, A](er: EffR[F, R, E, A]): Kleisli[Base[F, E], R, A] =
-    Kleisli(er.run)
-
-  private inline def fromK[F[_], R, E, A](k: Kleisli[Base[F, E], R, A]): EffR[F, R, E, A] =
-    (r: R) => k.run(r)
-
-  /** Derives a `Monad` instance via `Kleisli` for environment-aware programs. */
-  given [F[_], R, E](using Monad[Base[F, E]]): Monad[Of[F, R, E]] with
-    private val delegate = summon[Monad[Kle[F, R, E]]]
-
-    def pure[A](a: A): EffR[F, R, E, A] = fromK(delegate.pure(a))
+  /** Derives a `Monad` instance directly for environment-aware programs. */
+  given given_Monad_Of[F[_], R, E](using M: Monad[Base[F, E]]): Monad[Of[F, R, E]] with
+    def pure[A](a: A): EffR[F, R, E, A] =
+      (_: R) => M.pure(a)
 
     def flatMap[A, B](fa: EffR[F, R, E, A])(f: A => EffR[F, R, E, B]): EffR[F, R, E, B] =
-      fromK(delegate.flatMap(toK(fa))(a => toK(f(a))))
+      (r: R) => M.flatMap(fa(r))(a => f(a)(r))
 
     def tailRecM[A, B](a: A)(f: A => EffR[F, R, E, Either[A, B]]): EffR[F, R, E, B] =
-      fromK(delegate.tailRecM(a)(a0 => toK(f(a0))))
+      (r: R) => M.tailRecM(a)(a0 => f(a0)(r))
 
-  /** Provides `MonadError` by delegating to the `Kleisli` instance. */
-  given [F[_], R, E](using ME: MonadError[Base[F, E], E]): MonadError[Of[F, R, E], E] with
-    private val delegate = summon[MonadError[Kle[F, R, E], E]]
-
-    def pure[A](a: A): EffR[F, R, E, A] = fromK(delegate.pure(a))
+  /** Provides `MonadError` directly for the typed error channel. */
+  given given_MonadError_Of[F[_], R, E](using ME: MonadError[Base[F, E], E]): MonadError[Of[F, R, E], E] with
+    def pure[A](a: A): EffR[F, R, E, A] =
+      (_: R) => ME.pure(a)
 
     def flatMap[A, B](fa: EffR[F, R, E, A])(f: A => EffR[F, R, E, B]): EffR[F, R, E, B] =
-      fromK(delegate.flatMap(toK(fa))(a => toK(f(a))))
+      (r: R) => ME.flatMap(fa(r))(a => f(a)(r))
 
     def tailRecM[A, B](a: A)(f: A => EffR[F, R, E, Either[A, B]]): EffR[F, R, E, B] =
-      fromK(delegate.tailRecM(a)(a0 => toK(f(a0))))
+      (r: R) => ME.tailRecM(a)(a0 => f(a0)(r))
 
-    def raiseError[A](e: E): EffR[F, R, E, A] = fromK(delegate.raiseError(e))
+    def raiseError[A](e: E): EffR[F, R, E, A] =
+      (_: R) => ME.raiseError(e)
 
     def handleErrorWith[A](fa: EffR[F, R, E, A])(f: E => EffR[F, R, E, A]): EffR[F, R, E, A] =
-      fromK(delegate.handleErrorWith(toK(fa))(e => toK(f(e))))
-  end given
+      (r: R) => ME.handleErrorWith(fa(r))(e => f(e)(r))
+  end given_MonadError_Of
 
   /** Extends cancellation support from `Eff` into the reader layer. */
-  given [F[_], R, E, EE](using MC: MonadCancel[Base[F, E], EE]): MonadCancel[Of[F, R, E], EE] with
-    private val delegate =
-      MonadCancel.monadCancelForKleisli[Base[F, E], R, EE]
+  given given_MonadCancel_Of[F[_], R, E, EE](using MC: MonadCancel[Base[F, E], EE]): MonadCancel[Of[F, R, E], EE] with
+    def rootCancelScope = MC.rootCancelScope
 
-    def rootCancelScope = delegate.rootCancelScope
-
-    def pure[A](a: A): EffR[F, R, E, A] = fromK(delegate.pure(a))
+    def pure[A](a: A): EffR[F, R, E, A] =
+      (_: R) => MC.pure(a)
 
     def flatMap[A, B](fa: EffR[F, R, E, A])(f: A => EffR[F, R, E, B]): EffR[F, R, E, B] =
-      fromK(delegate.flatMap(toK(fa))(a => toK(f(a))))
+      (r: R) => MC.flatMap(fa(r))(a => f(a)(r))
 
     def tailRecM[A, B](a: A)(f: A => EffR[F, R, E, Either[A, B]]): EffR[F, R, E, B] =
-      fromK(delegate.tailRecM(a)(a0 => toK(f(a0))))
+      (r: R) => MC.tailRecM(a)(a0 => f(a0)(r))
 
-    def raiseError[A](e: EE): EffR[F, R, E, A] = fromK(delegate.raiseError(e))
+    def raiseError[A](e: EE): EffR[F, R, E, A] =
+      (_: R) => MC.raiseError(e)
 
     def handleErrorWith[A](fa: EffR[F, R, E, A])(f: EE => EffR[F, R, E, A]): EffR[F, R, E, A] =
-      fromK(delegate.handleErrorWith(toK(fa))(e => toK(f(e))))
+      (r: R) => MC.handleErrorWith(fa(r))(e => f(e)(r))
 
-    def canceled: EffR[F, R, E, Unit] = fromK(delegate.canceled)
+    def canceled: EffR[F, R, E, Unit] =
+      (_: R) => MC.canceled
 
     def onCancel[A](fa: EffR[F, R, E, A], fin: EffR[F, R, E, Unit]): EffR[F, R, E, A] =
-      fromK(delegate.onCancel(toK(fa), toK(fin)))
+      (r: R) => MC.onCancel(fa(r), MC.void(fin(r)))
 
     def forceR[A, B](fa: EffR[F, R, E, A])(fb: EffR[F, R, E, B]): EffR[F, R, E, B] =
-      fromK(delegate.forceR(toK(fa))(toK(fb)))
+      (r: R) => MC.forceR(fa(r))(fb(r))
 
     def uncancelable[A](body: Poll[Of[F, R, E]] => EffR[F, R, E, A]): EffR[F, R, E, A] =
-      fromK(delegate.uncancelable { poll =>
-        val lifted = new Poll[Of[F, R, E]]:
-          def apply[B](er: EffR[F, R, E, B]): EffR[F, R, E, B] =
-            fromK(poll(toK(er)))
-        toK(body(lifted))
-      })
+      (r: R) =>
+        MC.uncancelable { pollF =>
+          val lifted = new Poll[Of[F, R, E]]:
+            def apply[B](er: EffR[F, R, E, B]): EffR[F, R, E, B] =
+              (r2: R) => pollF(er(r2))
+          body(lifted)(r)
+        }
 
     override def guaranteeCase[A](fa: EffR[F, R, E, A])(fin: Outcome[Of[F, R, E], EE, A] => EffR[F, R, E, Unit]): EffR[F, R, E, A] =
-      fromK(delegate.guaranteeCase(toK(fa)) { out =>
-        val liftedOutcome: Outcome[Of[F, R, E], EE, A] = out match
-          case Outcome.Succeeded(success) =>
-            Outcome.succeeded[Of[F, R, E], EE, A](fromK(success))
-          case Outcome.Errored(err) =>
-            Outcome.errored[Of[F, R, E], EE, A](err)
-          case Outcome.Canceled() =>
-            Outcome.canceled[Of[F, R, E], EE, A]
-        toK(fin(liftedOutcome))
-      })
-  end given
+      (r: R) =>
+        MC.guaranteeCase(fa(r)) { outcome =>
+          val liftedOutcome: Outcome[Of[F, R, E], EE, A] = outcome match
+            case Outcome.Succeeded(success) =>
+              Outcome.succeeded[Of[F, R, E], EE, A]((_: R) => success)
+            case Outcome.Errored(err) =>
+              Outcome.errored[Of[F, R, E], EE, A](err)
+            case Outcome.Canceled() =>
+              Outcome.canceled[Of[F, R, E], EE, A]
+          MC.void(fin(liftedOutcome)(r))
+        }
+  end given_MonadCancel_Of
+
+  /** `Parallel` instance for `EffR.Of[F, R, E]` derived from `Eff`'s `Parallel`.
+    *
+    * The parallel applicative type is `R => P.F[A]` where `P.F` is the parallel applicative from
+    * `Parallel[Eff.Of[F, E]]`. This threads the environment through parallel composition without
+    * introducing external dependencies.
+    *
+    * ==Instance Priority==
+    *   - `Monad[EffR.Of[F, R, E]]` is the primary sequential instance
+    *   - `Parallel[EffR.Of[F, R, E]]` enables `.parXxx` operations when desired
+    */
+  given given_Parallel_Of[F0[_], R, E](using P: Parallel[Base[F0, E]]): Parallel[Of[F0, R, E]] with
+    // The parallel applicative is a reader over Eff's parallel applicative: R => P.F[A]
+    type F[x] = R => P.F[x]
+
+    val applicative: Applicative[F] = new Applicative[F]:
+      def pure[A](a: A): F[A] =
+        (_: R) => P.applicative.pure(a)
+
+      def ap[A, B](ff: F[A => B])(fa: F[A]): F[B] =
+        (r: R) => P.applicative.ap(ff(r))(fa(r))
+
+      override def map[A, B](fa: F[A])(f: A => B): F[B] =
+        (r: R) => P.applicative.map(fa(r))(f)
+
+      override def product[A, B](fa: F[A], fb: F[B]): F[(A, B)] =
+        (r: R) => P.applicative.product(fa(r), fb(r))
+
+    val monad: Monad[Of[F0, R, E]] = given_Monad_Of[F0, R, E](using P.monad)
+
+    val sequential: F ~> Of[F0, R, E] =
+      new (F ~> Of[F0, R, E]):
+        def apply[A](fa: F[A]): EffR[F0, R, E, A] =
+          (r: R) => P.sequential(fa(r))
+
+    val parallel: Of[F0, R, E] ~> F =
+      new (Of[F0, R, E] ~> F):
+        def apply[A](fa: EffR[F0, R, E, A]): F[A] =
+          (r: R) => P.parallel(fa(r))
+  end given_Parallel_Of
 end EffR

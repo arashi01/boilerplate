@@ -20,595 +20,696 @@
  */
 package boilerplate.effect
 
+import scala.concurrent.duration.*
 import scala.util.Try
 
 import cats.Monad
 import cats.effect.IO
 import cats.effect.MonadCancelThrow
+import cats.effect.kernel.Outcome
+import cats.effect.kernel.Ref
+import cats.effect.std.AtomicCell
 import cats.syntax.all.*
 import munit.CatsEffectSuite
 
+/** Test suite for Eff - the zero-cost typed error channel abstraction.
+  *
+  * Design principles:
+  *   - Test OUR logic paths, not upstream cats/cats-effect behaviour
+  *   - Cover each code path in our implementation
+  *   - Focus on edge cases and regression protection
+  *   - Avoid redundant tests that merely confirm upstream behaviour
+  */
 class EffSuite extends CatsEffectSuite:
   private def runEff[E, A](eff: Eff[IO, E, A]): IO[Either[E, A]] = eff.either
-  private def runUEff[A](eff: UEff[IO, A]): IO[Either[Nothing, A]] = eff.either
 
-  // --- Type alias tests ---
+  // ===========================================================================
+  // Type Aliases
+  // ===========================================================================
 
-  test("UEff type alias represents infallible effect"):
+  test("UEff represents infallible effect"):
     val eff: UEff[IO, Int] = Eff[IO].succeed(42)
-    runUEff(eff).map(result => assertEquals(result, Right(42)))
+    runEff(eff).map(r => assertEquals(r, Right(42)))
 
-  test("TEff type alias represents Throwable-errored effect"):
-    val eff: TEff[IO, Int] = Eff.fail[IO, Throwable, Int](new RuntimeException("boom"))
-    runEff(eff).map(result => assert(result.isLeft))
+  test("TEff represents Throwable-errored effect"):
+    val ex = new RuntimeException("boom")
+    val eff: TEff[IO, Int] = Eff.fail(ex)
+    runEff(eff).map(r => assertEquals(r, Left(ex)))
 
-  // --- Partially-applied constructor tests ---
+  // ===========================================================================
+  // Constructors - Partially Applied
+  // ===========================================================================
 
-  test("Eff[F].succeed creates successful computation"):
-    val eff = Eff[IO].succeed(42)
-    runEff(eff).map(result => assertEquals(result, Right(42)))
+  test("Eff[F].succeed creates Right"):
+    runEff(Eff[IO].succeed(42)).map(r => assertEquals(r, Right(42)))
 
-  test("Eff[F].fail creates failed computation"):
-    val eff = Eff[IO].fail("boom")
-    runEff(eff).map(result => assertEquals(result, Left("boom")))
+  test("Eff[F].fail creates Left"):
+    runEff(Eff[IO].fail("err")).map(r => assertEquals(r, Left("err")))
 
-  test("Eff[F].from lifts pure Either"):
-    val right = Eff[IO].from(Right(42): Either[String, Int])
-    val left = Eff[IO].from(Left("boom"): Either[String, Int])
+  test("Eff[F].from wraps Either unchanged"):
     for
-      r <- runEff(right)
-      l <- runEff(left)
+      r <- runEff(Eff[IO].from(Right(42): Either[String, Int]))
+      l <- runEff(Eff[IO].from(Left("err"): Either[String, Int]))
     yield
       assertEquals(r, Right(42))
-      assertEquals(l, Left("boom"))
+      assertEquals(l, Left("err"))
 
   test("Eff[F].liftF embeds F[A] as success"):
-    val eff = Eff[IO].liftF(IO.pure(42))
-    runEff(eff).map(result => assertEquals(result, Right(42)))
+    runEff(Eff[IO].liftF(IO.pure(42))).map(r => assertEquals(r, Right(42)))
 
   test("Eff[F].unit produces Right(())"):
-    val eff = Eff[IO].unit
-    runEff(eff).map(result => assertEquals(result, Right(())))
+    runEff(Eff[IO].unit).map(r => assertEquals(r, Right(())))
 
-  // --- Original constructor tests ---
+  // ===========================================================================
+  // Constructors - Static Methods
+  // ===========================================================================
 
-  test("Eff.succeed and Eff.fail with explicit types"):
-    val success = Eff.succeed[IO, String, Int](42)
-    val failure = Eff.fail[IO, String, Int]("boom")
-    runEff(success).map(r => assertEquals(r, Right(42))) *>
-      runEff(failure).map(r => assertEquals(r, Left("boom")))
+  test("Eff.from(Option) converts None to Left"):
+    runEff(Eff.from[IO, String, Int](None, "missing")).map(r => assertEquals(r, Left("missing")))
 
-  test("map transforms successes"):
-    val eff = Eff.succeed[IO, String, Int](21).map(_ * 2)
-    runEff(eff).map(result => assertEquals(result, Right(42)))
+  test("Eff.from(Option) converts Some to Right"):
+    runEff(Eff.from[IO, String, Int](Some(42), "missing")).map(r => assertEquals(r, Right(42)))
 
-  test("flatMap short circuits on failure"):
-    val eff = Eff.fail[IO, String, Int]("boom").flatMap(a => Eff.succeed[IO, String, Int](a + 1))
-    runEff(eff).map(result => assertEquals(result, Left("boom")))
+  test("Eff.from(Try) converts Failure via mapper"):
+    val ex = new RuntimeException("boom")
+    val eff = Eff.from[IO, String, Int](Try(throw ex), _.getMessage) // scalafix:ok DisableSyntax.throw
+    runEff(eff).map(r => assertEquals(r, Left("boom")))
 
-  test("catchAll recovers typed errors"):
-    val eff = Eff.fail[IO, String, Int]("boom").catchAll(_ => Eff.succeed[IO, String, Int](42))
-    runEff(eff).map(result => assertEquals(result, Right(42)))
+  test("Eff.from(Try) converts Success to Right"):
+    runEff(Eff.from[IO, String, Int](Try(42), _.getMessage)).map(r => assertEquals(r, Right(42)))
 
-  test("Monad instance integrates with for-comprehension"):
-    val M = summon[Monad[Eff.Of[IO, String]]]
-    val program = M.flatMap(M.pure(40))(a => M.pure(a + 2))
-    runEff(program).map(result => assertEquals(result, Right(42)))
+  test("Eff.from(EitherT) extracts underlying computation"):
+    import cats.data.EitherT
+    val et = EitherT.leftT[IO, Int]("err")
+    runEff(Eff.from(et)).map(r => assertEquals(r, Left("err")))
 
-  test("MonadError instance raises typed errors"):
-    val ME = summon[cats.MonadError[Eff.Of[IO, String], String]]
-    val eff = ME.raiseError[Int]("boom")
-    runEff(eff).map(result => assertEquals(result, Left("boom")))
+  test("Eff.lift wraps F[Either] directly"):
+    val fea = IO.pure(Left("err"): Either[String, Int])
+    runEff(Eff.lift(fea)).map(r => assertEquals(r, Left("err")))
 
-  test("MonadCancel instance exposes cancellation semantics"):
-    given MonadCancelThrow[IO] = IO.asyncForIO
-    val MC = summon[MonadCancelThrow[Eff.Of[IO, String]]]
-    val canceled = MC.onCancel(Eff.succeed[IO, String, Int](1), Eff.succeed[IO, String, Unit](())).either
-    canceled.map(result => assertEquals(result, Right(1)))
+  test("Eff.lift(F[Option]) converts None via ifNone"):
+    runEff(Eff.lift(IO.pure(Option.empty[Int]), "missing")).map(r => assertEquals(r, Left("missing")))
 
-  test("fromTry converts failures via mapper"):
-    val boom = new RuntimeException("boom")
-    val eff = Eff.from[IO, String, Int](Try(throw boom), _.getMessage) // scalafix:ok DisableSyntax.throw
-    runEff(eff).map(result => assertEquals(result, Left("boom")))
+  test("Eff.lift(F[Option]) converts Some to Right"):
+    runEff(Eff.lift(IO.pure(Some(42)), "missing")).map(r => assertEquals(r, Right(42)))
 
-  test("attempt captures raised errors in F"):
-    val io = IO.raiseError[Int](new RuntimeException("boom"))
-    val eff = Eff.attempt[IO, String, Int](io, _.getMessage)
-    runEff(eff).map(result => assertEquals(result, Left("boom")))
+  test("Eff.attempt captures F errors via mapper"):
+    val ex = new RuntimeException("boom")
+    runEff(Eff.attempt(IO.raiseError[Int](ex), _.getMessage)).map(r => assertEquals(r, Left("boom")))
 
-  test("widenError performs zero-cost widening"):
-    val eff: Eff[IO, String, Int] = Eff.fail[IO, String, Int]("boom")
-    val widened = eff.widenError[Any]
-    runEff(widened).map(result => assertEquals(result, Left("boom")))
+  test("Eff.attempt passes through success"):
+    runEff(Eff.attempt(IO.pure(42), _.getMessage)).map(r => assertEquals(r, Right(42)))
 
-  // --- MonadError disambiguation tests ---
+  test("Eff.defer delays evaluation until run"):
+    var evaluated = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.defer[IO, String, Int] { evaluated = true; Eff.succeed(42) }
+    assert(!evaluated)
+    runEff(eff).map { r =>
+      assert(evaluated)
+      assertEquals(r, Right(42))
+    }
 
-  test("MonadError[Eff.Of[IO, Throwable], Throwable] resolves for typed errors"):
-    // When E = Throwable, the typed error instance should be preferred
-    val ME = summon[cats.MonadError[Eff.Of[IO, Throwable], Throwable]]
-    val raised = ME.raiseError[Int](new RuntimeException("typed"))
-    // Typed errors go into Left channel
-    runEff(raised).map(result => assert(result.isLeft))
+  // ===========================================================================
+  // Conditional Execution
+  // ===========================================================================
 
-  test("typed errors and defects are distinguishable"):
-    // Typed error: goes into Left channel
-    val typedError: Eff[IO, Throwable, Int] = Eff.fail(new RuntimeException("typed"))
-    // Defect: raised in F itself, not in Either
-    val defect: Eff[IO, String, Int] = Eff.liftF(IO.raiseError(new RuntimeException("defect")))
+  test("Eff.when executes on true"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.when[IO, String](true)(Eff.liftF(IO { executed = true }))
+    runEff(eff).map(_ => assert(executed))
 
+  test("Eff.when skips on false"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.when[IO, String](false)(Eff.liftF(IO { executed = true }))
+    runEff(eff).map(_ => assert(!executed))
+
+  test("Eff.unless executes on false"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.unless[IO, String](false)(Eff.liftF(IO { executed = true }))
+    runEff(eff).map(_ => assert(executed))
+
+  test("Eff.unless skips on true"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.unless[IO, String](true)(Eff.liftF(IO { executed = true }))
+    runEff(eff).map(_ => assert(!executed))
+
+  // ===========================================================================
+  // Mapping and Transformation
+  // ===========================================================================
+
+  test("map transforms success"):
+    runEff(Eff.succeed[IO, String, Int](21).map(_ * 2)).map(r => assertEquals(r, Right(42)))
+
+  test("map preserves failure"):
+    runEff(Eff.fail[IO, String, Int]("err").map(_ * 2)).map(r => assertEquals(r, Left("err")))
+
+  test("mapError transforms error"):
+    runEff(Eff.fail[IO, String, Int]("boom").mapError(_.length)).map(r => assertEquals(r, Left(4)))
+
+  test("mapError preserves success"):
+    runEff(Eff.succeed[IO, String, Int](42).mapError(_.length)).map(r => assertEquals(r, Right(42)))
+
+  test("bimap transforms both channels"):
     for
-      typedResult <- runEff(typedError).attempt
-      defectResult <- runEff(defect).attempt
+      s <- runEff(Eff.succeed[IO, String, Int](21).bimap(_.length, _ * 2))
+      f <- runEff(Eff.fail[IO, String, Int]("boom").bimap(_.length, _ * 2))
     yield
-      // Typed error: IO succeeds with Left
-      assert(typedResult.isRight)
-      assertEquals(typedResult.toOption.get.left.toOption.map(_.getMessage), Some("typed"))
-      // Defect: IO fails
-      assert(defectResult.isLeft)
-      assertEquals(defectResult.left.toOption.map(_.getMessage), Some("defect"))
+      assertEquals(s, Right(42))
+      assertEquals(f, Left(4))
 
-  test("MonadCancel.canceled propagates through Eff"):
-    import cats.effect.kernel.Outcome
-    given MonadCancelThrow[IO] = IO.asyncForIO
-    val MC = summon[MonadCancelThrow[Eff.Of[IO, String]]]
-
-    var finalizerRan = false // scalafix:ok DisableSyntax.var
-    val program = MC.guaranteeCase(MC.canceled) {
-      case Outcome.Canceled() =>
-        Eff.liftF[IO, String, Unit](IO { finalizerRan = true })
-      case _ =>
-        Eff.unit[IO, String]
-    }
-
-    program.either.start.flatMap(_.join).map { outcome =>
-      assert(outcome.isCanceled)
-      assert(finalizerRan)
-    }
-
-  test("uncancelable masks cancellation correctly"):
-    given MonadCancelThrow[IO] = IO.asyncForIO
-    val MC = summon[MonadCancelThrow[Eff.Of[IO, String]]]
-
-    var wasPolled = false // scalafix:ok DisableSyntax.var
-    val program = MC.uncancelable { poll =>
-      // Inside uncancelable, poll allows observing cancellation
-      wasPolled = true
-      poll(Eff.succeed[IO, String, Int](42))
-    }
-
-    runEff(program).map { result =>
-      assert(wasPolled)
-      assertEquals(result, Right(42))
-    }
-
-  test("forceR discards left result but propagates defects"):
-    given MonadCancelThrow[IO] = IO.asyncForIO
-    val MC = summon[MonadCancelThrow[Eff.Of[IO, String]]]
-
-    val left = Eff.succeed[IO, String, Int](1)
-    val right = Eff.succeed[IO, String, Int](2)
-    val combined = MC.forceR(left)(right)
-
-    runEff(combined).map(result => assertEquals(result, Right(2)))
-
-  test("forceR discards typed errors from left"):
-    given MonadCancelThrow[IO] = IO.asyncForIO
-    val MC = summon[MonadCancelThrow[Eff.Of[IO, String]]]
-
-    val left = Eff.fail[IO, String, Int]("ignored")
-    val right = Eff.succeed[IO, String, Int](42)
-    val combined = MC.forceR(left)(right)
-
-    runEff(combined).map(result => assertEquals(result, Right(42)))
-
-  test("onCancel registers finalizer that runs on cancellation"):
-    given MonadCancelThrow[IO] = IO.asyncForIO
-    val MC = summon[MonadCancelThrow[Eff.Of[IO, String]]]
-
-    var finalizerRan = false // scalafix:ok DisableSyntax.var
-    val fin = Eff.liftF[IO, String, Unit](IO { finalizerRan = true })
-    val program = MC.onCancel(MC.canceled, fin)
-
-    program.either.start.flatMap(_.join).map { outcome =>
-      assert(outcome.isCanceled)
-      assert(finalizerRan)
-    }
-
-  // --- New combinator tests ---
-
-  test("semiflatMap applies effectful function to success"):
-    val eff = Eff[IO].succeed(21).semiflatMap(a => IO.pure(a * 2))
-    runEff(eff).map(result => assertEquals(result, Right(42)))
-
-  test("semiflatMap short-circuits on failure"):
+  test("flatMap short-circuits on failure"):
     var called = false // scalafix:ok DisableSyntax.var
-    val eff = Eff[IO].fail[String]("boom").semiflatMap { _ =>
-      called = true
-      IO.pure(42)
-    }
-    runEff(eff).map { result =>
-      assertEquals(result, Left("boom"))
+    val eff = Eff.fail[IO, String, Int]("err").flatMap { a => called = true; Eff.succeed(a) }
+    runEff(eff).map { r =>
+      assertEquals(r, Left("err"))
       assert(!called)
     }
 
-  test("catchAll transforms error channel to new error type"):
-    val eff: Eff[IO, String, Int] = Eff.fail[IO, String, Int]("boom")
-    val recovered = eff.catchAll(e => Eff.fail[IO, Int, Int](e.length))
-    runEff(recovered).map(result => assertEquals(result, Left(4)))
+  test("flatMap chains success"):
+    runEff(Eff.succeed[IO, String, Int](21).flatMap(a => Eff.succeed(a * 2))).map(r => assertEquals(r, Right(42)))
 
-  test("catchAll can recover to success"):
-    val eff: Eff[IO, String, Int] = Eff.fail[IO, String, Int]("boom")
-    val recovered = eff.catchAll(_ => Eff.succeed[IO, String, Int](42))
-    runEff(recovered).map(result => assertEquals(result, Right(42)))
+  test("semiflatMap applies effectful function"):
+    runEff(Eff.succeed[IO, String, Int](21).semiflatMap(a => IO.pure(a * 2))).map(r => assertEquals(r, Right(42)))
 
-  test("subflatMap chains pure Either-returning function"):
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](10)
-    val result = eff.subflatMap { a =>
-      if a > 5 then Right(a * 2) else Left("too small")
+  test("semiflatMap short-circuits on failure"):
+    var called = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.fail[IO, String, Int]("err").semiflatMap { _ => called = true; IO.pure(42) }
+    runEff(eff).map { r =>
+      assertEquals(r, Left("err"))
+      assert(!called)
     }
-    runEff(result).map(r => assertEquals(r, Right(20)))
 
-  test("subflatMap propagates failure from function"):
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](3)
-    val result = eff.subflatMap { a =>
-      if a > 5 then Right(a * 2) else Left("too small")
-    }
-    runEff(result).map(r => assertEquals(r, Left("too small")))
+  test("subflatMap chains pure Either"):
+    val eff = Eff.succeed[IO, String, Int](10).subflatMap(a => if a > 5 then Right(a * 2) else Left("small"))
+    runEff(eff).map(r => assertEquals(r, Right(20)))
+
+  test("subflatMap propagates inner Left"):
+    val eff = Eff.succeed[IO, String, Int](3).subflatMap(a => if a > 5 then Right(a * 2) else Left("small"))
+    runEff(eff).map(r => assertEquals(r, Left("small")))
 
   test("transform applies function to Either"):
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](21)
-    val result = eff.transform {
-      case Right(a) => Right(a * 2)
-      case Left(e)  => Left(e)
-    }
-    runEff(result).map(r => assertEquals(r, Right(42)))
+    val eff = Eff.succeed[IO, String, Int](21).transform(_.map(_ * 2))
+    runEff(eff).map(r => assertEquals(r, Right(42)))
 
-  test("ensure fails when predicate is false"):
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](5)
-    val result = eff.ensure("too small")(_ > 10)
-    runEff(result).map(r => assertEquals(r, Left("too small")))
+  // ===========================================================================
+  // Error Recovery
+  // ===========================================================================
 
-  test("ensure passes when predicate is true"):
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](15)
-    val result = eff.ensure("too small")(_ > 10)
-    runEff(result).map(r => assertEquals(r, Right(15)))
+  test("valueOr maps all errors to success"):
+    runEff(Eff.fail[IO, String, Int]("boom").valueOr(_.length)).map(r => assertEquals(r, Right(4)))
 
-  test("ensureOr fails with computed error when predicate is false"):
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](5)
-    val result = eff.ensureOr(a => s"$a is too small")(_ > 10)
-    runEff(result).map(r => assertEquals(r, Left("5 is too small")))
+  test("valueOr preserves success"):
+    runEff(Eff.succeed[IO, String, Int](42).valueOr(_ => 0)).map(r => assertEquals(r, Right(42)))
 
-  test("ensureOr passes when predicate is true"):
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](15)
-    val result = eff.ensureOr(a => s"$a is too small")(_ > 10)
-    runEff(result).map(r => assertEquals(r, Right(15)))
+  test("catchAll switches to alternative computation"):
+    val eff = Eff.fail[IO, String, Int]("boom").catchAll(_ => Eff.succeed[IO, Int, Int](42))
+    runEff(eff).map(r => assertEquals(r, Right(42)))
 
-  // --- Composition Operator Tests ---
+  test("catchAll allows error type change"):
+    val eff: Eff[IO, Int, Int] = Eff.fail[IO, String, Int]("boom").catchAll(e => Eff.fail(e.length))
+    runEff(eff).map(r => assertEquals(r, Left(4)))
 
-  test("*> sequences computations, discarding left result"):
-    val left: Eff[IO, String, Int] = Eff.succeed(1)
-    val right: Eff[IO, String, Int] = Eff.succeed(2)
-    runEff(left *> right).map(r => assertEquals(r, Right(2)))
+  test("recover handles matching errors"):
+    runEff(Eff.fail[IO, String, Int]("boom").recover { case "boom" => 42 }).map(r => assertEquals(r, Right(42)))
 
-  test("*> short-circuits on left failure"):
-    val left: Eff[IO, String, Int] = Eff.fail("boom")
-    val right: Eff[IO, String, Int] = Eff.succeed(2)
-    runEff(left *> right).map(r => assertEquals(r, Left("boom")))
+  test("recover passes through non-matching errors"):
+    runEff(Eff.fail[IO, String, Int]("other").recover { case "boom" => 42 }).map(r => assertEquals(r, Left("other")))
 
-  test("<* sequences computations, discarding right result"):
-    val left: Eff[IO, String, Int] = Eff.succeed(1)
-    val right: Eff[IO, String, Int] = Eff.succeed(2)
-    runEff(left <* right).map(r => assertEquals(r, Right(1)))
-
-  test("<* short-circuits on left failure"):
-    val left: Eff[IO, String, Int] = Eff.fail("boom")
-    val right: Eff[IO, String, Int] = Eff.succeed(2)
-    runEff(left <* right).map(r => assertEquals(r, Left("boom")))
-
-  test("<* short-circuits on right failure"):
-    val left: Eff[IO, String, Int] = Eff.succeed(1)
-    val right: Eff[IO, String, Int] = Eff.fail("boom")
-    runEff(left <* right).map(r => assertEquals(r, Left("boom")))
-
-  test("productR is alias for *>"):
-    val left: Eff[IO, String, Int] = Eff.succeed(1)
-    val right: Eff[IO, String, Int] = Eff.succeed(2)
-    runEff(left.productR(right)).map(r => assertEquals(r, Right(2)))
-
-  test("productL is alias for <*"):
-    val left: Eff[IO, String, Int] = Eff.succeed(1)
-    val right: Eff[IO, String, Int] = Eff.succeed(2)
-    runEff(left.productL(right)).map(r => assertEquals(r, Right(1)))
-
-  test("void discards the success value"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(42)
-    runEff(eff.void).map(r => assertEquals(r, Right(())))
-
-  test("as replaces the success value"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(42)
-    runEff(eff.as("hello")).map(r => assertEquals(r, Right("hello")))
-
-  test("as preserves failure"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-    runEff(eff.as(42)).map(r => assertEquals(r, Left("boom")))
-
-  test("flatTap applies effectful function and keeps original value"):
-    var sideEffect = 0 // scalafix:ok DisableSyntax.var
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](42).flatTap { a =>
-      sideEffect = a
-      Eff.succeed[IO, String, String]("discarded")
-    }
-    runEff(eff).map { r =>
-      assertEquals(r, Right(42))
-      assertEquals(sideEffect, 42)
-    }
-
-  test("flatTap short-circuits on effectful function failure"):
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](42).flatTap(_ => Eff.fail[IO, String, Unit]("tap failed"))
-    runEff(eff).map(r => assertEquals(r, Left("tap failed")))
-
-  test("product combines two computations into a tuple"):
-    val left: Eff[IO, String, Int] = Eff.succeed(1)
-    val right: Eff[IO, String, String] = Eff.succeed("two")
-    runEff(left.product(right)).map(r => assertEquals(r, Right((1, "two"))))
-
-  // --- Error Recovery Tests ---
-
-  test("recover with total function maps errors to success values"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-    runEff(eff.recover(_.length)).map(r => assertEquals(r, Right(4)))
-
-  test("recover with total function leaves success unchanged"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(42)
-    runEff(eff.recover(_ => 0)).map(r => assertEquals(r, Right(42)))
-
-  test("catchAll switches to alternative computation with new error type"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-    val handled: Eff[IO, Int, Int] = eff.catchAll(e => Eff.succeed[IO, Int, Int](e.length))
-    runEff(handled).map(r => assertEquals(r, Right(4)))
-
-  test("recover with partial function with partial function handles matching errors"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-    runEff(eff.recover { case "boom" => 42 }).map(r => assertEquals(r, Right(42)))
-
-  test("recover with partial function with partial function passes through non-matching errors"):
-    val eff: Eff[IO, String, Int] = Eff.fail("other")
-    runEff(eff.recover { case "boom" => 42 }).map(r => assertEquals(r, Left("other")))
-
-  test("recoverWith handles matching errors with effectful recovery"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-    runEff(eff.recoverWith { case "boom" => Eff.succeed[IO, String, Int](42) }).map(r => assertEquals(r, Right(42)))
+  test("recoverWith handles matching errors effectfully"):
+    val eff = Eff.fail[IO, String, Int]("boom").recoverWith { case "boom" => Eff.succeed(42) }
+    runEff(eff).map(r => assertEquals(r, Right(42)))
 
   test("recoverWith passes through non-matching errors"):
-    val eff: Eff[IO, String, Int] = Eff.fail("other")
-    runEff(eff.recoverWith { case "boom" => Eff.succeed[IO, String, Int](42) }).map(r => assertEquals(r, Left("other")))
+    val eff = Eff.fail[IO, String, Int]("other").recoverWith { case "boom" => Eff.succeed(42) }
+    runEff(eff).map(r => assertEquals(r, Left("other")))
 
-  test("onError executes side effect on failure"):
-    var errorObserved: Option[String] = None // scalafix:ok DisableSyntax.var
-    val eff: Eff[IO, String, Int] = Eff.fail[IO, String, Int]("boom").onError { case e =>
-      errorObserved = Some(e)
-      Eff.unit[IO, String]
-    }
+  test("onError executes side effect on matching error"):
+    var observed: Option[String] = None // scalafix:ok DisableSyntax.var
+    val eff = Eff.fail[IO, String, Int]("boom").onError { case e => observed = Some(e); Eff.unit }
     runEff(eff).map { r =>
       assertEquals(r, Left("boom"))
-      assertEquals(errorObserved, Some("boom"))
+      assertEquals(observed, Some("boom"))
     }
 
-  test("onError does not execute on success"):
+  test("onError skips non-matching errors"):
     var executed = false // scalafix:ok DisableSyntax.var
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](42).onError { case _ =>
-      executed = true
-      Eff.unit[IO, String]
+    val eff = Eff.fail[IO, String, Int]("other").onError { case "boom" => executed = true; Eff.unit }
+    runEff(eff).map { r =>
+      assertEquals(r, Left("other"))
+      assert(!executed)
     }
+
+  test("onError skips on success"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).onError { case _ => executed = true; Eff.unit }
     runEff(eff).map { r =>
       assertEquals(r, Right(42))
       assert(!executed)
     }
 
   test("adaptError transforms matching errors"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-    runEff(eff.adaptError { case "boom" => "BOOM" }).map(r => assertEquals(r, Left("BOOM")))
+    runEff(Eff.fail[IO, String, Int]("boom").adaptError { case "boom" => "BOOM" }).map(r => assertEquals(r, Left("BOOM")))
 
   test("adaptError passes through non-matching errors"):
-    val eff: Eff[IO, String, Int] = Eff.fail("other")
-    runEff(eff.adaptError { case "boom" => "BOOM" }).map(r => assertEquals(r, Left("other")))
+    runEff(Eff.fail[IO, String, Int]("other").adaptError { case "boom" => "BOOM" }).map(r => assertEquals(r, Left("other")))
 
-  // --- Conversion Utility Tests ---
+  // ===========================================================================
+  // Alternative
+  // ===========================================================================
 
-  test("either unwraps to the underlying F[Either]"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(42)
-    eff.either.map(r => assertEquals(r, Right(42)))
+  test("alt falls back on failure"):
+    runEff(Eff.fail[IO, String, Int]("err").alt(Eff.succeed(42))).map(r => assertEquals(r, Right(42)))
 
-  test("rethrow throws error into F"):
-    val eff: Eff[IO, RuntimeException, Int] = Eff.fail(new RuntimeException("boom"))
-    eff.rethrow.attempt.map { r =>
-      assert(r.isLeft)
-      assertEquals(r.left.toOption.map(_.getMessage), Some("boom"))
-    }
+  test("alt returns original on success"):
+    runEff(Eff.succeed[IO, String, Int](1).alt(Eff.succeed(2))).map(r => assertEquals(r, Right(1)))
 
-  test("rethrow returns value on success"):
-    val eff: Eff[IO, RuntimeException, Int] = Eff.succeed(42)
-    eff.rethrow.map(r => assertEquals(r, 42))
+  test("alt allows error type change"):
+    val eff = Eff.fail[IO, String, Int]("err").alt(Eff.fail[IO, Int, Int](42))
+    runEff(eff).map(r => assertEquals(r, Left(42)))
 
-  test("absolve with Throwable error type"):
-    val eff: Eff[IO, Throwable, Int] = Eff.fail(new RuntimeException("boom"))
-    eff.absolve.attempt.map { r =>
-      assert(r.isLeft)
-      assertEquals(r.left.toOption.map(_.getMessage), Some("boom"))
-    }
+  test("orElseSucceed recovers to constant"):
+    runEff(Eff.fail[IO, String, Int]("err").orElseSucceed(42)).map(r => assertEquals(r, Right(42)))
 
-  // --- Constructor Edge Cases ---
+  test("orElseFail replaces error"):
+    runEff(Eff.fail[IO, String, Int]("err").orElseFail(404)).map(r => assertEquals(r, Left(404)))
 
-  test("Eff.lift wraps F[Either] without recomputation"):
-    var evaluations = 0 // scalafix:ok DisableSyntax.var
-    val fea = IO { evaluations += 1; Right(42) }
-    val eff = Eff.lift(fea)
-    runEff(eff).flatMap { r1 =>
-      assertEquals(r1, Right(42))
-      assertEquals(evaluations, 1)
-      runEff(eff).map { r2 =>
-        assertEquals(r2, Right(42))
-        assertEquals(evaluations, 2) // Re-evaluates because IO is not memoised
-      }
-    }
+  // ===========================================================================
+  // Observation
+  // ===========================================================================
 
-  test("Eff.lift with F[Option] converts missing values"):
-    val fopt = IO.pure(Option.empty[Int])
-    val eff = Eff.lift[IO, String, Int](fopt, "missing")
-    runEff(eff).map(r => assertEquals(r, Left("missing")))
-
-  test("Eff.lift with F[Option] converts present values"):
-    val fopt = IO.pure(Some(42))
-    val eff = Eff.lift[IO, String, Int](fopt, "missing")
-    runEff(eff).map(r => assertEquals(r, Right(42)))
-
-  test("Eff.from(EitherT) extracts underlying computation"):
-    import cats.data.EitherT
-    val et = EitherT.rightT[IO, String](42)
-    val eff = Eff.from(et)
-    runEff(eff).map(r => assertEquals(r, Right(42)))
-
-  test("Eff.defer delays evaluation until demanded"):
-    var evaluated = false // scalafix:ok DisableSyntax.var
-    val deferred = Eff.defer[IO, String, Int] {
-      evaluated = true
-      Eff.succeed(42)
-    }
-    assert(!evaluated, "defer should not evaluate immediately")
-    runEff(deferred).map { r =>
-      assert(evaluated, "defer should evaluate when run")
+  test("tap observes success"):
+    var observed: Option[Int] = None // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).tap(a => IO { observed = Some(a) })
+    runEff(eff).map { r =>
       assertEquals(r, Right(42))
+      assertEquals(observed, Some(42))
     }
 
-  test("eitherT converts to EitherT"):
-    import cats.data.EitherT
-    val eff: Eff[IO, String, Int] = Eff.succeed(42)
-    val et: EitherT[IO, String, Int] = eff.eitherT
-    et.value.map(r => assertEquals(r, Right(42)))
+  test("tap skips on failure"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.fail[IO, String, Int]("err").tap(_ => IO { executed = true })
+    runEff(eff).map { r =>
+      assertEquals(r, Left("err"))
+      assert(!executed)
+    }
 
-  // --- Fold and Redeem Edge Cases ---
-
-  test("fold returns pure value from both channels"):
-    val success: Eff[IO, String, Int] = Eff.succeed(42)
-    val failure: Eff[IO, String, Int] = Eff.fail("boom")
-    success.fold(_ => "error", _.toString).map(r => assertEquals(r, "42")) *>
-      failure.fold(_.toUpperCase, _ => "ok").map(r => assertEquals(r, "BOOM"))
-
-  test("foldF allows effectful handlers"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-    eff.foldF(e => IO.pure(e.length), a => IO.pure(a)).map(r => assertEquals(r, 4))
-
-  test("redeemAll handles both channels with effectful recovery and error type change"):
-    val success: Eff[IO, String, Int] = Eff.succeed(21)
-    val failure: Eff[IO, String, Int] = Eff.fail("boom")
-    // Explicit type parameters allow changing error type from String to Int
-    val successRedeemed = success.redeemAll[Int, String](
-      _ => Eff.succeed("failed"),
-      a => Eff.succeed(s"got $a")
-    )
-    val failureRedeemed = failure.redeemAll[Int, String](
-      e => Eff.succeed(s"recovered from $e"),
-      _ => Eff.succeed("ok")
-    )
-    runEff(successRedeemed).map(r => assertEquals(r, Right("got 21"))) *>
-      runEff(failureRedeemed).map(r => assertEquals(r, Right("recovered from boom")))
-
-  // --- Variance Edge Cases ---
-
-  test("assume performs unchecked cast on success channel"):
-    val eff: Eff[IO, String, Any] = Eff.succeed[IO, String, Any](42)
-    val narrowed = eff.assume[Int]
-    runEff(narrowed).map(r => assertEquals(r, Right(42)))
-
-  test("widen performs safe upcast on success channel"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(42)
-    val widened: Eff[IO, String, Any] = eff.widen[Any]
-    runEff(widened).map(r => assertEquals(r, Right(42)))
-
-  // --- Missing Edge Cases ---
-
-  test("mapError transforms error channel"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-    runEff(eff.mapError(_.length)).map(r => assertEquals(r, Left(4)))
-
-  test("mapError preserves success"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(42)
-    runEff(eff.mapError(_.length)).map(r => assertEquals(r, Right(42)))
-
-  test("bimap transforms both channels"):
-    val fail: Eff[IO, String, Int] = Eff.fail("boom")
-    val success: Eff[IO, String, Int] = Eff.succeed(21)
-    runEff(fail.bimap(_.length, _ * 2)).map(r => assertEquals(r, Left(4))) *>
-      runEff(success.bimap(_.length, _ * 2)).map(r => assertEquals(r, Right(42)))
-
-  test("tapError observes failures without altering result"):
+  test("tapError observes failure"):
     var observed: Option[String] = None // scalafix:ok DisableSyntax.var
-    val eff: Eff[IO, String, Int] = Eff.fail[IO, String, Int]("boom").tapError { e =>
-      IO { observed = Some(e) }
+    val eff = Eff.fail[IO, String, Int]("boom").tapError(e => IO { observed = Some(e) })
+    runEff(eff).map { r =>
+      assertEquals(r, Left("boom"))
+      assertEquals(observed, Some("boom"))
+    }
+
+  test("tapError skips on success"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).tapError(_ => IO { executed = true })
+    runEff(eff).map { r =>
+      assertEquals(r, Right(42))
+      assert(!executed)
+    }
+
+  test("flatTapError observes failure with fallible side effect"):
+    var observed: Option[String] = None // scalafix:ok DisableSyntax.var
+    val eff = Eff.fail[IO, String, Int]("boom").flatTapError { e =>
+      observed = Some(e)
+      Eff.unit[IO, String]
     }
     runEff(eff).map { r =>
       assertEquals(r, Left("boom"))
       assertEquals(observed, Some("boom"))
     }
 
-  test("tapError does not execute on success"):
+  test("flatTapError propagates side effect failure"):
+    val eff = Eff.fail[IO, String, Int]("original").flatTapError(_ => Eff.fail("side-effect"))
+    runEff(eff).map(r => assertEquals(r, Left("side-effect")))
+
+  // ===========================================================================
+  // Guards
+  // ===========================================================================
+
+  test("ensure fails when predicate false"):
+    runEff(Eff.succeed[IO, String, Int](5).ensure("small")(_ > 10)).map(r => assertEquals(r, Left("small")))
+
+  test("ensure passes when predicate true"):
+    runEff(Eff.succeed[IO, String, Int](15).ensure("small")(_ > 10)).map(r => assertEquals(r, Right(15)))
+
+  test("ensure short-circuits on prior failure"):
+    runEff(Eff.fail[IO, String, Int]("prior").ensure("guard")(_ > 0)).map(r => assertEquals(r, Left("prior")))
+
+  test("ensureOr fails with computed error"):
+    runEff(Eff.succeed[IO, String, Int](5).ensureOr(a => s"$a too small")(_ > 10)).map(r => assertEquals(r, Left("5 too small")))
+
+  test("ensureOr passes when predicate true"):
+    runEff(Eff.succeed[IO, String, Int](15).ensureOr(a => s"$a too small")(_ > 10)).map(r => assertEquals(r, Right(15)))
+
+  // ===========================================================================
+  // Folding
+  // ===========================================================================
+
+  test("fold applies appropriate function"):
+    for
+      s <- Eff.succeed[IO, String, Int](42).fold(_.length, _.toString)
+      f <- Eff.fail[IO, String, Int]("boom").fold(_.length, _.toString)
+    yield
+      assertEquals(s, "42")
+      assertEquals(f, 4)
+
+  test("foldF allows effectful handlers"):
+    Eff.fail[IO, String, Int]("boom").foldF(e => IO.pure(e.length), a => IO.pure(a)).map(r => assertEquals(r, 4))
+
+  test("redeem always succeeds"):
+    for
+      s <- runEff(Eff.succeed[IO, String, Int](42).redeem(_.length, _.toString))
+      f <- runEff(Eff.fail[IO, String, Int]("boom").redeem(_.length, _.toString))
+    yield
+      assertEquals(s, Right("42"))
+      assertEquals(f, Right(4))
+
+  test("redeemAll allows error type change"):
+    val eff = Eff
+      .fail[IO, String, Int]("boom")
+      .redeemAll[Int, String](
+        e => Eff.fail(e.length),
+        a => Eff.succeed(a.toString)
+      )
+    runEff(eff).map(r => assertEquals(r, Left(4)))
+
+  test("redeemAll can produce success from error"):
+    val eff = Eff
+      .fail[IO, String, Int]("boom")
+      .redeemAll[Nothing, String](
+        e => Eff.succeed(s"recovered: $e"),
+        a => Eff.succeed(a.toString)
+      )
+    runEff(eff).map(r => assertEquals(r, Right("recovered: boom")))
+
+  // ===========================================================================
+  // Composition
+  // ===========================================================================
+
+  test("*> sequences discarding left result"):
+    runEff(Eff.succeed[IO, String, Int](1) *> Eff.succeed(2)).map(r => assertEquals(r, Right(2)))
+
+  test("*> short-circuits on left failure"):
     var executed = false // scalafix:ok DisableSyntax.var
-    val eff: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](42).tapError(_ => IO { executed = true })
+    val eff = Eff.fail[IO, String, Int]("err") *> Eff.liftF(IO { executed = true; 2 })
+    runEff(eff).map { r =>
+      assertEquals(r, Left("err"))
+      assert(!executed)
+    }
+
+  test("<* sequences discarding right result"):
+    runEff(Eff.succeed[IO, String, Int](1) <* Eff.succeed(2)).map(r => assertEquals(r, Right(1)))
+
+  test("<* short-circuits on right failure"):
+    runEff(Eff.succeed[IO, String, Int](1) <* Eff.fail("err")).map(r => assertEquals(r, Left("err")))
+
+  test("product combines into tuple"):
+    runEff(Eff.succeed[IO, String, Int](1).product(Eff.succeed("two"))).map(r => assertEquals(r, Right((1, "two"))))
+
+  test("flatTap keeps original value"):
+    var sideEffect = 0 // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).flatTap { a => sideEffect = a; Eff.succeed("ignored") }
     runEff(eff).map { r =>
       assertEquals(r, Right(42))
-      assert(!executed)
+      assertEquals(sideEffect, 42)
     }
 
-  test("alt falls back to alternative on failure"):
-    val left: Eff[IO, String, Int] = Eff.fail("boom")
-    val right: Eff[IO, Int, Int] = Eff.succeed(42)
-    runEff(left.alt(right)).map(r => assertEquals(r, Right(42)))
+  test("flatTap short-circuits on side effect failure"):
+    runEff(Eff.succeed[IO, String, Int](42).flatTap(_ => Eff.fail("tap failed"))).map(r => assertEquals(r, Left("tap failed")))
 
-  test("alt returns original on success"):
-    val left: Eff[IO, String, Int] = Eff.succeed(1)
-    val right: Eff[IO, String, Int] = Eff.succeed(2)
-    runEff(left.alt(right)).map(r => assertEquals(r, Right(1)))
+  test("void discards success value"):
+    runEff(Eff.succeed[IO, String, Int](42).void).map(r => assertEquals(r, Right(())))
 
-  test("alt allows error type change"):
-    val left: Eff[IO, String, Int] = Eff.fail("boom")
-    val right: Eff[IO, Int, Int] = Eff.fail(42)
-    runEff(left.alt(right)).map(r => assertEquals(r, Left(42)))
+  test("as replaces success value"):
+    runEff(Eff.succeed[IO, String, Int](42).as("hello")).map(r => assertEquals(r, Right("hello")))
 
-  test("onError with non-matching partial function does not execute"):
-    var executed = false // scalafix:ok DisableSyntax.var
-    val eff: Eff[IO, String, Int] = Eff.fail[IO, String, Int]("other").onError { case "boom" =>
-      executed = true
-      Eff.unit[IO, String]
-    }
-    runEff(eff).map { r =>
-      assertEquals(r, Left("other"))
-      assert(!executed)
-    }
+  // ===========================================================================
+  // Variance
+  // ===========================================================================
 
-  test("redeemAll can return failure from handlers"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(42)
-    val redeemed = eff.redeemAll[Int, String](
-      _ => Eff.fail(0),
-      _ => Eff.fail(1)
-    )
-    runEff(redeemed).map(r => assertEquals(r, Left(1)))
+  test("widen upcasts success type"):
+    val eff: Eff[IO, String, Any] = Eff.succeed[IO, String, Int](42).widen[Any]
+    runEff(eff).map(r => assertEquals(r, Right(42)))
 
-  test("ensure short-circuits on failure input"):
-    val eff: Eff[IO, String, Int] = Eff.fail("already failed")
-    val result = eff.ensure("predicate failed")(_ > 0)
-    runEff(result).map(r => assertEquals(r, Left("already failed")))
+  test("widenError upcasts error type"):
+    val eff: Eff[IO, Any, Int] = Eff.fail[IO, String, Int]("err").widenError[Any]
+    runEff(eff).map(r => assertEquals(r, Left("err")))
 
-  test("ensureOr short-circuits on failure input"):
-    val eff: Eff[IO, String, Int] = Eff.fail("already failed")
-    val result = eff.ensureOr(n => s"$n too small")(_ > 0)
-    runEff(result).map(r => assertEquals(r, Left("already failed")))
+  test("assume downcasts success type"):
+    val eff = Eff.succeed[IO, String, Any](42).assume[Int]
+    runEff(eff).map(r => assertEquals(r, Right(42)))
+
+  test("assumeError downcasts error type"):
+    val eff = Eff.fail[IO, Any, Int]("err").assumeError[String]
+    runEff(eff).map(r => assertEquals(r, Left("err")))
+
+  // ===========================================================================
+  // Extraction
+  // ===========================================================================
+
+  test("option converts success to Some"):
+    runEff(Eff.succeed[IO, String, Int](42).option).map(r => assertEquals(r, Right(Some(42))))
+
+  test("option converts failure to None"):
+    runEff(Eff.fail[IO, String, Int]("err").option).map(r => assertEquals(r, Right(None)))
+
+  test("collectSome extracts inner Some"):
+    val eff: Eff[IO, String, Option[Int]] = Eff.succeed(Some(42))
+    runEff(eff.collectSome("missing")).map(r => assertEquals(r, Right(42)))
+
+  test("collectSome fails on inner None"):
+    val eff: Eff[IO, String, Option[Int]] = Eff.succeed(None)
+    runEff(eff.collectSome("missing")).map(r => assertEquals(r, Left("missing")))
+
+  test("collectSome preserves prior failure"):
+    val eff: Eff[IO, String, Option[Int]] = Eff.fail("prior")
+    runEff(eff.collectSome("missing")).map(r => assertEquals(r, Left("prior")))
+
+  test("collectRight extracts inner Right"):
+    val eff: Eff[IO, String, Either[Int, String]] = Eff.succeed(Right("ok"))
+    runEff(eff.collectRight(n => s"code: $n")).map(r => assertEquals(r, Right("ok")))
+
+  test("collectRight fails on inner Left"):
+    val eff: Eff[IO, String, Either[Int, String]] = Eff.succeed(Left(404))
+    runEff(eff.collectRight(n => s"code: $n")).map(r => assertEquals(r, Left("code: 404")))
+
+  // ===========================================================================
+  // Conversion
+  // ===========================================================================
+
+  test("either unwraps to F[Either]"):
+    Eff.succeed[IO, String, Int](42).either.map(r => assertEquals(r, Right(42)))
+
+  test("eitherT wraps as EitherT"):
+    Eff.fail[IO, String, Int]("err").eitherT.value.map(r => assertEquals(r, Left("err")))
+
+  test("rethrow re-raises error into F"):
+    val ex = new RuntimeException("boom")
+    Eff.fail[IO, RuntimeException, Int](ex).rethrow.attempt.map(r => assertEquals(r.left.toOption.map(_.getMessage), Some("boom")))
+
+  test("rethrow returns value on success"):
+    Eff.succeed[IO, RuntimeException, Int](42).rethrow.map(r => assertEquals(r, 42))
+
+  test("absolve re-raises error into F"):
+    val ex = new RuntimeException("boom")
+    Eff.fail[IO, Throwable, Int](ex).absolve.attempt.map(r => assertEquals(r.left.toOption.map(_.getMessage), Some("boom")))
 
   test("absolve returns value on success"):
-    val eff: Eff[IO, Throwable, Int] = Eff.succeed(42)
-    eff.absolve.map(r => assertEquals(r, 42))
+    Eff.succeed[IO, Throwable, Int](42).absolve.map(r => assertEquals(r, 42))
 
-  test("assumeError performs unchecked cast on error channel"):
-    val eff: Eff[IO, Any, Int] = Eff.fail[IO, Any, Int]("boom")
-    val narrowed = eff.assumeError[String]
-    runEff(narrowed).map(r => assertEquals(r, Left("boom")))
+  // ===========================================================================
+  // Bracket
+  // ===========================================================================
+
+  test("bracket runs release on success"):
+    var released = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).bracket(a => Eff.succeed(a * 2))(_ => IO { released = true })
+    runEff(eff).map { r =>
+      assertEquals(r, Right(84))
+      assert(released)
+    }
+
+  test("bracket runs release on typed error"):
+    var released = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).bracket(_ => Eff.fail("use failed"))(_ => IO { released = true })
+    runEff(eff).map { r =>
+      assertEquals(r, Left("use failed"))
+      assert(released)
+    }
+
+  test("bracket skips when acquire fails"):
+    var released = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.fail[IO, String, Int]("acquire failed").bracket(a => Eff.succeed(a))(_ => IO { released = true })
+    runEff(eff).map { r =>
+      assertEquals(r, Left("acquire failed"))
+      assert(!released)
+    }
+
+  test("bracketCase provides outcome to release"):
+    var outcomeSucceeded = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).bracketCase(a => Eff.succeed(a)) { (_, oc) =>
+      oc match
+        case Outcome.Succeeded(_) => IO { outcomeSucceeded = true }
+        case _                    => IO.unit
+    }
+    runEff(eff).map { r =>
+      assertEquals(r, Right(42))
+      assert(outcomeSucceeded)
+    }
+
+  // ===========================================================================
+  // Timeout
+  // ===========================================================================
+
+  test("timeout returns value within duration"):
+    runEff(Eff.succeed[IO, String, Int](42).timeout(1.second, "timeout")).map(r => assertEquals(r, Right(42)))
+
+  test("timeout returns error when exceeded"):
+    val eff = Eff.liftF[IO, String, Int](IO.sleep(1.second) *> IO.pure(42)).timeout(10.millis, "timeout")
+    runEff(eff).map(r => assertEquals(r, Left("timeout")))
+
+  // ===========================================================================
+  // Collection Operations
+  // ===========================================================================
+
+  test("traverse short-circuits on first error"):
+    var count = 0 // scalafix:ok DisableSyntax.var
+    val eff = Eff.traverse[IO, String, Int, Int](List(1, 2, 3)) { n =>
+      count += 1
+      if n == 2 then Eff.fail("stop") else Eff.succeed(n * 2)
+    }
+    runEff(eff).map { r =>
+      assertEquals(r, Left("stop"))
+      assertEquals(count, 2)
+    }
+
+  test("traverse collects all successes"):
+    val eff = Eff.traverse[IO, String, Int, Int](List(1, 2, 3))(n => Eff.succeed(n * 2))
+    runEff(eff).map(r => assertEquals(r, Right(List(2, 4, 6))))
+
+  test("sequence collects all successes"):
+    val effs = List(Eff.succeed[IO, String, Int](1), Eff.succeed[IO, String, Int](2), Eff.succeed[IO, String, Int](3))
+    runEff(Eff.sequence(effs)).map(r => assertEquals(r, Right(List(1, 2, 3))))
+
+  test("parTraverse runs in parallel"):
+    val eff = Eff.parTraverse[IO, String, Int, Int](List(1, 2, 3))(n => Eff.succeed(n * 2))
+    runEff(eff).map(r => assertEquals(r, Right(List(2, 4, 6))))
+
+  test("parTraverse short-circuits on error"):
+    val eff = Eff.parTraverse[IO, String, Int, Int](List(1, 2, 3)) { n =>
+      if n == 2 then Eff.fail("stop") else Eff.succeed(n * 2)
+    }
+    runEff(eff).map(r => assertEquals(r, Left("stop")))
+
+  test("retry retries on failure"):
+    var attempts = 0 // scalafix:ok DisableSyntax.var
+    val eff = Eff.retry(
+      Eff.liftF[IO, String, Unit](IO(attempts += 1)).flatMap(_ => if attempts < 3 then Eff.fail("retry") else Eff.succeed(42)),
+      maxRetries = 5
+    )
+    runEff(eff).map { r =>
+      assertEquals(r, Right(42))
+      assertEquals(attempts, 3)
+    }
+
+  test("retry fails after max retries"):
+    var attempts = 0 // scalafix:ok DisableSyntax.var
+    val eff = Eff.retry(Eff.liftF[IO, String, Unit](IO(attempts += 1)) *> Eff.fail("fail"), maxRetries = 3)
+    runEff(eff).map { r =>
+      assertEquals(r, Left("fail"))
+      assertEquals(attempts, 4) // 1 initial + 3 retries
+    }
+
+  // ===========================================================================
+  // Primitive Lifts
+  // ===========================================================================
+
+  test("liftRef transforms Ref to Eff context"):
+    for
+      ref <- Ref.of[IO, Int](0)
+      liftedRef = Eff.liftRef[IO, String, Int](ref)
+      _ <- liftedRef.update(_ + 1).either
+      value <- liftedRef.get.either
+    yield assertEquals(value, Right(1))
+
+  test("liftCell transforms AtomicCell to Eff context"):
+    for
+      cell <- AtomicCell[IO].of(0)
+      liftedCell = Eff.liftCell[IO, String, Int](cell)
+      _ <- liftedCell.update(_ + 1).either
+      value <- liftedCell.get.either
+    yield assertEquals(value, Right(1))
+
+  test("liftCell.evalModify handles typed errors"):
+    for
+      cell <- AtomicCell[IO].of(0)
+      liftedCell = Eff.liftCell[IO, String, Int](cell)
+      result <- liftedCell.evalModify(_ => Eff.fail[IO, String, (Int, Int)]("err")).either
+      value <- liftedCell.get.either
+    yield
+      assertEquals(result, Left("err"))
+      assertEquals(value, Right(0)) // Cell unchanged
+
+  // ===========================================================================
+  // Typeclass Instances
+  // ===========================================================================
+
+  test("Monad instance works with for-comprehension"):
+    val M = summon[Monad[Eff.Of[IO, String]]]
+    val prog = M.flatMap(M.pure(20))(a => M.pure(a + 22))
+    runEff(prog).map(r => assertEquals(r, Right(42)))
+
+  test("Monad.tailRecM terminates"):
+    val M = summon[Monad[Eff.Of[IO, String]]]
+    val eff = M.tailRecM(0)(n => Eff.succeed(if n >= 5 then Right(n) else Left(n + 1)))
+    runEff(eff).map(r => assertEquals(r, Right(5)))
+
+  test("MonadError[E] raises typed errors"):
+    val ME = summon[cats.MonadError[Eff.Of[IO, String], String]]
+    runEff(ME.raiseError[Int]("err")).map(r => assertEquals(r, Left("err")))
+
+  test("MonadError[E] handles typed errors"):
+    val ME = summon[cats.MonadError[Eff.Of[IO, String], String]]
+    val eff = ME.handleErrorWith(ME.raiseError[Int]("err"))(_ => ME.pure(42))
+    runEff(eff).map(r => assertEquals(r, Right(42)))
+
+  test("typed errors and defects are distinguishable"):
+    val typedError: Eff[IO, String, Int] = Eff.fail("typed")
+    val defect: Eff[IO, String, Int] = Eff.liftF(IO.raiseError(new RuntimeException("defect")))
+    for
+      typed <- runEff(typedError).attempt
+      defect <- runEff(defect).attempt
+    yield
+      assert(typed.isRight) // IO succeeds with Left
+      assertEquals(typed.toOption.get, Left("typed"))
+      assert(defect.isLeft) // IO fails
+      assertEquals(defect.left.toOption.map(_.getMessage), Some("defect"))
+
+  test("MonadCancel.canceled propagates cancellation"):
+    given MonadCancelThrow[IO] = IO.asyncForIO
+    val MC = summon[MonadCancelThrow[Eff.Of[IO, String]]]
+    var finalizerRan = false // scalafix:ok DisableSyntax.var
+    val prog = MC.guaranteeCase(MC.canceled) {
+      case Outcome.Canceled() => finalizerRan = true; Eff.unit
+      case _                  => Eff.unit
+    }
+    prog.either.start.flatMap(_.join).map { outcome =>
+      assert(outcome.isCanceled)
+      assert(finalizerRan)
+    }
+
+  test("MonadCancel.forceR discards typed errors from left"):
+    given MonadCancelThrow[IO] = IO.asyncForIO
+    val MC = summon[MonadCancelThrow[Eff.Of[IO, String]]]
+    runEff(MC.forceR(Eff.fail("ignored"))(Eff.succeed(42))).map(r => assertEquals(r, Right(42)))
+
+  test("Parallel instance enables parMapN"):
+    val eff = (Eff.succeed[IO, String, Int](1), Eff.succeed[IO, String, Int](2)).parMapN(_ + _)
+    runEff(eff).map(r => assertEquals(r, Right(3)))
+
+  test("Parallel instance short-circuits on error"):
+    val eff = (Eff.succeed[IO, String, Int](1), Eff.fail[IO, String, Int]("err")).parMapN(_ + _)
+    runEff(eff).map(r => assertEquals(r, Left("err")))
 end EffSuite

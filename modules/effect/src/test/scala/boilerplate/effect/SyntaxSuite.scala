@@ -93,4 +93,19 @@ class SyntaxSuite extends CatsEffectSuite:
   test("F[Either].effR preserves structure"):
     val fea = IO.pure[Either[String, Int]](Left("boom"))
     runEffR(fea.effR[Unit], ()).map(result => assertEquals(result, Left("boom")))
+
+  test("F[Option].eff converts present values"):
+    val fo = IO.pure(Some(42))
+    runEff(fo.eff[String]("missing")).map(result => assertEquals(result, Right(42)))
+
+  test("F[Option].eff converts missing values to error"):
+    val fo = IO.pure(Option.empty[Int])
+    runEff(fo.eff[String]("missing")).map(result => assertEquals(result, Left("missing")))
+
+  test("Try.effR translates failure with environment"):
+    val boom = new RuntimeException("boom")
+    runEffR(Try(throw boom).effR[IO, Unit, String](_.getMessage), ()).map(result => assertEquals(result, Left("boom"))) // scalafix:ok DisableSyntax.throw
+
+  test("Try.effR converts success with environment"):
+    runEffR(Try(42).effR[IO, Unit, String](_.getMessage), ()).map(result => assertEquals(result, Right(42)))
 end SyntaxSuite

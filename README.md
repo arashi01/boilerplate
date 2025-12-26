@@ -1,8 +1,267 @@
 # Boilerplate
 
-A collection of utilities and common patterns that tend to be repeated across Scala 3 projects.
+Collection of utilities and common patterns useful across Scala 3 projects.
 
 ## Modules
+
+### effect
+
+Zero-cost typed-error effects layered atop Cats / Cats Effect.
+
+Standard `MonadError[F, Throwable]` conflates recoverable domain errors with fatal defects, forcing defensive `recover` blocks or losing type safety. `Eff[F, E, A]` provides an explicit, compile-time-tracked error channel `E` separate from `Throwable`, enabling exhaustive pattern matching on failure cases whilst preserving full Cats Effect integration.
+
+**Core abstractions:**
+
+- **`Eff[F, E, A]`** — opaque type equal to `F[Either[E, A]]` with zero runtime overhead
+- **`EffR[F, R, E, A]`** — reader-style variant equal to `R => Eff[F, E, A]`
+
+Both erase at runtime whilst maintaining compile-time awareness of error and environment types.
+
+**Note on ZIO:** `Eff`/`EffR` are not replacements for ZIO. Eff/EffR is a zero-cost wrapper over cats-effect—the environment channel is a simple function argument with no injection or layer management. Its primary value is as a drop-in for existing cats-effect codebases that want compile-time typed errors without switching ecosystems, whilst providing cleaner syntax than manually threading `EitherT` or composing `Kleisli[EitherT[F, E, *], R, A]`.
+
+```scala
+import boilerplate.effect.*
+import cats.effect.IO
+
+// Domain errors are explicit in the type signature
+sealed trait AppError
+case class NotFound(id: String) extends AppError
+case class InvalidInput(msg: String) extends AppError
+
+def findUser(id: String): Eff[IO, NotFound, User] = ???
+def validateAge(user: User): Eff[IO, InvalidInput, ValidUser] = ???
+
+// Compose with for-comprehensions; errors are tracked and unified
+val workflow: Eff[IO, AppError, ValidUser] = for
+  user  <- findUser("123").widenError[AppError]
+  valid <- validateAge(user).widenError[AppError]
+yield valid
+
+// Handle each error case exhaustively
+val result: IO[String] = workflow.fold(
+  {
+    case NotFound(id)      => s"User $id not found"
+    case InvalidInput(msg) => s"Invalid: $msg"
+  },
+  user => s"Welcome ${user.name}"
+)
+
+// Recover from all errors with a fallback value
+val fallback: UEff[IO, ValidUser] = workflow.valueOr(_ => defaultUser)
+
+// Or recover from specific errors via PartialFunction
+val recovered: Eff[IO, InvalidInput, ValidUser] =
+  workflow.recover { case NotFound(_) => defaultUser }
+```
+
+#### Dependency
+
+```scala
+libraryDependencies += "io.github.arashi01" %% "boilerplate-effect" % "<version>"
+```
+
+#### Type Aliases
+
+| Alias            | Expansion                  | Description                     |
+|------------------|----------------------------|---------------------------------|
+| `UEff[F, A]`     | `Eff[F, Nothing, A]`       | Infallible effect               |
+| `TEff[F, A]`     | `Eff[F, Throwable, A]`     | Throwable-errored effect        |
+| `UEffR[F, R, A]` | `EffR[F, R, Nothing, A]`   | Infallible reader effect        |
+| `TEffR[F, R, A]` | `EffR[F, R, Throwable, A]` | Throwable-errored reader effect |
+
+#### `Eff[F, E, A]`
+
+##### Constructors
+
+Partially-applied constructors minimise type annotations:
+
+```scala
+import boilerplate.effect.*
+import cats.effect.IO
+
+Eff[IO].succeed(42)           // UEff[IO, Int]
+Eff[IO].fail("boom")          // Eff[IO, String, Nothing]
+Eff[IO].from(Right(1))        // Eff[IO, Nothing, Int]
+Eff[IO].liftF(IO.pure(42))    // UEff[IO, Int]
+Eff[IO].unit                  // UEff[IO, Unit]
+```
+
+Full constructors:
+
+| Category   | Methods                                                                        |
+|------------|--------------------------------------------------------------------------------|
+| Pure       | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)`|
+| Effectful  | `lift(F[Either])`, `lift(F[Option], ifNone)`                                   |
+| Values     | `succeed`, `fail`, `unit`, `liftF`, `attempt`, `defer`                         |
+
+##### Combinators
+
+| Category       | Methods                                                                         |
+|----------------|---------------------------------------------------------------------------------|
+| Mapping        | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `bimap`, `mapError`, `transform` |
+| Composition    | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`          |
+| Recovery       | `valueOr`, `catchAll`, `recover`, `recoverWith`, `onError`, `adaptError`        |
+| Alternative    | `alt`, `orElseSucceed`, `orElseFail`                                            |
+| Folding        | `fold`, `foldF`, `redeem`, `redeemAll`                                          |
+| Guards         | `ensure`, `ensureOr`                                                            |
+| Observation    | `tap`, `tapError`, `flatTapError`                                               |
+| Variance       | `widen`, `widenError`, `assume`, `assumeError`                                  |
+| Extraction     | `option`, `collectSome`, `collectRight`                                         |
+| Conversion     | `either`, `rethrow`, `absolve`, `eitherT`                                       |
+| Resource       | `bracket`, `bracketCase`, `timeout`                                             |
+
+**Method naming notes:**
+
+- `valueOr(f: E => A)` — total recovery mapping all errors to success; named to avoid collision with cats' `recover(pf: PartialFunction)`
+- `catchAll(f: E => Eff)` — total recovery switching to alternative computation
+- `redeemAll(fe, fa)` — effectful fold allowing error type change `E => E2`; named to distinguish from cats' `redeemWith` which preserves error type
+
+##### Typeclass Instances
+
+`Eff.Of[F, E]` (the type lambda `[A] =>> Eff[F, E, A]`) derives instances based on the underlying `F`:
+
+| Typeclass              | Requirement on `F`         |
+|------------------------|----------------------------|
+| `Functor`              | `Functor[F]`               |
+| `Monad`                | `Monad[F]`                 |
+| `MonadError[_, E]`     | `Monad[F]`                 |
+| `MonadCancel[_, EE]`   | `MonadCancel[F, EE]`       |
+| `Parallel`             | `Parallel[F]`              |
+
+Priority: `Monad` is the primary sequential instance; `Parallel` enables `.parXxx` operations. When cats syntax is in scope, our extension methods take precedence for unique names (`valueOr`, `catchAll`, `redeemAll`), whilst cats' PartialFunction methods (`recover`, `recoverWith`, `onError`, `adaptError`) remain accessible.
+
+#### `EffR[F, R, E, A]`
+
+Adds an immutable environment channel, representationally equal to `R => Eff[F, E, A]`.
+
+##### Constructors
+
+```scala
+type Config = String
+
+EffR[IO, Config].succeed(42)   // UEffR[IO, Config, Int]
+EffR[IO, Config].fail("err")   // EffR[IO, Config, String, Nothing]
+EffR[IO, Config].ask           // EffR[IO, Config, Nothing, Config] — retrieves environment
+```
+
+Full constructors:
+
+| Category    | Methods                                                                        |
+|-------------|--------------------------------------------------------------------------------|
+| Pure        | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)`|
+| Effectful   | `lift(Eff)`, `lift(F[Either])`, `lift(F[Option], ifNone)`                      |
+| Values      | `succeed`, `fail`, `unit`, `attempt`, `defer`                                  |
+| Environment | `ask`, `wrap`, `fromContext`                                                   |
+
+##### Combinators
+
+Mirrors `Eff` combinators, plus environment-specific operations:
+
+| Category       | Methods                                           |
+|----------------|---------------------------------------------------|
+| Environment    | `provide`, `run`, `contramap`, `andThen`          |
+| Variance       | `widen`, `widenEnv`, `assume`, `assumeEnv`        |
+| Recovery       | `valueOr`, `catchAll`, `recover`, `recoverWith`   |
+| Folding        | `fold`, `foldF`, `redeem`, `redeemAll`            |
+| Alternative    | `alt`, `orElseSucceed`, `orElseFail`              |
+| Conversion     | `either`, `rethrow`, `absolve`, `kleisli`         |
+
+#### Cats-Effect Primitive Interop
+
+Transform cats-effect primitives to operate in the `Eff` context via named lift methods or `.eff[E]` extension syntax:
+
+```scala
+import boilerplate.effect.*
+import cats.effect.IO
+import cats.effect.kernel.{Ref, Resource, Deferred}
+import cats.effect.std.{Queue, Semaphore}
+
+// Named companion object methods
+Eff.liftResource(resource)   // Resource[Eff.Of[IO, MyError], A]
+Eff.liftRef(ref)             // Ref[Eff.Of[IO, MyError], A]
+Eff.liftDeferred(deferred)   // Deferred[Eff.Of[IO, MyError], A]
+Eff.liftQueue(queue)         // Queue[Eff.Of[IO, MyError], A]
+Eff.liftSemaphore(semaphore) // Semaphore[Eff.Of[IO, MyError]]
+Eff.liftLatch(latch)         // CountDownLatch[Eff.Of[IO, MyError]]
+Eff.liftBarrier(barrier)     // CyclicBarrier[Eff.Of[IO, MyError]]
+Eff.liftCell(cell)           // AtomicCell[Eff.Of[IO, MyError], A]
+Eff.liftSupervisor(sup)      // Supervisor[Eff.Of[IO, MyError]]
+
+// Extension syntax (equivalent)
+resource.eff[MyError]
+ref.eff[MyError]
+deferred.eff[MyError]
+queue.eff[MyError]
+semaphore.eff[MyError]
+
+// Natural transformation for custom mapK usage
+val fk: IO ~> Eff.Of[IO, MyError] = Eff.functionK[IO, MyError]
+```
+
+| Primitive         | Lifted Type                               | Constraints                 |
+|-------------------|-------------------------------------------|-----------------------------|
+| `Resource`        | `Resource[Eff.Of[F, E], A]`               | `MonadCancel[F, Throwable]` |
+| `Ref`             | `Ref[Eff.Of[F, E], A]`                    | `Functor[F]`                |
+| `Deferred`        | `Deferred[Eff.Of[F, E], A]`               | `Functor[F]`                |
+| `Queue`           | `Queue[Eff.Of[F, E], A]`                  | `Functor[F]`                |
+| `Semaphore`       | `Semaphore[Eff.Of[F, E]]`                 | `MonadCancel[F, Throwable]` |
+| `CountDownLatch`  | `CountDownLatch[Eff.Of[F, E]]`            | `Functor[F]`                |
+| `CyclicBarrier`   | `CyclicBarrier[Eff.Of[F, E]]`             | `Functor[F]`                |
+| `AtomicCell`      | `AtomicCell[Eff.Of[F, E], A]`             | `Monad[F]`                  |
+| `Supervisor`      | `Supervisor[Eff.Of[F, E]]`                | `Functor[F]`                |
+
+Lifted primitives compose naturally with `Eff` for-comprehensions:
+
+```scala
+val workflow: Eff[IO, AppError, Unit] = for
+  ref   <- Eff.liftF(Ref.of[IO, Int](0)).map(_.eff[AppError])
+  _     <- ref.update(_ + 1)
+  value <- ref.get
+  _     <- if value < 0 then Eff.fail(AppError.InvalidState) else Eff.unit
+yield ()
+```
+
+#### Syntax Extensions
+
+Importing `boilerplate.effect.*` provides inline extensions:
+
+| Extension                   | Result Type           |
+|-----------------------------|---------------------|
+| `Either[E, A].eff[F]`       | `Eff[F, E, A]`      |
+| `Either[E, A].effR[F, R]`   | `EffR[F, R, E, A]`  |
+| `F[Either[E, A]].eff`       | `Eff[F, E, A]`      |
+| `F[Either[E, A]].effR[R]`   | `EffR[F, R, E, A]`  |
+| `Option[A].eff[F, E](err)`  | `Eff[F, E, A]`      |
+| `F[Option[A]].eff[E](err)`  | `Eff[F, E, A]`      |
+| `Try[A].eff[F, E](f)`       | `Eff[F, E, A]`      |
+| `F[A].eff[E](f)`            | `Eff[F, E, A]`      |
+| `Kleisli[Of[F,E],R,A].effR` | `EffR[F, R, E, A]`  |
+| `Resource[F, A].eff[E]`     | `Resource[Of[F,E],A]`|
+| `Ref[F, A].eff[E]`          | `Ref[Of[F, E], A]`  |
+| `Deferred[F, A].eff[E]`     | `Deferred[Of[F,E],A]`|
+| `Queue[F, A].eff[E]`        | `Queue[Of[F, E], A]`|
+| `Semaphore[F].eff[E]`       | `Semaphore[Of[F,E]]`|
+
+#### Fiber Join Extensions
+
+When working with `Fiber[Eff.Of[F, E], Throwable, A]` (e.g., from `Supervisor.supervise`), extension methods provide ergonomic join semantics:
+
+| Extension                      | Result Type      | On Cancellation           |
+|--------------------------------|------------------|---------------------------|
+| `fiber.joinNever`              | `Eff[F, E, A]`   | Never completes           |
+| `fiber.joinOrFail(err)`        | `Eff[F, E, A]`   | Fails with typed error    |
+
+```scala
+Supervisor[IO](await = true).use { sup =>
+  val liftedSup = sup.eff[AppError]
+  for
+    fiber  <- liftedSup.supervise(longRunningTask)
+    result <- fiber.joinNever                       // or fiber.joinOrFail(AppError.Cancelled)
+  yield result
+}.either
+```
+
+---
 
 ### nullable
 
@@ -60,205 +319,6 @@ opt.flattenNull // Option[String] — Some(null) becomes None
 val result: Either[String, String | Null] = Right(javaMethod())
 result.flattenNull("null value") // Either[String, String]
 ```
-
----
-
-### effect
-
-Zero-cost typed-error effects layered atop Cats / Cats Effect. Standard `MonadError[F, Throwable]` conflates recoverable domain errors with fatal defects, forcing defensive `recover` blocks or losing type safety. `Eff[F[_], E, A]` provides an explicit, compile-time-tracked error channel `E` separate from `Throwable`, enabling exhaustive pattern matching on failure cases whilst preserving full Cats Effect integration.
-
-The module provides:
-- **`Eff[F, E, A]`** — an opaque wrapper over `F[Either[E, A]]` with zero runtime overhead
-- **`EffR[F, R, E, A]`** — a reader-style variant adding an environment channel
-
-Both erase at runtime whilst maintaining compile-time awareness of error and environment types.
-
-```scala
-import boilerplate.effect.*
-import cats.effect.IO
-
-// Domain errors are explicit in the type signature
-sealed trait AppError
-case class NotFound(id: String) extends AppError
-case class InvalidInput(msg: String) extends AppError
-
-def findUser(id: String): Eff[IO, NotFound, User] = ???
-def validateAge(user: User): Eff[IO, InvalidInput, ValidUser] = ???
-
-// Compose with for-comprehensions; errors are tracked and unified
-val workflow: Eff[IO, AppError, ValidUser] = for
-  user  <- findUser("123").widenError[AppError]
-  valid <- validateAge(user).widenError[AppError]
-yield valid
-
-// Handle each error case exhaustively
-val result: IO[String] = workflow.fold(
-  {
-    case NotFound(id)      => s"User $id not found"
-    case InvalidInput(msg) => s"Invalid: $msg"
-  },
-  user => s"Welcome ${user.name}"
-)
-
-// Or recover specific errors whilst preserving others
-val recovered: Eff[IO, InvalidInput, ValidUser] =
-  workflow.recover { case NotFound(_) => defaultUser }
-```
-
-#### Dependency
-
-```scala
-libraryDependencies += "io.github.arashi01" %% "boilerplate-effect" % "<version>"
-```
-
-#### Type Aliases
-
-| Alias            | Expansion                  | Description                     |
-|------------------|----------------------------|---------------------------------|
-| `UEff[F, A]`     | `Eff[F, Nothing, A]`       | Infallible effect               |
-| `TEff[F, A]`     | `Eff[F, Throwable, A]`     | Throwable-errored effect        |
-| `UEffR[F, R, A]` | `EffR[F, R, Nothing, A]`   | Infallible reader effect        |
-| `TEffR[F, R, A]` | `EffR[F, R, Throwable, A]` | Throwable-errored reader effect |
-
-#### `Eff[F, E, A]`
-
-##### Constructors
-
-Partially-applied constructors minimise type annotations:
-
-```scala
-import boilerplate.effect.*
-import cats.effect.IO
-
-Eff[IO].succeed(42)           // UEff[IO, Int]
-Eff[IO].fail("boom")          // Eff[IO, String, Nothing]
-Eff[IO].from(Right(1))        // Eff[IO, Nothing, Int]
-Eff[IO].liftF(IO.pure(42))    // UEff[IO, Int]
-Eff[IO].unit                  // UEff[IO, Unit]
-```
-
-Full constructors with explicit type parameters:
-
-| Category   | Methods                                                                  |
-|------------|--------------------------------------------------------------------------|
-| Pure       | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)` |
-| Effectful  | `lift(F[Either])`, `lift(F[Option], ifNone)`                             |
-| Values     | `succeed`, `fail`, `unit`, `liftF`, `attempt`, `defer`                   |
-
-##### Combinators
-
-| Category       | Methods                                                                           |
-|----------------|-----------------------------------------------------------------------------------|
-| Mapping        | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `bimap`, `mapError`, `transform`   |
-| Composition    | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`            |
-| Recovery       | `recover` (total/partial), `catchAll`, `recoverWith`, `onError`, `adaptError`     |
-| Folding        | `fold`, `foldF`, `redeem`, `redeemAll`                                            |
-| Alternative    | `alt`                                                                             |
-| Guards         | `ensure`, `ensureOr`                                                              |
-| Observation    | `tapError`                                                                        |
-| Variance       | `widen`, `widenError`, `assume`, `assumeError`                                    |
-| Conversion     | `either`, `rethrow`, `absolve`, `eitherT`                                         |
-
-##### Type Class Instances
-
-`Eff.Of[F, E]` (a type lambda `[A] =>> Eff[F, E, A]`) derives `Functor`, `Monad`, `MonadError[_, E]`, and `MonadCancel` from the underlying `F`. This enables seamless integration with Cats Effect APIs such as `Resource` and `IOApp`.
-
-#### `EffR[F, R, E, A]`
-
-Adds an immutable environment channel, representationally equivalent to `R => Eff[F, E, A]`.
-
-##### Constructors
-
-```scala
-type Config = String
-
-EffR[IO, Config].succeed(42)   // UEffR[IO, Config, Int]
-EffR[IO, Config].fail("err")   // EffR[IO, Config, String, Nothing]
-EffR[IO, Config].service       // EffR[IO, Config, Nothing, Config] — retrieves environment
-EffR[IO, Config].ask           // alias for service
-```
-
-Full constructors:
-
-| Category    | Methods                                                                  |
-|-------------|--------------------------------------------------------------------------|
-| Pure        | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)` |
-| Effectful   | `lift(Eff)`, `lift(F[Either])`, `lift(F[Option], ifNone)`                |
-| Values      | `succeed`, `fail`, `unit`, `attempt`, `defer`                            |
-| Environment | `service`, `ask`, `wrap`, `fromContext`                                  |
-
-##### Combinators
-
-Mirrors `Eff` combinators, plus environment-specific operations:
-
-| Category       | Methods                                          |
-|----------------|--------------------------------------------------|
-| Environment    | `provide`, `contramap`, `andThen`, `run`         |
-| Recovery       | `catchAll`, `recover`, `recoverWith`, `onError`  |
-| Folding        | `fold`, `foldF`, `redeem`, `redeemAll`           |
-| Alternative    | `alt`                                            |
-| Conversion     | `either`, `rethrow`, `absolve`, `kleisli`        |
-
-#### Cats-Effect Primitive Interop
-
-Transform cats-effect primitives to operate in the `Eff` context via `Eff.lift` overloads or extension methods:
-
-```scala
-import boilerplate.effect.*
-import cats.effect.IO
-import cats.effect.kernel.{Ref, Resource, Deferred}
-import cats.effect.std.{Queue, Semaphore}
-
-// Companion object methods
-Eff.lift[IO, MyError, A](resource)   // Resource[Eff.Of[IO, MyError], A]
-Eff.lift[IO, MyError, A](ref)        // Ref[Eff.Of[IO, MyError], A]
-Eff.lift[IO, MyError, A](deferred)   // Deferred[Eff.Of[IO, MyError], A]
-Eff.lift[IO, MyError, A](queue)      // Queue[Eff.Of[IO, MyError], A]
-Eff.lift[IO, MyError](semaphore)     // Semaphore[Eff.Of[IO, MyError]]
-
-// Extension syntax (equivalent)
-resource.lift[MyError]
-ref.lift[MyError]
-deferred.lift[MyError]
-queue.lift[MyError]
-semaphore.lift[MyError]
-
-// Natural transformation for custom mapK usage
-val fk: IO ~> Eff.Of[IO, MyError] = Eff.functionK[IO, MyError]
-```
-
-| Primitive   | Lifted Type                          | Constraints                    |
-|-------------|--------------------------------------|--------------------------------|
-| `Resource`  | `Resource[Eff.Of[F, E], A]`          | `MonadCancel[F, Throwable]`    |
-| `Ref`       | `Ref[Eff.Of[F, E], A]`               | `Functor[F]`                   |
-| `Deferred`  | `Deferred[Eff.Of[F, E], A]`          | `Functor[F]`                   |
-| `Queue`     | `Queue[Eff.Of[F, E], A]`             | `Functor[F]`                   |
-| `Semaphore` | `Semaphore[Eff.Of[F, E]]`            | `MonadCancel[F, Throwable]`    |
-
-Lifted primitives compose naturally with `Eff` for-comprehensions and preserve typed error semantics:
-
-```scala
-val workflow: Eff[IO, AppError, Unit] = for
-  ref   <- Eff.liftF(Ref.of[IO, Int](0)).map(_.lift[AppError])
-  _     <- ref.update(_ + 1)
-  value <- ref.get
-  _     <- if value < 0 then Eff.fail(AppError.InvalidState) else Eff.unit
-yield ()
-```
-
-#### Syntax Extensions
-
-Importing `boilerplate.effect.*` provides inline extensions:
-
-| Extension                  | Result Type        |
-|----------------------------|--------------------|
-| `Either[E, A].eff[F]`      | `Eff[F, E, A]`     |
-| `Either[E, A].effR[F, R]`  | `EffR[F, R, E, A]` |
-| `F[Either[E, A]].eff`      | `Eff[F, E, A]`     |
-| `F[Either[E, A]].effR[R]`  | `EffR[F, R, E, A]` |
-| `Option[A].eff[F, E](err)` | `Eff[F, E, A]`     |
-| `Try[A].eff[F, E](f)`      | `Eff[F, E, A]`     |
-| `F[A].eff[E](f)`           | `Eff[F, E, A]`     |
 
 ---
 
