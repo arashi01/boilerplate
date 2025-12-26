@@ -2,7 +2,7 @@ inThisBuild(
   List(
     scalaVersion := "3.7.4",
     organization := "io.github.arashi01",
-    description := "Collection of utilities and common patterns that tend to be repeated.",
+    description := "Collection of utilities and common patterns useful across Scala 3 projects.",
     startYear := Some(2025),
     homepage := Some(url("https://github.com/arashi01/boilerplate")),
     semanticdbEnabled := true,

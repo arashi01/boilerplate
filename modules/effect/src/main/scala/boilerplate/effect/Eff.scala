@@ -20,20 +20,28 @@
  */
 package boilerplate.effect
 
+import scala.annotation.publicInBinary
 import scala.annotation.targetName
+import scala.concurrent.duration.FiniteDuration
 import scala.util.Try
 
 import cats.*
 import cats.arrow.FunctionK
 import cats.data.EitherT
+import cats.data.Nested
 import cats.effect.kernel.Deferred
+import cats.effect.kernel.GenTemporal
 import cats.effect.kernel.MonadCancel
 import cats.effect.kernel.Outcome
 import cats.effect.kernel.Poll
 import cats.effect.kernel.Ref
 import cats.effect.kernel.Resource
+import cats.effect.std.AtomicCell
+import cats.effect.std.CountDownLatch
+import cats.effect.std.CyclicBarrier
 import cats.effect.std.Queue
 import cats.effect.std.Semaphore
+import cats.effect.std.Supervisor
 import cats.syntax.all.*
 
 /** Zero-cost typed error channel abstraction represented as `F[Either[E, A]]`. Refer to
@@ -125,8 +133,8 @@ object Eff:
 
     /** Handles both error and success with effectful functions, allowing error type change.
       *
-      * Unlike cats' `redeemWith` which preserves the error type, this combinator allows
-      * transitioning to a new error type `E2` via both handlers.
+      * Named `redeemAll` to distinguish from cats' `redeemWith` which preserves error type. This
+      * combinator allows transitioning to a new error type `E2` via both handlers.
       */
     inline def redeemAll[E2, B](fe: E => Eff[F, E2, B], fa: A => Eff[F, E2, B])(using Monad[F]): Eff[F, E2, B] =
       Monad[F].flatMap(self) {
@@ -134,11 +142,33 @@ object Eff:
         case Right(a) => fa(a)
       }
 
-    /** Observes failures without altering the result. */
+    /** Observes failures without altering the result.
+      *
+      * The side effect is a raw `F[Unit]` that cannot itself produce typed errors. For fallible
+      * side effects, use [[flatTapError]].
+      */
     inline def tapError(f: E => F[Unit])(using Monad[F]): Eff[F, E, A] =
       Monad[F].flatMap(self) {
         case Left(e)  => Monad[F].flatMap(f(e))(_ => Monad[F].pure(Left(e)))
         case Right(a) => Monad[F].pure(Right(a))
+      }
+
+    /** Observes failures via an effectful action that can also fail.
+      *
+      * If the side-effect fails, that failure propagates and replaces the original error. For
+      * infallible side effects, use [[tapError]].
+      */
+    inline def flatTapError(f: E => Eff[F, E, Unit])(using Monad[F]): Eff[F, E, A] =
+      Monad[F].flatMap(self) {
+        case Left(e)  => f(e).flatMap(_ => Monad[F].pure(Left(e)))
+        case Right(a) => Monad[F].pure(Right(a))
+      }
+
+    /** Observes success values without altering the result. */
+    inline def tap(f: A => F[Unit])(using Monad[F]): Eff[F, E, A] =
+      Monad[F].flatMap(self) {
+        case Right(a) => Monad[F].map(f(a))(_ => Right(a))
+        case Left(e)  => Monad[F].pure(Left(e))
       }
 
     /** Fallback to an alternative computation when this one fails. */
@@ -146,6 +176,20 @@ object Eff:
       Monad[F].flatMap(self) {
         case Left(_)  => that
         case Right(a) => Monad[F].pure(Right(a))
+      }
+
+    /** Recovers from any failure with a constant success value. */
+    inline def orElseSucceed[B >: A](value: => B)(using Functor[F]): UEff[F, B] =
+      Functor[F].map(self) {
+        case Left(_)  => Right(value)
+        case Right(a) => Right(a)
+      }
+
+    /** Replaces any failure with a different error. */
+    inline def orElseFail[E2](error: => E2)(using Functor[F]): Eff[F, E2, A] =
+      Functor[F].map(self) {
+        case Left(_)  => Left(error)
+        case Right(a) => Right(a)
       }
 
     /** Maps the success value through an effectful function. */
@@ -192,17 +236,13 @@ object Eff:
     inline def <*[B](that: => Eff[F, E, B])(using Monad[F]): Eff[F, E, A] =
       self.flatMap(a => that.map(_ => a))
 
-    /** Sequences this computation with `that`, discarding the result of `this`. Named alternative
-      * to `*>`.
-      */
+    /** Sequences this computation with `that`, discarding the result of `this`. */
     inline def productR[B](that: => Eff[F, E, B])(using Monad[F]): Eff[F, E, B] =
-      self *> that
+      self.flatMap(_ => that)
 
-    /** Sequences this computation with `that`, discarding the result of `that`. Named alternative
-      * to `<*`.
-      */
+    /** Sequences this computation with `that`, discarding the result of `that`. */
     inline def productL[B](that: => Eff[F, E, B])(using Monad[F]): Eff[F, E, A] =
-      self <* that
+      self.flatMap(a => that.map(_ => a))
 
     /** Discards the success value, returning `Unit`. */
     inline def void(using Functor[F]): Eff[F, E, Unit] =
@@ -222,8 +262,12 @@ object Eff:
 
     // --- Error Recovery Operators ---
 
-    /** Recovers from all errors by mapping them to a success value. */
-    inline def recover(f: E => A)(using Functor[F]): UEff[F, A] =
+    /** Recovers from all errors by mapping them to a success value.
+      *
+      * Similar to `getOrElse` for `Option` or `Validated.valueOr`. Named `valueOr` to avoid
+      * collision with cats' `recover` which takes `PartialFunction`.
+      */
+    inline def valueOr(f: E => A)(using Functor[F]): UEff[F, A] =
       Functor[F].map(self) {
         case Left(e)  => Right(f(e))
         case Right(a) => Right(a)
@@ -296,6 +340,63 @@ object Eff:
     transparent inline def assume[B <: A]: Eff[F, E, B] =
       Eff(self.either.asInstanceOf[F[Either[E, B]]])
     // scalafix:on
+
+    /** Converts to an infallible effect returning `Option[A]`, treating errors as `None`. */
+    inline def option(using Functor[F]): UEff[F, Option[A]] =
+      Functor[F].map(self)(_.toOption.asRight)
+
+    /** Extracts an inner `Option[B]` value, failing with `ifNone` when absent. */
+    inline def collectSome[B](ifNone: => E)(using F: Functor[F])(using ev: A <:< Option[B]): Eff[F, E, B] =
+      F.map(self) {
+        case Right(a) => ev(a).toRight(ifNone)
+        case Left(e)  => Left(e)
+      }
+
+    /** Extracts an inner `Either[L, B]` value, mapping left to error via `ifLeft`. */
+    inline def collectRight[L, B](ifLeft: L => E)(using F: Functor[F])(using ev: A <:< Either[L, B]): Eff[F, E, B] =
+      F.map(self) {
+        case Right(a) => ev(a).leftMap(ifLeft)
+        case Left(e)  => Left(e)
+      }
+
+    // --- Bracket Combinators ---
+
+    /** Acquires a resource, uses it, and ensures release even on failure.
+      *
+      * The `release` function receives the acquired resource and always executes.
+      */
+    inline def bracket[B](use: A => Eff[F, E, B])(release: A => F[Unit])(using MC: MonadCancel[F, Throwable]): Eff[F, E, B] =
+      MC.bracketCase(self) {
+        case Right(a) => use(a)
+        case Left(e)  => MC.pure(Left(e))
+      } {
+        case (Right(a), _) => release(a)
+        case (Left(_), _)  => MC.unit
+      }
+
+    /** Acquires a resource, uses it, and ensures release with outcome information. */
+    inline def bracketCase[B](use: A => Eff[F, E, B])(release: (A, Outcome[F, Throwable, Either[E, B]]) => F[Unit])(using
+      MC: MonadCancel[F, Throwable]
+    ): Eff[F, E, B] =
+      MC.bracketCase(self) {
+        case Right(a) => use(a)
+        case Left(e)  => MC.pure(Left(e))
+      } {
+        case (Right(a), oc) => release(a, oc)
+        case (Left(_), _)   => MC.unit
+      }
+
+    // --- Timeout Combinator ---
+
+    /** Fails with `onTimeout` if the computation does not complete within `duration`. */
+    inline def timeout(duration: FiniteDuration, onTimeout: => E)(using T: GenTemporal[F, Throwable]): Eff[F, E, A] =
+      Eff.lift(
+        T.timeoutTo(
+          self.either,
+          duration,
+          T.pure(Left(onTimeout))
+        )
+      )
   end extension
 
   /** Lifts a pure `Either` into the effect via `pure`. */
@@ -343,6 +444,81 @@ object Eff:
   inline def defer[F[_]: Defer, E, A](thunk: => Eff[F, E, A]): Eff[F, E, A] =
     Defer[F].defer(thunk)
 
+  // --- Conditional Execution ---
+
+  /** Executes `eff` only when `cond` is true, otherwise succeeds with `Unit`. */
+  inline def when[F[_]: Applicative, E](cond: Boolean)(eff: => Eff[F, E, Unit]): Eff[F, E, Unit] =
+    if cond then eff else unit[F, E]
+
+  /** Executes `eff` only when `cond` is false, otherwise succeeds with `Unit`. */
+  inline def unless[F[_]: Applicative, E](cond: Boolean)(eff: => Eff[F, E, Unit]): Eff[F, E, Unit] =
+    if cond then unit[F, E] else eff
+
+  // --- Collection Operations ---
+
+  /** Traverses a collection, short-circuiting on first error. */
+  inline def traverse[F[_]: Monad, E, A, B](as: Iterable[A])(f: A => Eff[F, E, B]): Eff[F, E, List[B]] =
+    as.foldLeft(succeed[F, E, List[B]](Nil)) { (acc, a) =>
+      acc.flatMap(bs => f(a).map(b => bs :+ b))
+    }
+
+  /** Sequences a collection of effects, short-circuiting on first error. */
+  inline def sequence[F[_]: Monad, E, A](effs: Iterable[Eff[F, E, A]]): Eff[F, E, List[A]] =
+    traverse(effs)(identity)
+
+  /** Traverses a collection in parallel using `F`'s `Parallel` instance. */
+  inline def parTraverse[F[_], E, A, B](as: Iterable[A])(f: A => Eff[F, E, B])(using P: Parallel[F]): Eff[F, E, List[B]] =
+    val parF = P.applicative
+    val results: P.F[List[Either[E, B]]] =
+      as.toList.foldRight(parF.pure(List.empty[Either[E, B]])) { (a, acc) =>
+        parF.map2(P.parallel(f(a).either), acc)(_ :: _)
+      }
+    Eff.lift(
+      P.monad.map(P.sequential(results)) { eithers =>
+        eithers.foldRight[Either[E, List[B]]](Right(Nil)) { (e, acc) =>
+          for
+            bs <- acc
+            b <- e
+          yield b :: bs
+        }
+      }
+    )
+  end parTraverse
+
+  /** Sequences a collection of effects in parallel. */
+  inline def parSequence[F[_]: Parallel, E, A](effs: Iterable[Eff[F, E, A]]): Eff[F, E, List[A]] =
+    parTraverse(effs)(identity)
+
+  // --- Retry Utilities ---
+
+  /** Retries the effect up to `maxRetries` times on failure. */
+  inline def retry[F[_]: Monad, E, A](eff: Eff[F, E, A], maxRetries: Int): Eff[F, E, A] =
+    if maxRetries <= 0 then eff
+    else eff.catchAll(_ => retry(eff, maxRetries - 1))
+
+  /** Retries the effect with exponential backoff between attempts.
+    *
+    * @param eff the effect to retry
+    * @param maxRetries maximum number of retry attempts
+    * @param initialDelay delay before first retry
+    * @param maxDelay optional cap on delay duration
+    */
+  inline def retryWithBackoff[F[_], E, A](
+    eff: Eff[F, E, A],
+    maxRetries: Int,
+    initialDelay: FiniteDuration,
+    maxDelay: Option[FiniteDuration]
+  )(using T: GenTemporal[F, Throwable]): Eff[F, E, A] =
+    def loop(remaining: Int, delay: FiniteDuration): Eff[F, E, A] =
+      if remaining <= 0 then eff
+      else
+        eff.catchAll { _ =>
+          val cappedDelay = maxDelay.fold(delay)(d => delay.min(d))
+          Eff.liftF[F, E, Unit](T.sleep(cappedDelay)) *> loop(remaining - 1, delay * 2)
+        }
+    loop(maxRetries, initialDelay)
+  end retryWithBackoff
+
   // --- Natural Transformation ----------------------------------------------
 
   /** Creates a `FunctionK` that lifts `F[A]` into `Eff[F, E, A]` treating values as successes.
@@ -357,24 +533,96 @@ object Eff:
   // --- Cats-Effect Primitive Lifts -----------------------------------------
 
   /** Transforms a `Resource[F, A]` to `Resource[Eff.Of[F, E], A]`. */
-  inline def lift[F[_], E, A](resource: Resource[F, A])(using F: MonadCancel[F, Throwable]): Resource[Of[F, E], A] =
+  inline def liftResource[F[_], E, A](resource: Resource[F, A])(using F: MonadCancel[F, Throwable]): Resource[Of[F, E], A] =
     resource.mapK(functionK[F, E])(using F, given_MonadCancel_Of_EE[F, E, Throwable])
 
   /** Transforms a `Ref[F, A]` to `Ref[Eff.Of[F, E], A]`. */
-  inline def lift[F[_]: Functor, E, A](ref: Ref[F, A]): Ref[Of[F, E], A] =
+  inline def liftRef[F[_]: Functor, E, A](ref: Ref[F, A]): Ref[Of[F, E], A] =
     ref.mapK(functionK[F, E])
 
   /** Transforms a `Deferred[F, A]` to `Deferred[Eff.Of[F, E], A]`. */
-  inline def lift[F[_]: Functor, E, A](deferred: Deferred[F, A]): Deferred[Of[F, E], A] =
+  inline def liftDeferred[F[_]: Functor, E, A](deferred: Deferred[F, A]): Deferred[Of[F, E], A] =
     deferred.mapK(functionK[F, E])
 
   /** Transforms a `Queue[F, A]` to `Queue[Eff.Of[F, E], A]`. */
-  inline def lift[F[_]: Functor, E, A](queue: Queue[F, A]): Queue[Of[F, E], A] =
+  inline def liftQueue[F[_]: Functor, E, A](queue: Queue[F, A]): Queue[Of[F, E], A] =
     queue.mapK(functionK[F, E])
 
   /** Transforms a `Semaphore[F]` to `Semaphore[Eff.Of[F, E]]`. */
-  inline def lift[F[_], E](semaphore: Semaphore[F])(using F: MonadCancel[F, Throwable]): Semaphore[Of[F, E]] =
+  inline def liftSemaphore[F[_], E](semaphore: Semaphore[F])(using F: MonadCancel[F, Throwable]): Semaphore[Of[F, E]] =
     semaphore.mapK(functionK[F, E])(using given_MonadCancel_Of_EE[F, E, Throwable])
+
+  /** Transforms a `CountDownLatch[F]` to `CountDownLatch[Eff.Of[F, E]]`. */
+  inline def liftLatch[F[_]: Functor, E](latch: CountDownLatch[F]): CountDownLatch[Of[F, E]] =
+    latch.mapK(functionK[F, E])
+
+  /** Transforms a `CyclicBarrier[F]` to `CyclicBarrier[Eff.Of[F, E]]`. */
+  inline def liftBarrier[F[_]: Functor, E](barrier: CyclicBarrier[F]): CyclicBarrier[Of[F, E]] =
+    barrier.mapK(functionK[F, E])
+
+  /** Transforms an `AtomicCell[F, A]` to `AtomicCell[Eff.Of[F, E], A]`.
+    *
+    * Note: `evalModify` operations that result in typed errors will propagate as typed errors in
+    * the result, but the cell state remains unchanged when this occurs.
+    */
+  inline def liftCell[F[_], E, A](cell: AtomicCell[F, A])(using F: Monad[F]): AtomicCell[Of[F, E], A] =
+    new AtomicCellImpl(cell, F)
+
+  private[effect] class AtomicCellImpl[F[_], E, A] @publicInBinary() (
+    cell: AtomicCell[F, A],
+    F: Monad[F]
+  ) extends AtomicCell[Of[F, E], A]:
+    def get: Eff[F, E, A] = liftF(cell.get)(using F)
+    def set(a: A): Eff[F, E, Unit] = liftF(cell.set(a))(using F)
+    def modify[B](f: A => (A, B)): Eff[F, E, B] = liftF(cell.modify(f))(using F)
+    def evalModify[B](f: A => Eff[F, E, (A, B)]): Eff[F, E, B] =
+      // Use get + conditional set to handle typed errors properly
+      Eff.lift(
+        F.flatMap(cell.get) { a =>
+          F.flatMap(f(a).either) {
+            case Right((newA, b)) => F.as(cell.set(newA), Right(b))
+            case Left(e)          => F.pure(Left(e))
+          }
+        }
+      )
+    def evalUpdate(f: A => Eff[F, E, A]): Eff[F, E, Unit] =
+      evalModify(a => f(a).map(aa => (aa, ()))(using F)).void(using F)
+    def evalGetAndUpdate(f: A => Eff[F, E, A]): Eff[F, E, A] =
+      evalModify(a => f(a).map(aa => (aa, a))(using F))
+    def evalUpdateAndGet(f: A => Eff[F, E, A]): Eff[F, E, A] =
+      evalModify(a => f(a).map(aa => (aa, aa))(using F))
+  end AtomicCellImpl
+
+  /** Transforms a `Supervisor[F]` to `Supervisor[Eff.Of[F, E]]`. */
+  inline def liftSupervisor[F[_], E](supervisor: Supervisor[F])(using F: Functor[F]): Supervisor[Of[F, E]] =
+    new SupervisorImpl(supervisor, F)
+
+  import cats.effect.kernel.Fiber
+
+  private[effect] class FiberImpl[F[_], E, A] @publicInBinary() (
+    fiber: Fiber[F, Throwable, Either[E, A]],
+    F: Functor[F]
+  ) extends Fiber[Of[F, E], Throwable, A]:
+    def cancel: Eff[F, E, Unit] = liftF(fiber.cancel)(using F)
+    def join: Eff[F, E, Outcome[Of[F, E], Throwable, A]] =
+      liftF(F.map(fiber.join) {
+        case Outcome.Succeeded(fea) =>
+          Outcome.succeeded[Of[F, E], Throwable, A](Eff.lift(fea))
+        case Outcome.Errored(e) =>
+          Outcome.errored[Of[F, E], Throwable, A](e)
+        case Outcome.Canceled() =>
+          Outcome.canceled[Of[F, E], Throwable, A]
+      })(using F)
+  end FiberImpl
+
+  private[effect] class SupervisorImpl[F[_], E] @publicInBinary() (
+    supervisor: Supervisor[F],
+    F: Functor[F]
+  ) extends Supervisor[Of[F, E]]:
+    def supervise[A](fa: Eff[F, E, A]): Eff[F, E, Fiber[Of[F, E], Throwable, A]] =
+      liftF(F.map(supervisor.supervise(fa.either)) { fiber =>
+        new FiberImpl(fiber, F)
+      })(using F)
 
   // --- Typeclass instances -------------------------------------------------
 
@@ -480,4 +728,41 @@ object Eff:
           fin(Outcome.canceled[Of[F, E0], EE, A]).either.void
       }
   end given
+
+  /** `Parallel` instance enabling `parMapN`, `parTraverse`, etc.
+    *
+    * Derives parallel behavior from `F`'s `Parallel` instance. The parallel applicative uses
+    * `Nested[P.F, Either[E, *], *]` which applies `F`'s parallelism while preserving short-circuit
+    * semantics on the first error encountered.
+    *
+    * ==Instance Priority==
+    * When multiple typeclass instances are available:
+    *   - `MonadError[Of[F, E], E]` handles typed errors in the `E` channel
+    *   - `MonadError[Of[F, E], EE]` handles defects from `F` (e.g., `Throwable`)
+    *   - `MonadCancel[Of[F, E], EE]` handles cancellation semantics from `F`
+    *
+    * The typed error instance (`E`) takes precedence for operations on the typed channel, while the
+    * `EE` instance handles effects raised directly in `F`.
+    */
+  given given_Parallel_Of[M[_], E](using P: Parallel[M]): Parallel[Of[M, E]] with
+    type F[x] = Nested[P.F, Either[E, *], x]
+
+    private val eitherApplicative: Applicative[Either[E, *]] =
+      cats.instances.either.catsStdInstancesForEither[E]
+
+    val applicative: Applicative[F] =
+      Nested.catsDataApplicativeForNested[P.F, Either[E, *]](using P.applicative, eitherApplicative)
+
+    val monad: Monad[Of[M, E]] = given_Monad_Of[M, E](using P.monad)
+
+    val sequential: F ~> Of[M, E] =
+      new (F ~> Of[M, E]):
+        def apply[A](nested: Nested[P.F, Either[E, *], A]): Eff[M, E, A] =
+          Eff.lift(P.sequential(nested.value))
+
+    val parallel: Of[M, E] ~> F =
+      new (Of[M, E] ~> F):
+        def apply[A](eff: Eff[M, E, A]): Nested[P.F, Either[E, *], A] =
+          Nested(P.parallel(eff.either))
+  end given_Parallel_Of
 end Eff
