@@ -38,6 +38,7 @@ import cats.effect.kernel.GenTemporal
 import cats.effect.kernel.MonadCancel
 import cats.effect.kernel.Outcome
 import cats.effect.kernel.Poll
+import cats.effect.kernel.Sync
 import cats.syntax.all.*
 import cats.~>
 
@@ -158,6 +159,16 @@ object EffR:
   /** Suspends evaluation until demanded. */
   inline def defer[F[_]: Defer, R, E, A](thunk: => EffR[F, R, E, A]): EffR[F, R, E, A] =
     (r: R) => Eff.defer(thunk(r))
+
+  /** Suspends a side effect that produces an `Either[E, A]`, ignoring the environment.
+    *
+    * Use this for synchronous side-effecting code that returns typed errors:
+    * {{{
+    * EffR.delay[IO, Config, MyError, Int](nativeCall.register())
+    * }}}
+    */
+  inline def delay[F[_], R, E, A](ea: => Either[E, A])(using F: Sync[F]): EffR[F, R, E, A] =
+    (_: R) => Eff.delay(ea)
 
   extension [F[_], R, E, A](self: EffR[F, R, E, A])
     /** Supplies an environment and yields the underlying `Eff`. */
