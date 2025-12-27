@@ -36,6 +36,7 @@ import cats.effect.kernel.Outcome
 import cats.effect.kernel.Poll
 import cats.effect.kernel.Ref
 import cats.effect.kernel.Resource
+import cats.effect.kernel.Sync
 import cats.effect.std.AtomicCell
 import cats.effect.std.CountDownLatch
 import cats.effect.std.CyclicBarrier
@@ -443,6 +444,16 @@ object Eff:
   /** Suspends evaluation until demanded. */
   inline def defer[F[_]: Defer, E, A](thunk: => Eff[F, E, A]): Eff[F, E, A] =
     Defer[F].defer(thunk)
+
+  /** Suspends a side effect that produces an `Either[E, A]`.
+    *
+    * Use this for synchronous side-effecting code that returns typed errors:
+    * {{{
+    * Eff.delay[IO, MyError, Int](nativeCall.register())
+    * }}}
+    */
+  inline def delay[F[_], E, A](ea: => Either[E, A])(using F: Sync[F]): Eff[F, E, A] =
+    F.delay(ea)
 
   // --- Conditional Execution ---
 

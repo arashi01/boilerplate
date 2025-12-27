@@ -129,6 +129,23 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(r, Right(42))
     }
 
+  test("Eff.delay suspends side effect until run"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.delay[IO, String, Int] { executed = true; Right(42) }
+    assert(!executed)
+    runEff(eff).map { r =>
+      assert(executed)
+      assertEquals(r, Right(42))
+    }
+
+  test("Eff.delay captures Left result"):
+    val eff = Eff.delay[IO, String, Int](Left("boom"))
+    runEff(eff).map(r => assertEquals(r, Left("boom")))
+
+  test("Eff.delay captures Right result"):
+    val eff = Eff.delay[IO, String, Int](Right(42))
+    runEff(eff).map(r => assertEquals(r, Right(42)))
+
   // ===========================================================================
   // Conditional Execution
   // ===========================================================================

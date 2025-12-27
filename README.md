@@ -92,7 +92,8 @@ Full constructors:
 |------------|--------------------------------------------------------------------------------|
 | Pure       | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)`|
 | Effectful  | `lift(F[Either])`, `lift(F[Option], ifNone)`                                   |
-| Values     | `succeed`, `fail`, `unit`, `liftF`, `attempt`, `defer`                         |
+| Suspended  | `delay(=> Either)`, `defer(=> Eff)`                                            |
+| Values     | `succeed`, `fail`, `unit`, `liftF`, `attempt`                                  |
 
 ##### Combinators
 
@@ -150,7 +151,8 @@ Full constructors:
 |-------------|--------------------------------------------------------------------------------|
 | Pure        | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)`|
 | Effectful   | `lift(Eff)`, `lift(F[Either])`, `lift(F[Option], ifNone)`                      |
-| Values      | `succeed`, `fail`, `unit`, `attempt`, `defer`                                  |
+| Suspended   | `delay(=> Either)`, `defer(=> EffR)`                                           |
+| Values      | `succeed`, `fail`, `unit`, `attempt`                                           |
 | Environment | `ask`, `wrap`, `fromContext`                                                   |
 
 ##### Combinators

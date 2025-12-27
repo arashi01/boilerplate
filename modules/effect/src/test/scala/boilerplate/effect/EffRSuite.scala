@@ -156,6 +156,23 @@ class EffRSuite extends CatsEffectSuite:
       assertEquals(r, Right(42))
     }
 
+  test("delay suspends side effect until run"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val prog = EffR.delay[IO, Unit, String, Int] { executed = true; Right(42) }
+    assert(!executed, "delay should not execute immediately")
+    runEffR(prog, ()).map { r =>
+      assert(executed, "delay should execute when run")
+      assertEquals(r, Right(42))
+    }
+
+  test("delay captures Left result"):
+    val prog = EffR.delay[IO, Unit, String, Int](Left("boom"))
+    runEffR(prog, ()).map(r => assertEquals(r, Left("boom")))
+
+  test("delay captures Right result"):
+    val prog = EffR.delay[IO, Unit, String, Int](Right(42))
+    runEffR(prog, ()).map(r => assertEquals(r, Right(42)))
+
   test("wrap and fromContext create environment-dependent computations"):
     val wrapped = EffR.wrap[IO, Int, String, Int]((n: Int) => Eff.succeed(n * 2))
     val fromCtx = EffR.fromContext[IO, Int, String, Int](Eff.succeed(summon[Int] * 3))
