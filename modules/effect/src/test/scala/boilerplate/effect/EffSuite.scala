@@ -23,11 +23,8 @@ package boilerplate.effect
 import scala.concurrent.duration.*
 import scala.util.Try
 
-import cats.Monad
-import cats.effect.IO
-import cats.effect.MonadCancelThrow
-import cats.effect.kernel.Outcome
-import cats.effect.kernel.Ref
+import cats.*
+import cats.effect.*
 import cats.effect.std.AtomicCell
 import cats.syntax.all.*
 import munit.CatsEffectSuite
@@ -173,12 +170,7 @@ class EffSuite extends CatsEffectSuite:
   // ===========================================================================
   // Mapping and Transformation
   // ===========================================================================
-
-  test("map transforms success"):
-    runEff(Eff.succeed[IO, String, Int](21).map(_ * 2)).map(r => assertEquals(r, Right(42)))
-
-  test("map preserves failure"):
-    runEff(Eff.fail[IO, String, Int]("err").map(_ * 2)).map(r => assertEquals(r, Left("err")))
+  // Note: Basic map/flatMap laws verified by MonadCancelTests in EffLawsSuite
 
   test("mapError transforms error"):
     runEff(Eff.fail[IO, String, Int]("boom").mapError(_.length)).map(r => assertEquals(r, Left(4)))
@@ -194,16 +186,7 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(s, Right(42))
       assertEquals(f, Left(4))
 
-  test("flatMap short-circuits on failure"):
-    var called = false // scalafix:ok DisableSyntax.var
-    val eff = Eff.fail[IO, String, Int]("err").flatMap { a => called = true; Eff.succeed(a) }
-    runEff(eff).map { r =>
-      assertEquals(r, Left("err"))
-      assert(!called)
-    }
-
-  test("flatMap chains success"):
-    runEff(Eff.succeed[IO, String, Int](21).flatMap(a => Eff.succeed(a * 2))).map(r => assertEquals(r, Right(42)))
+  // Note: flatMap associativity/identity covered by Monad laws in EffLawsSuite
 
   test("semiflatMap applies effectful function"):
     runEff(Eff.succeed[IO, String, Int](21).semiflatMap(a => IO.pure(a * 2))).map(r => assertEquals(r, Right(42)))
@@ -246,49 +229,7 @@ class EffSuite extends CatsEffectSuite:
     val eff: Eff[IO, Int, Int] = Eff.fail[IO, String, Int]("boom").catchAll(e => Eff.fail(e.length))
     runEff(eff).map(r => assertEquals(r, Left(4)))
 
-  test("recover handles matching errors"):
-    runEff(Eff.fail[IO, String, Int]("boom").recover { case "boom" => 42 }).map(r => assertEquals(r, Right(42)))
-
-  test("recover passes through non-matching errors"):
-    runEff(Eff.fail[IO, String, Int]("other").recover { case "boom" => 42 }).map(r => assertEquals(r, Left("other")))
-
-  test("recoverWith handles matching errors effectfully"):
-    val eff = Eff.fail[IO, String, Int]("boom").recoverWith { case "boom" => Eff.succeed(42) }
-    runEff(eff).map(r => assertEquals(r, Right(42)))
-
-  test("recoverWith passes through non-matching errors"):
-    val eff = Eff.fail[IO, String, Int]("other").recoverWith { case "boom" => Eff.succeed(42) }
-    runEff(eff).map(r => assertEquals(r, Left("other")))
-
-  test("onError executes side effect on matching error"):
-    var observed: Option[String] = None // scalafix:ok DisableSyntax.var
-    val eff = Eff.fail[IO, String, Int]("boom").onError { case e => observed = Some(e); Eff.unit }
-    runEff(eff).map { r =>
-      assertEquals(r, Left("boom"))
-      assertEquals(observed, Some("boom"))
-    }
-
-  test("onError skips non-matching errors"):
-    var executed = false // scalafix:ok DisableSyntax.var
-    val eff = Eff.fail[IO, String, Int]("other").onError { case "boom" => executed = true; Eff.unit }
-    runEff(eff).map { r =>
-      assertEquals(r, Left("other"))
-      assert(!executed)
-    }
-
-  test("onError skips on success"):
-    var executed = false // scalafix:ok DisableSyntax.var
-    val eff = Eff.succeed[IO, String, Int](42).onError { case _ => executed = true; Eff.unit }
-    runEff(eff).map { r =>
-      assertEquals(r, Right(42))
-      assert(!executed)
-    }
-
-  test("adaptError transforms matching errors"):
-    runEff(Eff.fail[IO, String, Int]("boom").adaptError { case "boom" => "BOOM" }).map(r => assertEquals(r, Left("BOOM")))
-
-  test("adaptError passes through non-matching errors"):
-    runEff(Eff.fail[IO, String, Int]("other").adaptError { case "boom" => "BOOM" }).map(r => assertEquals(r, Left("other")))
+  // Note: recover/recoverWith/onError/adaptError laws verified by ApplicativeError in EffLawsSuite
 
   // ===========================================================================
   // Alternative
@@ -364,21 +305,7 @@ class EffSuite extends CatsEffectSuite:
   // ===========================================================================
   // Guards
   // ===========================================================================
-
-  test("ensure fails when predicate false"):
-    runEff(Eff.succeed[IO, String, Int](5).ensure("small")(_ > 10)).map(r => assertEquals(r, Left("small")))
-
-  test("ensure passes when predicate true"):
-    runEff(Eff.succeed[IO, String, Int](15).ensure("small")(_ > 10)).map(r => assertEquals(r, Right(15)))
-
-  test("ensure short-circuits on prior failure"):
-    runEff(Eff.fail[IO, String, Int]("prior").ensure("guard")(_ > 0)).map(r => assertEquals(r, Left("prior")))
-
-  test("ensureOr fails with computed error"):
-    runEff(Eff.succeed[IO, String, Int](5).ensureOr(a => s"$a too small")(_ > 10)).map(r => assertEquals(r, Left("5 too small")))
-
-  test("ensureOr passes when predicate true"):
-    runEff(Eff.succeed[IO, String, Int](15).ensureOr(a => s"$a too small")(_ > 10)).map(r => assertEquals(r, Right(15)))
+  // Note: ensure/ensureOr laws verified by MonadError in EffLawsSuite
 
   // ===========================================================================
   // Folding
@@ -395,13 +322,7 @@ class EffSuite extends CatsEffectSuite:
   test("foldF allows effectful handlers"):
     Eff.fail[IO, String, Int]("boom").foldF(e => IO.pure(e.length), a => IO.pure(a)).map(r => assertEquals(r, 4))
 
-  test("redeem always succeeds"):
-    for
-      s <- runEff(Eff.succeed[IO, String, Int](42).redeem(_.length, _.toString))
-      f <- runEff(Eff.fail[IO, String, Int]("boom").redeem(_.length, _.toString))
-    yield
-      assertEquals(s, Right("42"))
-      assertEquals(f, Right(4))
+  // Note: redeem laws verified by ApplicativeError in EffLawsSuite
 
   test("redeemAll allows error type change"):
     val eff = Eff
@@ -424,26 +345,7 @@ class EffSuite extends CatsEffectSuite:
   // ===========================================================================
   // Composition
   // ===========================================================================
-
-  test("*> sequences discarding left result"):
-    runEff(Eff.succeed[IO, String, Int](1) *> Eff.succeed(2)).map(r => assertEquals(r, Right(2)))
-
-  test("*> short-circuits on left failure"):
-    var executed = false // scalafix:ok DisableSyntax.var
-    val eff = Eff.fail[IO, String, Int]("err") *> Eff.liftF(IO { executed = true; 2 })
-    runEff(eff).map { r =>
-      assertEquals(r, Left("err"))
-      assert(!executed)
-    }
-
-  test("<* sequences discarding right result"):
-    runEff(Eff.succeed[IO, String, Int](1) <* Eff.succeed(2)).map(r => assertEquals(r, Right(1)))
-
-  test("<* short-circuits on right failure"):
-    runEff(Eff.succeed[IO, String, Int](1) <* Eff.fail("err")).map(r => assertEquals(r, Left("err")))
-
-  test("product combines into tuple"):
-    runEff(Eff.succeed[IO, String, Int](1).product(Eff.succeed("two"))).map(r => assertEquals(r, Right((1, "two"))))
+  // Note: *>, <*, product, void, as laws verified by Monad/Applicative in EffLawsSuite
 
   test("flatTap keeps original value"):
     var sideEffect = 0 // scalafix:ok DisableSyntax.var
@@ -455,12 +357,6 @@ class EffSuite extends CatsEffectSuite:
 
   test("flatTap short-circuits on side effect failure"):
     runEff(Eff.succeed[IO, String, Int](42).flatTap(_ => Eff.fail("tap failed"))).map(r => assertEquals(r, Left("tap failed")))
-
-  test("void discards success value"):
-    runEff(Eff.succeed[IO, String, Int](42).void).map(r => assertEquals(r, Right(())))
-
-  test("as replaces success value"):
-    runEff(Eff.succeed[IO, String, Int](42).as("hello")).map(r => assertEquals(r, Right("hello")))
 
   // ===========================================================================
   // Variance
@@ -522,12 +418,7 @@ class EffSuite extends CatsEffectSuite:
   test("eitherT wraps as EitherT"):
     Eff.fail[IO, String, Int]("err").eitherT.value.map(r => assertEquals(r, Left("err")))
 
-  test("rethrow re-raises error into F"):
-    val ex = new RuntimeException("boom")
-    Eff.fail[IO, RuntimeException, Int](ex).rethrow.attempt.map(r => assertEquals(r.left.toOption.map(_.getMessage), Some("boom")))
-
-  test("rethrow returns value on success"):
-    Eff.succeed[IO, RuntimeException, Int](42).rethrow.map(r => assertEquals(r, 42))
+  // Note: rethrow laws verified by MonadError in EffLawsSuite
 
   test("absolve re-raises error into F"):
     val ex = new RuntimeException("boom")
@@ -639,6 +530,57 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(attempts, 4) // 1 initial + 3 retries
     }
 
+  test("parSequence collects all successes in parallel"):
+    val effs = List(Eff.succeed[IO, String, Int](1), Eff.succeed[IO, String, Int](2), Eff.succeed[IO, String, Int](3))
+    runEff(Eff.parSequence(effs)).map(r => assertEquals(r, Right(List(1, 2, 3))))
+
+  test("parSequence short-circuits on first error"):
+    val effs = List(Eff.succeed[IO, String, Int](1), Eff.fail[IO, String, Int]("stop"), Eff.succeed[IO, String, Int](3))
+    runEff(Eff.parSequence(effs)).map(r => assertEquals(r, Left("stop")))
+
+  test("retryWithBackoff succeeds after transient failures"):
+    var attempts = 0 // scalafix:ok DisableSyntax.var
+    val eff = Eff.retryWithBackoff(
+      Eff.liftF[IO, String, Unit](IO(attempts += 1)).flatMap(_ => if attempts < 3 then Eff.fail("retry") else Eff.succeed(42)),
+      maxRetries = 5,
+      initialDelay = 1.millis,
+      maxDelay = Some(10.millis)
+    )
+    runEff(eff).map { r =>
+      assertEquals(r, Right(42))
+      assertEquals(attempts, 3)
+    }
+
+  test("retryWithBackoff fails after exhausting retries"):
+    var attempts = 0 // scalafix:ok DisableSyntax.var
+    val eff = Eff.retryWithBackoff(
+      Eff.liftF[IO, String, Unit](IO(attempts += 1)) *> Eff.fail("fail"),
+      maxRetries = 2,
+      initialDelay = 1.millis,
+      maxDelay = None
+    )
+    runEff(eff).map { r =>
+      assertEquals(r, Left("fail"))
+      assertEquals(attempts, 3) // 1 initial + 2 retries
+    }
+
+  test("retryWithBackoff respects maxDelay cap"):
+    val eff = Eff.retryWithBackoff(
+      Eff.liftF[IO, String, Unit](IO.unit) *> Eff.fail("fail"),
+      maxRetries = 3,
+      initialDelay = 100.millis,
+      maxDelay = Some(50.millis) // Cap should prevent 200ms, 400ms delays
+    )
+    for
+      start <- IO.monotonic
+      result <- runEff(eff)
+      end <- IO.monotonic
+      elapsed = end - start
+    yield
+      assertEquals(result, Left("fail"))
+      // With 50ms cap: delays are 50ms, 50ms, 50ms = 150ms total, not 100+200+400=700ms
+      assert(clue(elapsed) < 300.millis)
+
   // ===========================================================================
   // Primitive Lifts
   // ===========================================================================
@@ -672,25 +614,7 @@ class EffSuite extends CatsEffectSuite:
   // ===========================================================================
   // Typeclass Instances
   // ===========================================================================
-
-  test("Monad instance works with for-comprehension"):
-    val M = summon[Monad[Eff.Of[IO, String]]]
-    val prog = M.flatMap(M.pure(20))(a => M.pure(a + 22))
-    runEff(prog).map(r => assertEquals(r, Right(42)))
-
-  test("Monad.tailRecM terminates"):
-    val M = summon[Monad[Eff.Of[IO, String]]]
-    val eff = M.tailRecM(0)(n => Eff.succeed(if n >= 5 then Right(n) else Left(n + 1)))
-    runEff(eff).map(r => assertEquals(r, Right(5)))
-
-  test("MonadError[E] raises typed errors"):
-    val ME = summon[cats.MonadError[Eff.Of[IO, String], String]]
-    runEff(ME.raiseError[Int]("err")).map(r => assertEquals(r, Left("err")))
-
-  test("MonadError[E] handles typed errors"):
-    val ME = summon[cats.MonadError[Eff.Of[IO, String], String]]
-    val eff = ME.handleErrorWith(ME.raiseError[Int]("err"))(_ => ME.pure(42))
-    runEff(eff).map(r => assertEquals(r, Right(42)))
+  // Note: Monad, MonadError, MonadCancel laws verified in EffLawsSuite
 
   test("typed errors and defects are distinguishable"):
     val typedError: Eff[IO, String, Int] = Eff.fail("typed")
@@ -704,24 +628,6 @@ class EffSuite extends CatsEffectSuite:
       assert(defect.isLeft) // IO fails
       assertEquals(defect.left.toOption.map(_.getMessage), Some("defect"))
 
-  test("MonadCancel.canceled propagates cancellation"):
-    given MonadCancelThrow[IO] = IO.asyncForIO
-    val MC = summon[MonadCancelThrow[Eff.Of[IO, String]]]
-    var finalizerRan = false // scalafix:ok DisableSyntax.var
-    val prog = MC.guaranteeCase(MC.canceled) {
-      case Outcome.Canceled() => finalizerRan = true; Eff.unit
-      case _                  => Eff.unit
-    }
-    prog.either.start.flatMap(_.join).map { outcome =>
-      assert(outcome.isCanceled)
-      assert(finalizerRan)
-    }
-
-  test("MonadCancel.forceR discards typed errors from left"):
-    given MonadCancelThrow[IO] = IO.asyncForIO
-    val MC = summon[MonadCancelThrow[Eff.Of[IO, String]]]
-    runEff(MC.forceR(Eff.fail("ignored"))(Eff.succeed(42))).map(r => assertEquals(r, Right(42)))
-
   test("Parallel instance enables parMapN"):
     val eff = (Eff.succeed[IO, String, Int](1), Eff.succeed[IO, String, Int](2)).parMapN(_ + _)
     runEff(eff).map(r => assertEquals(r, Right(3)))
@@ -729,4 +635,97 @@ class EffSuite extends CatsEffectSuite:
   test("Parallel instance short-circuits on error"):
     val eff = (Eff.succeed[IO, String, Int](1), Eff.fail[IO, String, Int]("err")).parMapN(_ + _)
     runEff(eff).map(r => assertEquals(r, Left("err")))
+
+  // ===========================================================================
+  // GenConcurrent Primitives (ref, deferred via typeclass)
+  // ===========================================================================
+
+  test("GenConcurrent.ref creates Ref in Eff context"):
+    import cats.effect.kernel.GenConcurrent
+    val C = summon[GenConcurrent[Eff.Of[IO, String], Throwable]]
+    for
+      ref <- C.ref(42).either
+      _ <- ref.fold(
+             _ => IO.pure(fail("Ref creation should succeed")),
+             r => r.get.either.map(v => assertEquals(v, Right(42)))
+           )
+    yield ()
+
+  test("GenConcurrent.ref supports Eff operations"):
+    import cats.effect.kernel.GenConcurrent
+    val C = summon[GenConcurrent[Eff.Of[IO, String], Throwable]]
+    for
+      refResult <- C.ref(0).either
+      _ <- refResult match
+             case Right(ref) =>
+               for
+                 _ <- ref.update(_ + 10).either
+                 value <- ref.get.either
+               yield assertEquals(value, Right(10))
+             case Left(e) => IO.pure(fail(s"Ref creation failed: $e"))
+    yield ()
+
+  test("GenConcurrent.deferred creates Deferred in Eff context"):
+    import cats.effect.kernel.GenConcurrent
+    val C = summon[GenConcurrent[Eff.Of[IO, String], Throwable]]
+    for
+      defResult <- C.deferred[Int].either
+      _ <- defResult match
+             case Right(d) =>
+               for
+                 _ <- d.complete(42).either
+                 value <- d.get.either
+               yield assertEquals(value, Right(42))
+             case Left(e) => IO.pure(fail(s"Deferred creation failed: $e"))
+    yield ()
+
+  // ===========================================================================
+  // GenTemporal Primitives (sleep via typeclass)
+  // ===========================================================================
+
+  test("GenTemporal.sleep suspends for duration"):
+    import cats.effect.kernel.GenTemporal
+    val T = summon[GenTemporal[Eff.Of[IO, String], Throwable]]
+    for
+      start <- IO.monotonic
+      _ <- T.sleep(10.millis).either
+      end <- IO.monotonic
+    yield assert(clue(end - start) >= 10.millis)
+
+  test("GenTemporal.timeout fails with TimeoutException on exceeded"):
+    import cats.effect.kernel.GenTemporal
+    val T = summon[GenTemporal[Eff.Of[IO, String], Throwable]]
+    val slow = T.sleep(1.second) *> T.pure(42)
+    // TimeoutException is raised in the F[_] defect channel, not the typed error channel
+    T.timeout(slow, 10.millis).either.attempt.map {
+      case Left(e: java.util.concurrent.TimeoutException) => assert(true)
+      case Right(_)                                       => fail("Should have timed out")
+      case Left(e)                                        => fail(s"Wrong error type: ${e.getClass.getName}")
+    }
+
+  test("GenTemporal.timeout succeeds when within duration"):
+    import cats.effect.kernel.GenTemporal
+    val T = summon[GenTemporal[Eff.Of[IO, String], Throwable]]
+    val fast = T.pure(42)
+    T.timeout(fast, 1.second).either.map(r => assertEquals(r, Right(42)))
+
+  test("GenTemporal.monotonic returns time in Eff context"):
+    import cats.effect.kernel.GenTemporal
+    val T = summon[GenTemporal[Eff.Of[IO, String], Throwable]]
+    for
+      t1 <- T.monotonic.either
+      _ <- T.sleep(5.millis).either
+      t2 <- T.monotonic.either
+    yield
+      assert(t1.isRight)
+      assert(t2.isRight)
+      assert(t2.toOption.get >= t1.toOption.get)
+
+  test("GenTemporal.realTime returns wall clock time"):
+    import cats.effect.kernel.GenTemporal
+    val T = summon[GenTemporal[Eff.Of[IO, String], Throwable]]
+    T.realTime.either.map { r =>
+      assert(r.isRight)
+      assert(r.toOption.get.toMillis > 0)
+    }
 end EffSuite

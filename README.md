@@ -8,7 +8,9 @@ Collection of utilities and common patterns useful across Scala 3 projects.
 
 Zero-cost typed-error effects layered atop Cats / Cats Effect.
 
-Standard `MonadError[F, Throwable]` conflates recoverable domain errors with fatal defects, forcing defensive `recover` blocks or losing type safety. `Eff[F, E, A]` provides an explicit, compile-time-tracked error channel `E` separate from `Throwable`, enabling exhaustive pattern matching on failure cases whilst preserving full Cats Effect integration.
+Standard `MonadError[F, Throwable]` conflates recoverable domain errors with fatal defects, forcing defensive `recover`
+blocks or losing type safety. `Eff[F, E, A]` provides an explicit, compile-time-tracked error channel `E` separate from
+`Throwable`, enabling exhaustive pattern matching on failure cases whilst preserving full Cats Effect integration.
 
 **Core abstractions:**
 
@@ -17,7 +19,10 @@ Standard `MonadError[F, Throwable]` conflates recoverable domain errors with fat
 
 Both erase at runtime whilst maintaining compile-time awareness of error and environment types.
 
-**Note on ZIO:** `Eff`/`EffR` are not replacements for ZIO. Eff/EffR is a zero-cost wrapper over cats-effect—the environment channel is a simple function argument with no injection or layer management. Its primary value is as a drop-in for existing cats-effect codebases that want compile-time typed errors without switching ecosystems, whilst providing cleaner syntax than manually threading `EitherT` or composing `Kleisli[EitherT[F, E, *], R, A]`.
+**Note on ZIO:** `Eff`/`EffR` are not replacements for ZIO. Eff/EffR is a wrapper over cats-effect—the environment
+channel and a simple function argument with no injection or layer management. Its primary value is as a drop-in for
+existing cats-effect codebases that want compile-time typed errors without switching ecosystems, whilst providing
+cleaner syntax than manually threading `EitherT` or composing `Kleisli[EitherT[F, E, *], R, A]`.
 
 ```scala
 import boilerplate.effect.*
@@ -88,48 +93,64 @@ Eff[IO].unit                  // UEff[IO, Unit]
 
 Full constructors:
 
-| Category   | Methods                                                                        |
-|------------|--------------------------------------------------------------------------------|
-| Pure       | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)`|
-| Effectful  | `lift(F[Either])`, `lift(F[Option], ifNone)`                                   |
-| Suspended  | `delay(=> Either)`, `defer(=> Eff)`                                            |
-| Values     | `succeed`, `fail`, `unit`, `liftF`, `attempt`                                  |
+| Category  | Methods                                                                         |
+|-----------|---------------------------------------------------------------------------------|
+| Pure      | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)` |
+| Effectful | `lift(F[Either])`, `lift(F[Option], ifNone)`                                    |
+| Suspended | `delay(=> Either)`, `defer(=> Eff)`                                             |
+| Values    | `succeed`, `fail`, `unit`, `liftF`, `attempt`                                   |
 
 ##### Combinators
 
-| Category       | Methods                                                                         |
-|----------------|---------------------------------------------------------------------------------|
-| Mapping        | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `bimap`, `mapError`, `transform` |
-| Composition    | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`          |
-| Recovery       | `valueOr`, `catchAll`, `recover`, `recoverWith`, `onError`, `adaptError`        |
-| Alternative    | `alt`, `orElseSucceed`, `orElseFail`                                            |
-| Folding        | `fold`, `foldF`, `redeem`, `redeemAll`                                          |
-| Guards         | `ensure`, `ensureOr`                                                            |
-| Observation    | `tap`, `tapError`, `flatTapError`                                               |
-| Variance       | `widen`, `widenError`, `assume`, `assumeError`                                  |
-| Extraction     | `option`, `collectSome`, `collectRight`                                         |
-| Conversion     | `either`, `rethrow`, `absolve`, `eitherT`                                       |
-| Resource       | `bracket`, `bracketCase`, `timeout`                                             |
+| Category    | Methods                                                                         |
+|-------------|---------------------------------------------------------------------------------|
+| Mapping     | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `bimap`, `mapError`, `transform` |
+| Composition | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`          |
+| Recovery    | `valueOr`, `catchAll`, `recover`, `recoverWith`, `onError`, `adaptError`        |
+| Alternative | `alt`, `orElseSucceed`, `orElseFail`                                            |
+| Folding     | `fold`, `foldF`, `redeem`, `redeemAll`                                          |
+| Guards      | `ensure`, `ensureOr`                                                            |
+| Observation | `tap`, `tapError`, `flatTapError`                                               |
+| Variance    | `widen`, `widenError`, `assume`, `assumeError`                                  |
+| Extraction  | `option`, `collectSome`, `collectRight`                                         |
+| Conversion  | `either`, `rethrow`, `absolve`, `eitherT`                                       |
+| Resource    | `bracket`, `bracketCase`, `timeout`                                             |
 
 **Method naming notes:**
 
-- `valueOr(f: E => A)` — total recovery mapping all errors to success; named to avoid collision with cats' `recover(pf: PartialFunction)`
+- `valueOr(f: E => A)` — total recovery mapping all errors to success; named to avoid collision with cats'
+  `recover(pf: PartialFunction)`
 - `catchAll(f: E => Eff)` — total recovery switching to alternative computation
-- `redeemAll(fe, fa)` — effectful fold allowing error type change `E => E2`; named to distinguish from cats' `redeemWith` which preserves error type
+- `redeemAll(fe, fa)` — effectful fold allowing error type change `E => E2`; named to distinguish from cats'
+  `redeemWith` which preserves error type
 
 ##### Typeclass Instances
 
 `Eff.Of[F, E]` (the type lambda `[A] =>> Eff[F, E, A]`) derives instances based on the underlying `F`:
 
-| Typeclass              | Requirement on `F`         |
-|------------------------|----------------------------|
-| `Functor`              | `Functor[F]`               |
-| `Monad`                | `Monad[F]`                 |
-| `MonadError[_, E]`     | `Monad[F]`                 |
-| `MonadCancel[_, EE]`   | `MonadCancel[F, EE]`       |
-| `Parallel`             | `Parallel[F]`              |
+| Typeclass                     | Requirement on `F`            | Capability                           |
+|-------------------------------|-------------------------------|--------------------------------------|
+| `Functor`                     | `Functor[F]`                  | `map`                                |
+| `Monad`                       | `Monad[F]`                    | `flatMap`, `pure`                    |
+| `MonadError[_, E]`            | `Monad[F]`                    | Typed error channel (`E`)            |
+| `MonadError[_, EE]`           | `MonadError[F, EE]`           | Defect channel (e.g. `Throwable`)    |
+| `MonadCancel[_, EE]`          | `MonadCancel[F, EE]`          | Cancellation, `bracket`              |
+| `GenSpawn[_, Throwable]`      | `GenSpawn[F, Throwable]`      | `start`, `race`, fibres              |
+| `GenConcurrent[_, Throwable]` | `GenConcurrent[F, Throwable]` | `Ref`, `Deferred`, `memoize`         |
+| `GenTemporal[_, Throwable]`   | `GenTemporal[F, Throwable]`   | `sleep`, `timeout`                   |
+| `Sync`                        | `Sync[F]`                     | `delay`, `blocking`, `interruptible` |
+| `Async`                       | `Async[F]`                    | `async`, `evalOn`, `fromFuture`      |
+| `Parallel`                    | `Parallel[F]`                 | `.parMapN`, `.parTraverse`           |
+| `Clock`                       | `Clock[F]`                    | `monotonic`, `realTime`              |
+| `Unique`                      | `Unique[F]`                   | Unique token generation              |
+| `Defer`                       | `Defer[F]`                    | Lazy evaluation                      |
+| `SemigroupK`                  | `Monad[F]`                    | `combineK` / `<+>`                   |
 
-Priority: `Monad` is the primary sequential instance; `Parallel` enables `.parXxx` operations. When cats syntax is in scope, our extension methods take precedence for unique names (`valueOr`, `catchAll`, `redeemAll`), whilst cats' PartialFunction methods (`recover`, `recoverWith`, `onError`, `adaptError`) remain accessible.
+`EffR.Of[F, R, E]` mirrors these instances, threading the environment through all operations.
+
+When cats syntax is in scope, our extension methods take precedence for unique names (`valueOr`, `catchAll`,
+`redeemAll`), whilst cats' `PartialFunction` methods (`recover`, `recoverWith`, `onError`, `adaptError`) remain
+accessible.
 
 #### `EffR[F, R, E, A]`
 
@@ -147,26 +168,26 @@ EffR[IO, Config].ask           // EffR[IO, Config, Nothing, Config] — retrieve
 
 Full constructors:
 
-| Category    | Methods                                                                        |
-|-------------|--------------------------------------------------------------------------------|
-| Pure        | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)`|
-| Effectful   | `lift(Eff)`, `lift(F[Either])`, `lift(F[Option], ifNone)`                      |
-| Suspended   | `delay(=> Either)`, `defer(=> EffR)`                                           |
-| Values      | `succeed`, `fail`, `unit`, `attempt`                                           |
-| Environment | `ask`, `wrap`, `fromContext`                                                   |
+| Category    | Methods                                                                         |
+|-------------|---------------------------------------------------------------------------------|
+| Pure        | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)` |
+| Effectful   | `lift(Eff)`, `lift(F[Either])`, `lift(F[Option], ifNone)`                       |
+| Suspended   | `delay(=> Either)`, `defer(=> EffR)`                                            |
+| Values      | `succeed`, `fail`, `unit`, `attempt`                                            |
+| Environment | `ask`, `wrap`, `fromContext`                                                    |
 
 ##### Combinators
 
 Mirrors `Eff` combinators, plus environment-specific operations:
 
-| Category       | Methods                                           |
-|----------------|---------------------------------------------------|
-| Environment    | `provide`, `run`, `contramap`, `andThen`          |
-| Variance       | `widen`, `widenEnv`, `assume`, `assumeEnv`        |
-| Recovery       | `valueOr`, `catchAll`, `recover`, `recoverWith`   |
-| Folding        | `fold`, `foldF`, `redeem`, `redeemAll`            |
-| Alternative    | `alt`, `orElseSucceed`, `orElseFail`              |
-| Conversion     | `either`, `rethrow`, `absolve`, `kleisli`         |
+| Category    | Methods                                         |
+|-------------|-------------------------------------------------|
+| Environment | `provide`, `run`, `contramap`, `andThen`        |
+| Variance    | `widen`, `widenEnv`, `assume`, `assumeEnv`      |
+| Recovery    | `valueOr`, `catchAll`, `recover`, `recoverWith` |
+| Folding     | `fold`, `foldF`, `redeem`, `redeemAll`          |
+| Alternative | `alt`, `orElseSucceed`, `orElseFail`            |
+| Conversion  | `either`, `rethrow`, `absolve`, `kleisli`       |
 
 #### Cats-Effect Primitive Interop
 
@@ -200,17 +221,17 @@ semaphore.eff[MyError]
 val fk: IO ~> Eff.Of[IO, MyError] = Eff.functionK[IO, MyError]
 ```
 
-| Primitive         | Lifted Type                               | Constraints                 |
-|-------------------|-------------------------------------------|-----------------------------|
-| `Resource`        | `Resource[Eff.Of[F, E], A]`               | `MonadCancel[F, Throwable]` |
-| `Ref`             | `Ref[Eff.Of[F, E], A]`                    | `Functor[F]`                |
-| `Deferred`        | `Deferred[Eff.Of[F, E], A]`               | `Functor[F]`                |
-| `Queue`           | `Queue[Eff.Of[F, E], A]`                  | `Functor[F]`                |
-| `Semaphore`       | `Semaphore[Eff.Of[F, E]]`                 | `MonadCancel[F, Throwable]` |
-| `CountDownLatch`  | `CountDownLatch[Eff.Of[F, E]]`            | `Functor[F]`                |
-| `CyclicBarrier`   | `CyclicBarrier[Eff.Of[F, E]]`             | `Functor[F]`                |
-| `AtomicCell`      | `AtomicCell[Eff.Of[F, E], A]`             | `Monad[F]`                  |
-| `Supervisor`      | `Supervisor[Eff.Of[F, E]]`                | `Functor[F]`                |
+| Primitive        | Lifted Type                    | Constraints                 |
+|------------------|--------------------------------|-----------------------------|
+| `Resource`       | `Resource[Eff.Of[F, E], A]`    | `MonadCancel[F, Throwable]` |
+| `Ref`            | `Ref[Eff.Of[F, E], A]`         | `Functor[F]`                |
+| `Deferred`       | `Deferred[Eff.Of[F, E], A]`    | `Functor[F]`                |
+| `Queue`          | `Queue[Eff.Of[F, E], A]`       | `Functor[F]`                |
+| `Semaphore`      | `Semaphore[Eff.Of[F, E]]`      | `MonadCancel[F, Throwable]` |
+| `CountDownLatch` | `CountDownLatch[Eff.Of[F, E]]` | `Functor[F]`                |
+| `CyclicBarrier`  | `CyclicBarrier[Eff.Of[F, E]]`  | `Functor[F]`                |
+| `AtomicCell`     | `AtomicCell[Eff.Of[F, E], A]`  | `Monad[F]`                  |
+| `Supervisor`     | `Supervisor[Eff.Of[F, E]]`     | `Functor[F]`                |
 
 Lifted primitives compose naturally with `Eff` for-comprehensions:
 
@@ -228,30 +249,31 @@ yield ()
 Importing `boilerplate.effect.*` provides inline extensions:
 
 | Extension                   | Result Type           |
-|-----------------------------|---------------------|
-| `Either[E, A].eff[F]`       | `Eff[F, E, A]`      |
-| `Either[E, A].effR[F, R]`   | `EffR[F, R, E, A]`  |
-| `F[Either[E, A]].eff`       | `Eff[F, E, A]`      |
-| `F[Either[E, A]].effR[R]`   | `EffR[F, R, E, A]`  |
-| `Option[A].eff[F, E](err)`  | `Eff[F, E, A]`      |
-| `F[Option[A]].eff[E](err)`  | `Eff[F, E, A]`      |
-| `Try[A].eff[F, E](f)`       | `Eff[F, E, A]`      |
-| `F[A].eff[E](f)`            | `Eff[F, E, A]`      |
-| `Kleisli[Of[F,E],R,A].effR` | `EffR[F, R, E, A]`  |
-| `Resource[F, A].eff[E]`     | `Resource[Of[F,E],A]`|
-| `Ref[F, A].eff[E]`          | `Ref[Of[F, E], A]`  |
-| `Deferred[F, A].eff[E]`     | `Deferred[Of[F,E],A]`|
-| `Queue[F, A].eff[E]`        | `Queue[Of[F, E], A]`|
-| `Semaphore[F].eff[E]`       | `Semaphore[Of[F,E]]`|
+|-----------------------------|-----------------------|
+| `Either[E, A].eff[F]`       | `Eff[F, E, A]`        |
+| `Either[E, A].effR[F, R]`   | `EffR[F, R, E, A]`    |
+| `F[Either[E, A]].eff`       | `Eff[F, E, A]`        |
+| `F[Either[E, A]].effR[R]`   | `EffR[F, R, E, A]`    |
+| `Option[A].eff[F, E](err)`  | `Eff[F, E, A]`        |
+| `F[Option[A]].eff[E](err)`  | `Eff[F, E, A]`        |
+| `Try[A].eff[F, E](f)`       | `Eff[F, E, A]`        |
+| `F[A].eff[E](f)`            | `Eff[F, E, A]`        |
+| `Kleisli[Of[F,E],R,A].effR` | `EffR[F, R, E, A]`    |
+| `Resource[F, A].eff[E]`     | `Resource[Of[F,E],A]` |
+| `Ref[F, A].eff[E]`          | `Ref[Of[F, E], A]`    |
+| `Deferred[F, A].eff[E]`     | `Deferred[Of[F,E],A]` |
+| `Queue[F, A].eff[E]`        | `Queue[Of[F, E], A]`  |
+| `Semaphore[F].eff[E]`       | `Semaphore[Of[F,E]]`  |
 
 #### Fiber Join Extensions
 
-When working with `Fiber[Eff.Of[F, E], Throwable, A]` (e.g., from `Supervisor.supervise`), extension methods provide ergonomic join semantics:
+When working with `Fiber[Eff.Of[F, E], Throwable, A]` (e.g., from `Supervisor.supervise`), extension methods provide
+ergonomic join semantics:
 
-| Extension                      | Result Type      | On Cancellation           |
-|--------------------------------|------------------|---------------------------|
-| `fiber.joinNever`              | `Eff[F, E, A]`   | Never completes           |
-| `fiber.joinOrFail(err)`        | `Eff[F, E, A]`   | Fails with typed error    |
+| Extension               | Result Type    | On Cancellation        |
+|-------------------------|----------------|------------------------|
+| `fiber.joinNever`       | `Eff[F, E, A]` | Never completes        |
+| `fiber.joinOrFail(err)` | `Eff[F, E, A]` | Fails with typed error |
 
 ```scala
 Supervisor[IO](await = true).use { sup =>

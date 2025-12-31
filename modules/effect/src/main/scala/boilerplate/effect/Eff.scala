@@ -22,6 +22,7 @@ package boilerplate.effect
 
 import scala.annotation.publicInBinary
 import scala.annotation.targetName
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
 import scala.util.Try
 
@@ -29,7 +30,13 @@ import cats.*
 import cats.arrow.FunctionK
 import cats.data.EitherT
 import cats.data.Nested
+import cats.effect.kernel.Async
+import cats.effect.kernel.Clock
+import cats.effect.kernel.Cont
 import cats.effect.kernel.Deferred
+import cats.effect.kernel.Fiber
+import cats.effect.kernel.GenConcurrent
+import cats.effect.kernel.GenSpawn
 import cats.effect.kernel.GenTemporal
 import cats.effect.kernel.MonadCancel
 import cats.effect.kernel.Outcome
@@ -37,6 +44,7 @@ import cats.effect.kernel.Poll
 import cats.effect.kernel.Ref
 import cats.effect.kernel.Resource
 import cats.effect.kernel.Sync
+import cats.effect.kernel.Unique
 import cats.effect.std.AtomicCell
 import cats.effect.std.CountDownLatch
 import cats.effect.std.CyclicBarrier
@@ -56,19 +64,794 @@ type UEff[F[_], A] = Eff[F, Nothing, A]
 /** Throwable-errored effect: `Eff` with `Throwable` as the error type. */
 type TEff[F[_], A] = Eff[F, Throwable, A]
 
+/** Low-priority `GenSpawn` instance for fibre spawning and racing. */
+private[effect] trait EffInstancesLowPriority5:
+  import Eff.Of
+  import Eff.wrapUnsafe
+  import Eff.unwrapUnsafe
+
+  /** Provides fiber spawning and racing for `Eff` computations.
+    *
+    * Enables `start`, `race`, `racePair`, `background` and related concurrent primitives.
+    *
+    * ==Typed Error Semantics==
+    * A fiber completing with a typed error `E` is considered a ''successful'' `Outcome` from the
+    * fiber's perspective — the typed error is carried within `Outcome.Succeeded`. Defects
+    * (`Throwable`) propagate via `Outcome.Errored`.
+    */
+  given [F[_], E0] => (S: GenSpawn[F, Throwable]) => GenSpawn[Of[F, E0], Throwable]:
+    // --- MonadCancel delegation ---
+
+    def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(S.pure(Right(a)))
+
+    def flatMap[A, B](fa: Eff[F, E0, A])(f: A => Eff[F, E0, B]): Eff[F, E0, B] =
+      wrapUnsafe(
+        S.flatMap(unwrapUnsafe(fa)) {
+          case Right(a) => unwrapUnsafe(f(a))
+          case Left(e)  => S.pure(Left(e))
+        }
+      )
+
+    def tailRecM[A, B](a: A)(f: A => Eff[F, E0, Either[A, B]]): Eff[F, E0, B] =
+      wrapUnsafe(
+        S.tailRecM(a) { current =>
+          S.map(unwrapUnsafe(f(current))) {
+            case Left(e)            => Right(Left(e))
+            case Right(Left(next))  => Left(next)
+            case Right(Right(done)) => Right(Right(done))
+          }
+        }
+      )
+
+    def raiseError[A](e: Throwable): Eff[F, E0, A] =
+      wrapUnsafe(S.raiseError[Either[E0, A]](e))
+
+    def handleErrorWith[A](fa: Eff[F, E0, A])(f: Throwable => Eff[F, E0, A]): Eff[F, E0, A] =
+      wrapUnsafe(S.handleErrorWith(unwrapUnsafe(fa))(e => unwrapUnsafe(f(e))))
+
+    def canceled: Eff[F, E0, Unit] = Eff.liftF(S.canceled)
+
+    def onCancel[A](fa: Eff[F, E0, A], fin: Eff[F, E0, Unit]): Eff[F, E0, A] =
+      Eff.lift(S.onCancel(unwrapUnsafe(fa), S.void(unwrapUnsafe(fin))))
+
+    def forceR[A, B](fa: Eff[F, E0, A])(fb: Eff[F, E0, B]): Eff[F, E0, B] =
+      Eff.lift(S.forceR(unwrapUnsafe(fa))(unwrapUnsafe(fb)))
+
+    def uncancelable[A](body: Poll[Of[F, E0]] => Eff[F, E0, A]): Eff[F, E0, A] =
+      Eff.lift(S.uncancelable { pollF =>
+        unwrapUnsafe(body(Eff.poll(pollF)))
+      })
+
+    override def guaranteeCase[A](fa: Eff[F, E0, A])(
+      fin: Outcome[Of[F, E0], Throwable, A] => Eff[F, E0, Unit]
+    ): Eff[F, E0, A] =
+      Eff.lift(S.guaranteeCase(unwrapUnsafe(fa)) {
+        case Outcome.Succeeded(fea) =>
+          S.void(unwrapUnsafe(fin(Outcome.succeeded[Of[F, E0], Throwable, A](Eff.lift(fea)))))
+        case Outcome.Errored(e) =>
+          S.handleError(S.void(unwrapUnsafe(fin(Outcome.errored[Of[F, E0], Throwable, A](e)))))(_ => ())
+        case Outcome.Canceled() =>
+          S.void(unwrapUnsafe(fin(Outcome.canceled[Of[F, E0], Throwable, A])))
+      })
+
+    // --- Unique delegation ---
+
+    override def applicative: Applicative[Of[F, E0]] = this
+
+    def unique: Eff[F, E0, Unique.Token] = Eff.liftF(S.unique)
+
+    // --- GenSpawn methods ---
+
+    def start[A](fa: Eff[F, E0, A]): Eff[F, E0, Fiber[Of[F, E0], Throwable, A]] =
+      Eff.liftF(S.map(S.start(unwrapUnsafe(fa)))(liftFiber))
+
+    def never[A]: Eff[F, E0, A] = Eff.liftF(S.never)
+
+    def cede: Eff[F, E0, Unit] = Eff.liftF(S.cede)
+
+    def racePair[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      Either[
+        (Outcome[Of[F, E0], Throwable, A], Fiber[Of[F, E0], Throwable, B]),
+        (Fiber[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B])
+      ]
+    ] =
+      Eff.liftF(
+        S.uncancelable(poll =>
+          S.map(poll(S.racePair(unwrapUnsafe(fa), unwrapUnsafe(fb)))) {
+            case Left((oc, fib))  => Left((liftOutcome(oc), liftFiber(fib)))
+            case Right((fib, oc)) => Right((liftFiber(fib), liftOutcome(oc)))
+          }
+        )
+      )
+
+    override def race[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[F, E0, Either[A, B]] =
+      Eff.lift(S.map(S.race(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bisequence))
+
+    override def both[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[F, E0, (A, B)] =
+      Eff.lift(S.map(S.both(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.tupled))
+
+    override def raceOutcome[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      Either[Outcome[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B]]
+    ] =
+      Eff.liftF(S.map(S.raceOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
+
+    override def bothOutcome[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      (Outcome[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B])
+    ] =
+      Eff.liftF(S.map(S.bothOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
+
+    private def liftOutcome[A](oc: Outcome[F, Throwable, Either[E0, A]]): Outcome[Of[F, E0], Throwable, A] =
+      oc match
+        case Outcome.Canceled()     => Outcome.Canceled()
+        case Outcome.Errored(e)     => Outcome.Errored(e)
+        case Outcome.Succeeded(fea) => Outcome.Succeeded(Eff.lift(fea))
+
+    private def liftFiber[A](fib: Fiber[F, Throwable, Either[E0, A]]): Fiber[Of[F, E0], Throwable, A] =
+      Eff.fiber(fib, S)
+  end given
+end EffInstancesLowPriority5
+
+/** Low-priority `GenConcurrent` instance for concurrent primitives. */
+private[effect] trait EffInstancesLowPriority4 extends EffInstancesLowPriority5:
+  import Eff.Of
+  import Eff.wrapUnsafe
+  import Eff.unwrapUnsafe
+
+  /** Provides concurrent primitives (`Ref`, `Deferred`, `memoize`) for `Eff` computations.
+    *
+    * Extends `GenSpawn` with the ability to create concurrent state primitives.
+    */
+  given [F[_], E0] => (C: GenConcurrent[F, Throwable]) => GenConcurrent[Of[F, E0], Throwable]:
+    // --- Inherit all GenSpawn behaviour ---
+
+    def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(C.pure(Right(a)))
+
+    def flatMap[A, B](fa: Eff[F, E0, A])(f: A => Eff[F, E0, B]): Eff[F, E0, B] =
+      wrapUnsafe(
+        C.flatMap(unwrapUnsafe(fa)) {
+          case Right(a) => unwrapUnsafe(f(a))
+          case Left(e)  => C.pure(Left(e))
+        }
+      )
+
+    def tailRecM[A, B](a: A)(f: A => Eff[F, E0, Either[A, B]]): Eff[F, E0, B] =
+      wrapUnsafe(
+        C.tailRecM(a) { current =>
+          C.map(unwrapUnsafe(f(current))) {
+            case Left(e)            => Right(Left(e))
+            case Right(Left(next))  => Left(next)
+            case Right(Right(done)) => Right(Right(done))
+          }
+        }
+      )
+
+    def raiseError[A](e: Throwable): Eff[F, E0, A] =
+      wrapUnsafe(C.raiseError[Either[E0, A]](e))
+
+    def handleErrorWith[A](fa: Eff[F, E0, A])(f: Throwable => Eff[F, E0, A]): Eff[F, E0, A] =
+      wrapUnsafe(C.handleErrorWith(unwrapUnsafe(fa))(e => unwrapUnsafe(f(e))))
+
+    def canceled: Eff[F, E0, Unit] = Eff.liftF(C.canceled)
+
+    def onCancel[A](fa: Eff[F, E0, A], fin: Eff[F, E0, Unit]): Eff[F, E0, A] =
+      Eff.lift(C.onCancel(unwrapUnsafe(fa), C.void(unwrapUnsafe(fin))))
+
+    def forceR[A, B](fa: Eff[F, E0, A])(fb: Eff[F, E0, B]): Eff[F, E0, B] =
+      Eff.lift(C.forceR(unwrapUnsafe(fa))(unwrapUnsafe(fb)))
+
+    def uncancelable[A](body: Poll[Of[F, E0]] => Eff[F, E0, A]): Eff[F, E0, A] =
+      Eff.lift(C.uncancelable { pollF =>
+        unwrapUnsafe(body(Eff.poll(pollF)))
+      })
+
+    override def guaranteeCase[A](fa: Eff[F, E0, A])(
+      fin: Outcome[Of[F, E0], Throwable, A] => Eff[F, E0, Unit]
+    ): Eff[F, E0, A] =
+      Eff.lift(C.guaranteeCase(unwrapUnsafe(fa)) {
+        case Outcome.Succeeded(fea) =>
+          C.void(unwrapUnsafe(fin(Outcome.succeeded[Of[F, E0], Throwable, A](Eff.lift(fea)))))
+        case Outcome.Errored(e) =>
+          C.handleError(C.void(unwrapUnsafe(fin(Outcome.errored[Of[F, E0], Throwable, A](e)))))(_ => ())
+        case Outcome.Canceled() =>
+          C.void(unwrapUnsafe(fin(Outcome.canceled[Of[F, E0], Throwable, A])))
+      })
+
+    override def applicative: Applicative[Of[F, E0]] = this
+
+    def unique: Eff[F, E0, Unique.Token] = Eff.liftF(C.unique)
+
+    // --- GenSpawn methods ---
+
+    def start[A](fa: Eff[F, E0, A]): Eff[F, E0, Fiber[Of[F, E0], Throwable, A]] =
+      Eff.liftF(C.map(C.start(unwrapUnsafe(fa)))(liftFiber))
+
+    def never[A]: Eff[F, E0, A] = Eff.liftF(C.never)
+
+    def cede: Eff[F, E0, Unit] = Eff.liftF(C.cede)
+
+    override def racePair[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      Either[
+        (Outcome[Of[F, E0], Throwable, A], Fiber[Of[F, E0], Throwable, B]),
+        (Fiber[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B])
+      ]
+    ] =
+      Eff.liftF(
+        C.uncancelable(poll =>
+          C.map(poll(C.racePair(unwrapUnsafe(fa), unwrapUnsafe(fb)))) {
+            case Left((oc, fib))  => Left((liftOutcome(oc), liftFiber(fib)))
+            case Right((fib, oc)) => Right((liftFiber(fib), liftOutcome(oc)))
+          }
+        )
+      )
+
+    override def race[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[F, E0, Either[A, B]] =
+      Eff.lift(C.map(C.race(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bisequence))
+
+    override def both[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[F, E0, (A, B)] =
+      Eff.lift(C.map(C.both(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.tupled))
+
+    override def raceOutcome[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      Either[Outcome[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B]]
+    ] =
+      Eff.liftF(C.map(C.raceOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
+
+    override def bothOutcome[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      (Outcome[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B])
+    ] =
+      Eff.liftF(C.map(C.bothOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
+
+    // --- GenConcurrent methods ---
+
+    def ref[A](a: A): Eff[F, E0, Ref[Of[F, E0], A]] =
+      Eff.liftF(C.map(C.ref(a))(_.mapK(Eff.functionK[F, E0])))
+
+    def deferred[A]: Eff[F, E0, Deferred[Of[F, E0], A]] =
+      Eff.liftF(C.map(C.deferred[A])(_.mapK(Eff.functionK[F, E0])))
+
+    private def liftOutcome[A](oc: Outcome[F, Throwable, Either[E0, A]]): Outcome[Of[F, E0], Throwable, A] =
+      oc match
+        case Outcome.Canceled()     => Outcome.Canceled()
+        case Outcome.Errored(e)     => Outcome.Errored(e)
+        case Outcome.Succeeded(fea) => Outcome.Succeeded(Eff.lift(fea))
+
+    private def liftFiber[A](fib: Fiber[F, Throwable, Either[E0, A]]): Fiber[Of[F, E0], Throwable, A] =
+      Eff.fiber(fib, C)
+  end given
+end EffInstancesLowPriority4
+
+/** Low-priority `GenTemporal` instance for temporal operations. */
+private[effect] trait EffInstancesLowPriority3 extends EffInstancesLowPriority4:
+  import Eff.Of
+  import Eff.wrapUnsafe
+  import Eff.unwrapUnsafe
+
+  /** Provides temporal primitives (`sleep`, `timeout`) for `Eff` computations.
+    *
+    * Extends `GenConcurrent` with time-based operations.
+    */
+  given [F[_], E0] => (T: GenTemporal[F, Throwable]) => GenTemporal[Of[F, E0], Throwable]:
+    // --- Inherit all GenConcurrent behaviour ---
+
+    def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(T.pure(Right(a)))
+
+    def flatMap[A, B](fa: Eff[F, E0, A])(f: A => Eff[F, E0, B]): Eff[F, E0, B] =
+      wrapUnsafe(
+        T.flatMap(unwrapUnsafe(fa)) {
+          case Right(a) => unwrapUnsafe(f(a))
+          case Left(e)  => T.pure(Left(e))
+        }
+      )
+
+    def tailRecM[A, B](a: A)(f: A => Eff[F, E0, Either[A, B]]): Eff[F, E0, B] =
+      wrapUnsafe(
+        T.tailRecM(a) { current =>
+          T.map(unwrapUnsafe(f(current))) {
+            case Left(e)            => Right(Left(e))
+            case Right(Left(next))  => Left(next)
+            case Right(Right(done)) => Right(Right(done))
+          }
+        }
+      )
+
+    def raiseError[A](e: Throwable): Eff[F, E0, A] =
+      wrapUnsafe(T.raiseError[Either[E0, A]](e))
+
+    def handleErrorWith[A](fa: Eff[F, E0, A])(f: Throwable => Eff[F, E0, A]): Eff[F, E0, A] =
+      wrapUnsafe(T.handleErrorWith(unwrapUnsafe(fa))(e => unwrapUnsafe(f(e))))
+
+    def canceled: Eff[F, E0, Unit] = Eff.liftF(T.canceled)
+
+    def onCancel[A](fa: Eff[F, E0, A], fin: Eff[F, E0, Unit]): Eff[F, E0, A] =
+      Eff.lift(T.onCancel(unwrapUnsafe(fa), T.void(unwrapUnsafe(fin))))
+
+    def forceR[A, B](fa: Eff[F, E0, A])(fb: Eff[F, E0, B]): Eff[F, E0, B] =
+      Eff.lift(T.forceR(unwrapUnsafe(fa))(unwrapUnsafe(fb)))
+
+    def uncancelable[A](body: Poll[Of[F, E0]] => Eff[F, E0, A]): Eff[F, E0, A] =
+      Eff.lift(T.uncancelable { pollF =>
+        unwrapUnsafe(body(Eff.poll(pollF)))
+      })
+
+    override def guaranteeCase[A](fa: Eff[F, E0, A])(
+      fin: Outcome[Of[F, E0], Throwable, A] => Eff[F, E0, Unit]
+    ): Eff[F, E0, A] =
+      Eff.lift(T.guaranteeCase(unwrapUnsafe(fa)) {
+        case Outcome.Succeeded(fea) =>
+          T.void(unwrapUnsafe(fin(Outcome.succeeded[Of[F, E0], Throwable, A](Eff.lift(fea)))))
+        case Outcome.Errored(e) =>
+          T.handleError(T.void(unwrapUnsafe(fin(Outcome.errored[Of[F, E0], Throwable, A](e)))))(_ => ())
+        case Outcome.Canceled() =>
+          T.void(unwrapUnsafe(fin(Outcome.canceled[Of[F, E0], Throwable, A])))
+      })
+
+    override def applicative: Applicative[Of[F, E0]] = this
+
+    def unique: Eff[F, E0, Unique.Token] = Eff.liftF(T.unique)
+
+    // --- GenSpawn methods ---
+
+    def start[A](fa: Eff[F, E0, A]): Eff[F, E0, Fiber[Of[F, E0], Throwable, A]] =
+      Eff.liftF(T.map(T.start(unwrapUnsafe(fa)))(liftFiber))
+
+    def never[A]: Eff[F, E0, A] = Eff.liftF(T.never)
+
+    def cede: Eff[F, E0, Unit] = Eff.liftF(T.cede)
+
+    override def racePair[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      Either[
+        (Outcome[Of[F, E0], Throwable, A], Fiber[Of[F, E0], Throwable, B]),
+        (Fiber[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B])
+      ]
+    ] =
+      Eff.liftF(
+        T.uncancelable(poll =>
+          T.map(poll(T.racePair(unwrapUnsafe(fa), unwrapUnsafe(fb)))) {
+            case Left((oc, fib))  => Left((liftOutcome(oc), liftFiber(fib)))
+            case Right((fib, oc)) => Right((liftFiber(fib), liftOutcome(oc)))
+          }
+        )
+      )
+
+    override def race[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[F, E0, Either[A, B]] =
+      Eff.lift(T.map(T.race(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bisequence))
+
+    override def both[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[F, E0, (A, B)] =
+      Eff.lift(T.map(T.both(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.tupled))
+
+    override def raceOutcome[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      Either[Outcome[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B]]
+    ] =
+      Eff.liftF(T.map(T.raceOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
+
+    override def bothOutcome[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      (Outcome[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B])
+    ] =
+      Eff.liftF(T.map(T.bothOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
+
+    // --- GenConcurrent methods ---
+
+    def ref[A](a: A): Eff[F, E0, Ref[Of[F, E0], A]] =
+      Eff.liftF(T.map(T.ref(a))(_.mapK(Eff.functionK[F, E0])))
+
+    def deferred[A]: Eff[F, E0, Deferred[Of[F, E0], A]] =
+      Eff.liftF(T.map(T.deferred[A])(_.mapK(Eff.functionK[F, E0])))
+
+    // --- Clock methods ---
+
+    def monotonic: Eff[F, E0, FiniteDuration] = Eff.liftF(T.monotonic)
+
+    def realTime: Eff[F, E0, FiniteDuration] = Eff.liftF(T.realTime)
+
+    // --- GenTemporal methods ---
+
+    protected def sleep(time: FiniteDuration): Eff[F, E0, Unit] =
+      Eff.liftF(T.sleep(time))
+
+    private def liftOutcome[A](oc: Outcome[F, Throwable, Either[E0, A]]): Outcome[Of[F, E0], Throwable, A] =
+      oc match
+        case Outcome.Canceled()     => Outcome.Canceled()
+        case Outcome.Errored(e)     => Outcome.Errored(e)
+        case Outcome.Succeeded(fea) => Outcome.Succeeded(Eff.lift(fea))
+
+    private def liftFiber[A](fib: Fiber[F, Throwable, Either[E0, A]]): Fiber[Of[F, E0], Throwable, A] =
+      Eff.fiber(fib, T)
+  end given
+end EffInstancesLowPriority3
+
+/** Low-priority `Sync` instance for synchronous effect suspension. */
+private[effect] trait EffInstancesLowPriority2 extends EffInstancesLowPriority3:
+  import Eff.Of
+  import Eff.wrapUnsafe
+  import Eff.unwrapUnsafe
+
+  /** Provides synchronous effect suspension for `Eff` computations.
+    *
+    * Enables `delay`, `blocking`, `interruptible` for synchronous side effects.
+    */
+  given [F[_], E0] => (S: Sync[F]) => Sync[Of[F, E0]]:
+    // --- MonadCancel delegation ---
+
+    def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(S.pure(Right(a)))
+
+    def flatMap[A, B](fa: Eff[F, E0, A])(f: A => Eff[F, E0, B]): Eff[F, E0, B] =
+      wrapUnsafe(
+        S.flatMap(unwrapUnsafe(fa)) {
+          case Right(a) => unwrapUnsafe(f(a))
+          case Left(e)  => S.pure(Left(e))
+        }
+      )
+
+    def tailRecM[A, B](a: A)(f: A => Eff[F, E0, Either[A, B]]): Eff[F, E0, B] =
+      wrapUnsafe(
+        S.tailRecM(a) { current =>
+          S.map(unwrapUnsafe(f(current))) {
+            case Left(e)            => Right(Left(e))
+            case Right(Left(next))  => Left(next)
+            case Right(Right(done)) => Right(Right(done))
+          }
+        }
+      )
+
+    def raiseError[A](e: Throwable): Eff[F, E0, A] =
+      wrapUnsafe(S.raiseError[Either[E0, A]](e))
+
+    def handleErrorWith[A](fa: Eff[F, E0, A])(f: Throwable => Eff[F, E0, A]): Eff[F, E0, A] =
+      wrapUnsafe(S.handleErrorWith(unwrapUnsafe(fa))(e => unwrapUnsafe(f(e))))
+
+    def canceled: Eff[F, E0, Unit] = Eff.liftF(S.canceled)
+
+    def onCancel[A](fa: Eff[F, E0, A], fin: Eff[F, E0, Unit]): Eff[F, E0, A] =
+      Eff.lift(S.onCancel(unwrapUnsafe(fa), S.void(unwrapUnsafe(fin))))
+
+    def forceR[A, B](fa: Eff[F, E0, A])(fb: Eff[F, E0, B]): Eff[F, E0, B] =
+      Eff.lift(S.forceR(unwrapUnsafe(fa))(unwrapUnsafe(fb)))
+
+    def uncancelable[A](body: Poll[Of[F, E0]] => Eff[F, E0, A]): Eff[F, E0, A] =
+      Eff.lift(S.uncancelable { pollF =>
+        unwrapUnsafe(body(Eff.poll(pollF)))
+      })
+
+    override def guaranteeCase[A](fa: Eff[F, E0, A])(
+      fin: Outcome[Of[F, E0], Throwable, A] => Eff[F, E0, Unit]
+    ): Eff[F, E0, A] =
+      Eff.lift(S.guaranteeCase(unwrapUnsafe(fa)) {
+        case Outcome.Succeeded(fea) =>
+          S.void(unwrapUnsafe(fin(Outcome.succeeded[Of[F, E0], Throwable, A](Eff.lift(fea)))))
+        case Outcome.Errored(e) =>
+          S.handleError(S.void(unwrapUnsafe(fin(Outcome.errored[Of[F, E0], Throwable, A](e)))))(_ => ())
+        case Outcome.Canceled() =>
+          S.void(unwrapUnsafe(fin(Outcome.canceled[Of[F, E0], Throwable, A])))
+      })
+
+    def rootCancelScope = S.rootCancelScope
+
+    // --- Clock methods ---
+
+    def monotonic: Eff[F, E0, FiniteDuration] = Eff.liftF(S.monotonic)
+
+    def realTime: Eff[F, E0, FiniteDuration] = Eff.liftF(S.realTime)
+
+    // --- Unique methods ---
+
+    override def unique: Eff[F, E0, Unique.Token] = Eff.liftF(S.unique)
+
+    // --- Sync methods ---
+
+    def suspend[A](hint: Sync.Type)(thunk: => A): Eff[F, E0, A] =
+      Eff.liftF(S.suspend(hint)(thunk))
+  end given
+end EffInstancesLowPriority2
+
+/** Low-priority `Async` instance for asynchronous effects. */
+private[effect] trait EffInstancesLowPriority1 extends EffInstancesLowPriority2:
+  import Eff.Of
+  import Eff.wrapUnsafe
+  import Eff.unwrapUnsafe
+
+  /** Provides asynchronous effect capabilities for `Eff` computations.
+    *
+    * Enables `async`, `async_`, `fromFuture`, and evaluation on different execution contexts.
+    */
+  given [F[_], E0] => (A: Async[F]) => Async[Of[F, E0]]:
+    // --- MonadCancel delegation ---
+
+    def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(A.pure(Right(a)))
+
+    def flatMap[A, B](fa: Eff[F, E0, A])(f: A => Eff[F, E0, B]): Eff[F, E0, B] =
+      wrapUnsafe(
+        A.flatMap(unwrapUnsafe(fa)) {
+          case Right(a) => unwrapUnsafe(f(a))
+          case Left(e)  => A.pure(Left(e))
+        }
+      )
+
+    def tailRecM[A, B](a: A)(f: A => Eff[F, E0, Either[A, B]]): Eff[F, E0, B] =
+      wrapUnsafe(
+        A.tailRecM(a) { current =>
+          A.map(unwrapUnsafe(f(current))) {
+            case Left(e)            => Right(Left(e))
+            case Right(Left(next))  => Left(next)
+            case Right(Right(done)) => Right(Right(done))
+          }
+        }
+      )
+
+    def raiseError[A](e: Throwable): Eff[F, E0, A] =
+      wrapUnsafe(A.raiseError[Either[E0, A]](e))
+
+    def handleErrorWith[A](fa: Eff[F, E0, A])(f: Throwable => Eff[F, E0, A]): Eff[F, E0, A] =
+      wrapUnsafe(A.handleErrorWith(unwrapUnsafe(fa))(e => unwrapUnsafe(f(e))))
+
+    def canceled: Eff[F, E0, Unit] = Eff.liftF(A.canceled)
+
+    def onCancel[A](fa: Eff[F, E0, A], fin: Eff[F, E0, Unit]): Eff[F, E0, A] =
+      Eff.lift(A.onCancel(unwrapUnsafe(fa), A.void(unwrapUnsafe(fin))))
+
+    def forceR[A, B](fa: Eff[F, E0, A])(fb: Eff[F, E0, B]): Eff[F, E0, B] =
+      Eff.lift(A.forceR(unwrapUnsafe(fa))(unwrapUnsafe(fb)))
+
+    def uncancelable[A](body: Poll[Of[F, E0]] => Eff[F, E0, A]): Eff[F, E0, A] =
+      Eff.lift(A.uncancelable { pollF =>
+        unwrapUnsafe(body(Eff.poll(pollF)))
+      })
+
+    override def guaranteeCase[A](fa: Eff[F, E0, A])(
+      fin: Outcome[Of[F, E0], Throwable, A] => Eff[F, E0, Unit]
+    ): Eff[F, E0, A] =
+      Eff.lift(A.guaranteeCase(unwrapUnsafe(fa)) {
+        case Outcome.Succeeded(fea) =>
+          A.void(unwrapUnsafe(fin(Outcome.succeeded[Of[F, E0], Throwable, A](Eff.lift(fea)))))
+        case Outcome.Errored(e) =>
+          A.handleError(A.void(unwrapUnsafe(fin(Outcome.errored[Of[F, E0], Throwable, A](e)))))(_ => ())
+        case Outcome.Canceled() =>
+          A.void(unwrapUnsafe(fin(Outcome.canceled[Of[F, E0], Throwable, A])))
+      })
+
+    // --- Unique methods ---
+
+    override def applicative: Applicative[Of[F, E0]] = this
+
+    override def unique: Eff[F, E0, Unique.Token] = Eff.liftF(A.unique)
+
+    // --- GenSpawn methods ---
+
+    def start[A](fa: Eff[F, E0, A]): Eff[F, E0, Fiber[Of[F, E0], Throwable, A]] =
+      Eff.liftF(A.map(A.start(unwrapUnsafe(fa)))(liftFiber))
+
+    override def never[A]: Eff[F, E0, A] = Eff.liftF(A.never)
+
+    def cede: Eff[F, E0, Unit] = Eff.liftF(A.cede)
+
+    override def racePair[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      Either[
+        (Outcome[Of[F, E0], Throwable, A], Fiber[Of[F, E0], Throwable, B]),
+        (Fiber[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B])
+      ]
+    ] =
+      Eff.liftF(
+        A.uncancelable(poll =>
+          A.map(poll(A.racePair(unwrapUnsafe(fa), unwrapUnsafe(fb)))) {
+            case Left((oc, fib))  => Left((liftOutcome(oc), liftFiber(fib)))
+            case Right((fib, oc)) => Right((liftFiber(fib), liftOutcome(oc)))
+          }
+        )
+      )
+
+    override def race[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[F, E0, Either[A, B]] =
+      Eff.lift(A.map(A.race(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bisequence))
+
+    override def both[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[F, E0, (A, B)] =
+      Eff.lift(A.map(A.both(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.tupled))
+
+    override def raceOutcome[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      Either[Outcome[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B]]
+    ] =
+      Eff.liftF(A.map(A.raceOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
+
+    override def bothOutcome[A, B](fa: Eff[F, E0, A], fb: Eff[F, E0, B]): Eff[
+      F,
+      E0,
+      (Outcome[Of[F, E0], Throwable, A], Outcome[Of[F, E0], Throwable, B])
+    ] =
+      Eff.liftF(A.map(A.bothOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
+
+    // --- GenConcurrent methods ---
+
+    def ref[A](a: A): Eff[F, E0, Ref[Of[F, E0], A]] =
+      Eff.liftF(A.map(A.ref(a))(_.mapK(Eff.functionK[F, E0])))
+
+    def deferred[A]: Eff[F, E0, Deferred[Of[F, E0], A]] =
+      Eff.liftF(A.map(A.deferred[A])(_.mapK(Eff.functionK[F, E0])))
+
+    // --- Clock methods ---
+
+    def monotonic: Eff[F, E0, FiniteDuration] = Eff.liftF(A.monotonic)
+
+    def realTime: Eff[F, E0, FiniteDuration] = Eff.liftF(A.realTime)
+
+    // --- GenTemporal methods ---
+
+    def sleep(time: FiniteDuration): Eff[F, E0, Unit] =
+      Eff.liftF(A.sleep(time))
+
+    // --- Sync methods ---
+
+    def suspend[A](hint: Sync.Type)(thunk: => A): Eff[F, E0, A] =
+      Eff.liftF(A.suspend(hint)(thunk))
+
+    // --- Async methods ---
+
+    def cont[K, R](body: Cont[Of[F, E0], K, R]): Eff[F, E0, R] =
+      Eff.lift(A.cont(Eff.contImpl(body)))
+
+    def evalOn[A](fa: Eff[F, E0, A], ec: ExecutionContext): Eff[F, E0, A] =
+      Eff.lift(A.evalOn(unwrapUnsafe(fa), ec))
+
+    def executionContext: Eff[F, E0, ExecutionContext] =
+      Eff.liftF(A.executionContext)
+
+    private def liftOutcome[A](oc: Outcome[F, Throwable, Either[E0, A]]): Outcome[Of[F, E0], Throwable, A] =
+      oc match
+        case Outcome.Canceled()     => Outcome.Canceled()
+        case Outcome.Errored(e)     => Outcome.Errored(e)
+        case Outcome.Succeeded(fea) => Outcome.Succeeded(Eff.lift(fea))
+
+    private def liftFiber[A](fib: Fiber[F, Throwable, Either[E0, A]]): Fiber[Of[F, E0], Throwable, A] =
+      Eff.fiber(fib, A)
+  end given
+end EffInstancesLowPriority1
+
+/** Low-priority defect-channel `MonadCancel` and `MonadError` instances. */
+private[effect] trait EffInstancesLowPriority0 extends EffInstancesLowPriority1:
+  import Eff.Of
+  import Eff.wrapUnsafe
+  import Eff.unwrapUnsafe
+
+  /** Lifts a `MonadError` from `F` itself, propagating external failures (defects). */
+  given [F[_], E, EE] => (F0: MonadError[F, EE]) => MonadError[Of[F, E], EE]:
+    def pure[A](a: A): Eff[F, E, A] = wrapUnsafe(F0.pure(Right(a)))
+
+    def flatMap[A, B](fa: Eff[F, E, A])(f: A => Eff[F, E, B]): Eff[F, E, B] =
+      wrapUnsafe(
+        F0.flatMap(unwrapUnsafe(fa)) {
+          case Right(a) => unwrapUnsafe(f(a))
+          case Left(e)  => F0.pure(Left(e))
+        }
+      )
+
+    def tailRecM[A, B](a: A)(f: A => Eff[F, E, Either[A, B]]): Eff[F, E, B] =
+      wrapUnsafe(
+        F0.tailRecM(a) { current =>
+          F0.map(unwrapUnsafe(f(current))) {
+            case Left(e)            => Right(Left(e))
+            case Right(Left(next))  => Left(next)
+            case Right(Right(done)) => Right(Right(done))
+          }
+        }
+      )
+
+    def raiseError[A](e: EE): Eff[F, E, A] =
+      wrapUnsafe(F0.raiseError[Either[E, A]](e))
+
+    def handleErrorWith[A](fa: Eff[F, E, A])(f: EE => Eff[F, E, A]): Eff[F, E, A] =
+      wrapUnsafe(F0.handleErrorWith(unwrapUnsafe(fa))(e => unwrapUnsafe(f(e))))
+  end given
+
+  /** Delegates cancellation semantics from `F` whilst retaining typed errors. */
+  given [F[_], E0, EE] => (MC: MonadCancel[F, EE]) => MonadCancel[Of[F, E0], EE]:
+    def rootCancelScope = MC.rootCancelScope
+
+    def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(MC.pure(Right(a)))
+
+    def flatMap[A, B](fa: Eff[F, E0, A])(f: A => Eff[F, E0, B]): Eff[F, E0, B] =
+      wrapUnsafe(
+        MC.flatMap(unwrapUnsafe(fa)) {
+          case Right(a) => unwrapUnsafe(f(a))
+          case Left(e)  => MC.pure(Left(e))
+        }
+      )
+
+    def tailRecM[A, B](a: A)(f: A => Eff[F, E0, Either[A, B]]): Eff[F, E0, B] =
+      wrapUnsafe(
+        MC.tailRecM(a) { current =>
+          MC.map(unwrapUnsafe(f(current))) {
+            case Left(e)            => Right(Left(e))
+            case Right(Left(next))  => Left(next)
+            case Right(Right(done)) => Right(Right(done))
+          }
+        }
+      )
+
+    def raiseError[A](e: EE): Eff[F, E0, A] =
+      wrapUnsafe(MC.raiseError[Either[E0, A]](e))
+
+    def handleErrorWith[A](fa: Eff[F, E0, A])(f: EE => Eff[F, E0, A]): Eff[F, E0, A] =
+      wrapUnsafe(MC.handleErrorWith(unwrapUnsafe(fa))(e => unwrapUnsafe(f(e))))
+
+    def canceled: Eff[F, E0, Unit] = Eff.liftF(MC.canceled)
+
+    def onCancel[A](fa: Eff[F, E0, A], fin: Eff[F, E0, Unit]): Eff[F, E0, A] =
+      wrapUnsafe(MC.onCancel(unwrapUnsafe(fa), MC.void(unwrapUnsafe(fin))))
+
+    def forceR[A, B](fa: Eff[F, E0, A])(fb: Eff[F, E0, B]): Eff[F, E0, B] =
+      wrapUnsafe(MC.forceR(unwrapUnsafe(fa))(unwrapUnsafe(fb)))
+
+    def uncancelable[A](body: Poll[Of[F, E0]] => Eff[F, E0, A]): Eff[F, E0, A] =
+      wrapUnsafe(MC.uncancelable { pollF =>
+        unwrapUnsafe(body(Eff.poll(pollF)))
+      })
+
+    override def guaranteeCase[A](fa: Eff[F, E0, A])(fin: Outcome[Of[F, E0], EE, A] => Eff[F, E0, Unit]): Eff[F, E0, A] =
+      wrapUnsafe(MC.guaranteeCase(unwrapUnsafe(fa)) {
+        case Outcome.Succeeded(success) =>
+          val lifted = Outcome.succeeded[Of[F, E0], EE, A](wrapUnsafe(success))
+          MC.void(unwrapUnsafe(fin(lifted)))
+        case Outcome.Errored(err) =>
+          val lifted = Outcome.errored[Of[F, E0], EE, A](err)
+          MC.void(unwrapUnsafe(fin(lifted)))
+        case Outcome.Canceled() =>
+          MC.void(unwrapUnsafe(fin(Outcome.canceled[Of[F, E0], EE, A])))
+      })
+  end given
+end EffInstancesLowPriority0
+
 /** Provides constructors, combinators, and type class instances for [[boilerplate.effect.Eff Eff]]. */
-object Eff:
+object Eff extends EffInstancesLowPriority0:
   /** Partially applied alias enabling higher-kinded usage of [[boilerplate.effect.Eff Eff]]. */
   type Of[F[_], E] = [A] =>> Eff[F, E, A]
+
+  // ===========================================================================
+  // Internal Unsafe Conversion Utilities
+  // ===========================================================================
+  // These provide direct access to the opaque type's underlying representation
+  // for use within boilerplate's implementation where the opaque boundary would
+  // otherwise require inefficient wrapping/unwrapping.
+  // ===========================================================================
+
+  /** Wraps an `F[Either[E, A]]` as `Eff[F, E, A]` without any transformation.
+    *
+    * This is an identity operation at runtime - the opaque type IS the underlying type. For
+    * internal use only where the opaque boundary would otherwise be problematic.
+    */
+  private[boilerplate] inline def wrapUnsafe[F[_], E, A](fea: F[Either[E, A]]): Eff[F, E, A] = fea
+
+  /** Unwraps an `Eff[F, E, A]` to its underlying `F[Either[E, A]]` without transformation.
+    *
+    * This is an identity operation at runtime - the opaque type IS the underlying type. For
+    * internal use only where the opaque boundary would otherwise be problematic.
+    */
+  private[boilerplate] inline def unwrapUnsafe[F[_], E, A](eff: Eff[F, E, A]): F[Either[E, A]] = eff
 
   /** Wraps a pre-existing `F[Either[E, A]]` without allocation. */
   inline def apply[F[_], E, A](fa: F[Either[E, A]]): Eff[F, E, A] = fa
 
   /** Returns a partially-applied constructor fixing the effect type `F`. */
-  def apply[F[_]]: EffPartiallyApplied[F] = new EffPartiallyApplied[F]
+  inline def apply[F[_]]: EffPartiallyApplied[F] = new EffPartiallyApplied[F]
 
   /** Partially-applied constructor enabling `Eff[F].succeed(a)` syntax. */
-  final class EffPartiallyApplied[F[_]] private[Eff] ():
+  final class EffPartiallyApplied[F[_]] @publicInBinary private[Eff]:
     /** Creates a successful computation. */
     inline def succeed[A](a: A)(using F: Applicative[F]): UEff[F, A] =
       F.pure(Right(a))
@@ -537,38 +1320,48 @@ object Eff:
     * This is the canonical way to transform `Resource[F, A]` and other cats-effect primitives to
     * work with `Eff`.
     */
-  def functionK[F[_]: Functor, E]: F ~> Of[F, E] =
-    new FunctionK[F, Of[F, E]]:
-      def apply[A](fa: F[A]): Eff[F, E, A] = liftF(fa)
+  inline def functionK[F[_]: Functor, E]: F ~> Of[F, E] =
+    FunctionKImpl[F, E](summon[Functor[F]])
+
+  private[effect] class FunctionKImpl[F[_], E] @publicInBinary private[Eff] (
+    F: Functor[F]
+  ) extends FunctionK[F, Of[F, E]]:
+    def apply[A](fa: F[A]): Eff[F, E, A] = liftF(fa)(using F)
 
   // --- Cats-Effect Primitive Lifts -----------------------------------------
 
   /** Transforms a `Resource[F, A]` to `Resource[Eff.Of[F, E], A]`. */
-  inline def liftResource[F[_], E, A](resource: Resource[F, A])(using F: MonadCancel[F, Throwable]): Resource[Of[F, E], A] =
-    resource.mapK(functionK[F, E])(using F, given_MonadCancel_Of_EE[F, E, Throwable])
+  inline def liftResource[F[_], E, A](resource: Resource[F, A])(using
+    F: MonadCancel[F, Throwable],
+    G: MonadCancel[Of[F, E], Throwable]
+  ): Resource[Of[F, E], A] =
+    resource.mapK(functionK[F, E])
 
   /** Transforms a `Ref[F, A]` to `Ref[Eff.Of[F, E], A]`. */
-  inline def liftRef[F[_]: Functor, E, A](ref: Ref[F, A]): Ref[Of[F, E], A] =
+  inline def liftRef[F[_], E, A](ref: Ref[F, A])(using F: Functor[F], G: Functor[Of[F, E]]): Ref[Of[F, E], A] =
     ref.mapK(functionK[F, E])
 
   /** Transforms a `Deferred[F, A]` to `Deferred[Eff.Of[F, E], A]`. */
-  inline def liftDeferred[F[_]: Functor, E, A](deferred: Deferred[F, A]): Deferred[Of[F, E], A] =
+  inline def liftDeferred[F[_], E, A](deferred: Deferred[F, A])(using F: Functor[F]): Deferred[Of[F, E], A] =
     deferred.mapK(functionK[F, E])
 
   /** Transforms a `Queue[F, A]` to `Queue[Eff.Of[F, E], A]`. */
-  inline def liftQueue[F[_]: Functor, E, A](queue: Queue[F, A]): Queue[Of[F, E], A] =
+  inline def liftQueue[F[_], E, A](queue: Queue[F, A])(using F: Functor[F]): Queue[Of[F, E], A] =
     queue.mapK(functionK[F, E])
 
   /** Transforms a `Semaphore[F]` to `Semaphore[Eff.Of[F, E]]`. */
-  inline def liftSemaphore[F[_], E](semaphore: Semaphore[F])(using F: MonadCancel[F, Throwable]): Semaphore[Of[F, E]] =
-    semaphore.mapK(functionK[F, E])(using given_MonadCancel_Of_EE[F, E, Throwable])
+  inline def liftSemaphore[F[_], E](semaphore: Semaphore[F])(using
+    F: MonadCancel[F, Throwable],
+    G: MonadCancel[Of[F, E], Throwable]
+  ): Semaphore[Of[F, E]] =
+    semaphore.mapK(functionK[F, E])
 
   /** Transforms a `CountDownLatch[F]` to `CountDownLatch[Eff.Of[F, E]]`. */
-  inline def liftLatch[F[_]: Functor, E](latch: CountDownLatch[F]): CountDownLatch[Of[F, E]] =
+  inline def liftLatch[F[_], E](latch: CountDownLatch[F])(using F: Functor[F]): CountDownLatch[Of[F, E]] =
     latch.mapK(functionK[F, E])
 
   /** Transforms a `CyclicBarrier[F]` to `CyclicBarrier[Eff.Of[F, E]]`. */
-  inline def liftBarrier[F[_]: Functor, E](barrier: CyclicBarrier[F]): CyclicBarrier[Of[F, E]] =
+  inline def liftBarrier[F[_], E](barrier: CyclicBarrier[F])(using F: Functor[F]): CyclicBarrier[Of[F, E]] =
     barrier.mapK(functionK[F, E])
 
   /** Transforms an `AtomicCell[F, A]` to `AtomicCell[Eff.Of[F, E], A]`.
@@ -577,9 +1370,9 @@ object Eff:
     * the result, but the cell state remains unchanged when this occurs.
     */
   inline def liftCell[F[_], E, A](cell: AtomicCell[F, A])(using F: Monad[F]): AtomicCell[Of[F, E], A] =
-    new AtomicCellImpl(cell, F)
+    AtomicCellImpl(cell, F)
 
-  private[effect] class AtomicCellImpl[F[_], E, A] @publicInBinary() (
+  private[effect] class AtomicCellImpl[F[_], E, A] @publicInBinary private[Eff] (
     cell: AtomicCell[F, A],
     F: Monad[F]
   ) extends AtomicCell[Of[F, E], A]:
@@ -606,11 +1399,11 @@ object Eff:
 
   /** Transforms a `Supervisor[F]` to `Supervisor[Eff.Of[F, E]]`. */
   inline def liftSupervisor[F[_], E](supervisor: Supervisor[F])(using F: Functor[F]): Supervisor[Of[F, E]] =
-    new SupervisorImpl(supervisor, F)
+    SupervisorImpl(supervisor, F)
 
   import cats.effect.kernel.Fiber
 
-  private[effect] class FiberImpl[F[_], E, A] @publicInBinary() (
+  private[effect] class FiberImpl[F[_], E, A] @publicInBinary private[Eff] (
     fiber: Fiber[F, Throwable, Either[E, A]],
     F: Functor[F]
   ) extends Fiber[Of[F, E], Throwable, A]:
@@ -626,23 +1419,65 @@ object Eff:
       })(using F)
   end FiberImpl
 
-  private[effect] class SupervisorImpl[F[_], E] @publicInBinary() (
+  private[effect] inline def fiber[F[_], E, A](fib: Fiber[F, Throwable, Either[E, A]], F: Functor[F]): Fiber[Of[F, E], Throwable, A] =
+    FiberImpl(fib, F)
+
+  private[effect] class SupervisorImpl[F[_], E] @publicInBinary private[Eff] (
     supervisor: Supervisor[F],
     F: Functor[F]
   ) extends Supervisor[Of[F, E]]:
     def supervise[A](fa: Eff[F, E, A]): Eff[F, E, Fiber[Of[F, E], Throwable, A]] =
-      liftF(F.map(supervisor.supervise(fa.either)) { fiber =>
-        new FiberImpl(fiber, F)
+      liftF(F.map(supervisor.supervise(fa.either)) { fib =>
+        Eff.fiber(fib, F)
       })(using F)
 
-  // --- Typeclass instances -------------------------------------------------
+  private[effect] class PollImpl[F[_], E] @publicInBinary private[Eff] (
+    pollF: Poll[F]
+  ) extends Poll[Of[F, E]]:
+    def apply[A](eff: Eff[F, E, A]): Eff[F, E, A] = lift(pollF(unwrapUnsafe(eff)))
+
+  private[effect] inline def poll[F[_], E](pollF: Poll[F]): Poll[Of[F, E]] = PollImpl(pollF)
+
+  private[effect] class NatEffFunctionKImpl[F[_], G[_], E] @publicInBinary private[Eff] (
+    lift: F ~> G
+  ) extends FunctionK[Of[F, E], Of[G, E]]:
+    def apply[X](eff: Eff[F, E, X]): Eff[G, E, X] =
+      Eff.lift(lift(unwrapUnsafe(eff)))
+
+  private[effect] inline def natEffFunctionK[F[_], G[_], E](lift: F ~> G): Of[F, E] ~> Of[G, E] =
+    NatEffFunctionKImpl(lift)
+
+  private[effect] class ContImpl[F[_], E0, K, R] @publicInBinary private[Eff] (
+    body: Cont[Of[F, E0], K, R]
+  ) extends Cont[F, K, Either[E0, R]]:
+    def apply[G[_]](using G: MonadCancel[G, Throwable]): (Either[Throwable, K] => Unit, G[K], F ~> G) => G[Either[E0, R]] =
+      (resume, get, lift) => Eff.unwrapUnsafe(body[Of[G, E0]].apply(resume, Eff.liftF(get)(using G), natEffFunctionK(lift)))
+
+  private[effect] inline def contImpl[F[_], E0, K, R](body: Cont[Of[F, E0], K, R]): Cont[F, K, Either[E0, R]] =
+    ContImpl(body)
+
+  private[effect] class ParallelSequentialImpl[M[_], E, PF[_]] @publicInBinary private[Eff] (
+    seq: PF ~> M
+  ) extends FunctionK[Nested[PF, Either[E, *], *], Of[M, E]]:
+    def apply[A](nested: Nested[PF, Either[E, *], A]): Eff[M, E, A] =
+      lift(seq(nested.value))
+
+  private[effect] class ParallelParImpl[M[_], E, PF[_]] @publicInBinary private[Eff] (
+    par: M ~> PF
+  ) extends FunctionK[Of[M, E], Nested[PF, Either[E, *], *]]:
+    def apply[A](eff: Eff[M, E, A]): Nested[PF, Either[E, *], A] =
+      Nested(par(eff.either))
+
+  // ---------------------------------------------------------------------------
+  // Typeclass Instances
+  // ---------------------------------------------------------------------------
 
   /** Inherits `Functor` from the base effect, lifting over the error channel. */
-  given [F[_]: Functor, E]: Functor[Of[F, E]] with
+  given [F[_]: Functor, E] => Functor[Of[F, E]]:
     def map[A, B](fa: Eff[F, E, A])(f: A => B): Eff[F, E, B] = fa.map(f)
 
   /** `Monad` instance mirroring the `Either` structure with typed errors. */
-  given [F[_]: Monad, E]: Monad[Of[F, E]] with
+  given [F[_]: Monad, E] => Monad[Of[F, E]]:
     def pure[A](a: A): Eff[F, E, A] = succeed(a)
 
     def flatMap[A, B](fa: Eff[F, E, A])(f: A => Eff[F, E, B]): Eff[F, E, B] =
@@ -650,7 +1485,7 @@ object Eff:
 
     def tailRecM[A, B](a: A)(f: A => Eff[F, E, Either[A, B]]): Eff[F, E, B] =
       Monad[F].tailRecM(a) { current =>
-        Functor[F].map(f(current)) {
+        Functor[F].map(f(current).either) {
           case Left(e)            => Right(Left(e))
           case Right(Left(next))  => Left(next)
           case Right(Right(done)) => Right(Right(done))
@@ -658,8 +1493,11 @@ object Eff:
       }
   end given
 
-  /** Canonical `MonadError` for the typed error channel. */
-  given [F[_]: Monad, E]: MonadError[Of[F, E], E] with
+  /** Canonical `MonadError` for the typed error channel.
+    *
+    * This instance handles the typed error channel `E`, providing `recover`, `ensure`, etc.
+    */
+  given [F[_]: Monad, E] => MonadError[Of[F, E], E]:
     def pure[A](a: A): Eff[F, E, A] = succeed(a)
 
     def flatMap[A, B](fa: Eff[F, E, A])(f: A => Eff[F, E, B]): Eff[F, E, B] =
@@ -674,88 +1512,13 @@ object Eff:
       fa.catchAll(f)
   end given
 
-  /** Lifts a `MonadError` from `F` itself, propagating external failures. */
-  given [F[_], E, EE](using F0: MonadError[F, EE]): MonadError[Of[F, E], EE] with
-    def pure[A](a: A): Eff[F, E, A] = succeed(a)
-
-    def flatMap[A, B](fa: Eff[F, E, A])(f: A => Eff[F, E, B]): Eff[F, E, B] =
-      fa.flatMap(f)
-
-    def tailRecM[A, B](a: A)(f: A => Eff[F, E, Either[A, B]]): Eff[F, E, B] =
-      summon[Monad[Of[F, E]]].tailRecM(a)(f)
-
-    def raiseError[A](e: EE): Eff[F, E, A] =
-      F0.raiseError[Either[E, A]](e)
-
-    def handleErrorWith[A](fa: Eff[F, E, A])(f: EE => Eff[F, E, A]): Eff[F, E, A] =
-      F0.handleErrorWith(fa)(f)
-  end given
-
-  /** Delegates cancellation semantics from `F` whilst retaining typed errors. */
-  given [F[_], E0, EE](using MC: MonadCancel[F, EE]): MonadCancel[Of[F, E0], EE] with
-    def rootCancelScope = MC.rootCancelScope
-
-    def pure[A](a: A): Eff[F, E0, A] = Eff.succeed(a)
-
-    def flatMap[A, B](fa: Eff[F, E0, A])(f: A => Eff[F, E0, B]): Eff[F, E0, B] =
-      fa.flatMap(f)
-
-    def tailRecM[A, B](a: A)(f: A => Eff[F, E0, Either[A, B]]): Eff[F, E0, B] =
-      summon[Monad[Of[F, E0]]].tailRecM(a)(f)
-
-    def raiseError[A](e: EE): Eff[F, E0, A] =
-      MC.raiseError[Either[E0, A]](e)
-
-    def handleErrorWith[A](fa: Eff[F, E0, A])(f: EE => Eff[F, E0, A]): Eff[F, E0, A] =
-      MC.handleErrorWith(fa)(f)
-
-    def canceled: Eff[F, E0, Unit] = liftF(MC.canceled)
-
-    private inline def discard(fin: Eff[F, E0, Unit]): F[Unit] =
-      MC.map(fin)(_ => ())
-
-    def onCancel[A](fa: Eff[F, E0, A], fin: Eff[F, E0, Unit]): Eff[F, E0, A] =
-      MC.onCancel(fa, discard(fin))
-
-    def forceR[A, B](fa: Eff[F, E0, A])(fb: Eff[F, E0, B]): Eff[F, E0, B] =
-      MC.forceR(fa)(fb)
-
-    def uncancelable[A](body: Poll[Of[F, E0]] => Eff[F, E0, A]): Eff[F, E0, A] =
-      MC.uncancelable { pollF =>
-        val lifted = new Poll[Of[F, E0]]:
-          def apply[B](eff: Eff[F, E0, B]): Eff[F, E0, B] = pollF(eff)
-        body(lifted)
-      }
-
-    override def guaranteeCase[A](fa: Eff[F, E0, A])(fin: Outcome[Of[F, E0], EE, A] => Eff[F, E0, Unit]): Eff[F, E0, A] =
-      MC.guaranteeCase(fa) {
-        case Outcome.Succeeded(success) =>
-          val lifted = Outcome.succeeded[Of[F, E0], EE, A](success)
-          fin(lifted).either.void
-        case Outcome.Errored(err) =>
-          val lifted = Outcome.errored[Of[F, E0], EE, A](err)
-          MC.map(fin(lifted).either)(_ => ())
-        case Outcome.Canceled() =>
-          fin(Outcome.canceled[Of[F, E0], EE, A]).either.void
-      }
-  end given
-
   /** `Parallel` instance enabling `parMapN`, `parTraverse`, etc.
     *
     * Derives parallel behavior from `F`'s `Parallel` instance. The parallel applicative uses
     * `Nested[P.F, Either[E, *], *]` which applies `F`'s parallelism while preserving short-circuit
     * semantics on the first error encountered.
-    *
-    * ==Instance Priority==
-    * When multiple typeclass instances are available:
-    *   - `MonadError[Of[F, E], E]` handles typed errors in the `E` channel
-    *   - `MonadError[Of[F, E], EE]` handles defects from `F` (e.g., `Throwable`)
-    *   - `MonadCancel[Of[F, E], EE]` handles cancellation semantics from `F`
-    *
-    * The typed error instance (`E`) takes precedence for operations on the typed channel, while the
-    * `EE` instance handles effects raised directly in `F`.
     */
-  given given_Parallel_Of[M[_], E](using P: Parallel[M]): Parallel[Of[M, E]] with
+  given [M[_], E] => (P: Parallel[M]) => Parallel[Of[M, E]]:
     type F[x] = Nested[P.F, Either[E, *], x]
 
     private val eitherApplicative: Applicative[Either[E, *]] =
@@ -764,16 +1527,71 @@ object Eff:
     val applicative: Applicative[F] =
       Nested.catsDataApplicativeForNested[P.F, Either[E, *]](using P.applicative, eitherApplicative)
 
-    val monad: Monad[Of[M, E]] = given_Monad_Of[M, E](using P.monad)
+    val monad: Monad[Of[M, E]] =
+      given Monad[M] = P.monad
+      summon[Monad[Of[M, E]]]
 
     val sequential: F ~> Of[M, E] =
-      new (F ~> Of[M, E]):
-        def apply[A](nested: Nested[P.F, Either[E, *], A]): Eff[M, E, A] =
-          Eff.lift(P.sequential(nested.value))
+      ParallelSequentialImpl(P.sequential)
 
     val parallel: Of[M, E] ~> F =
-      new (Of[M, E] ~> F):
-        def apply[A](eff: Eff[M, E, A]): Nested[P.F, Either[E, *], A] =
-          Nested(P.parallel(eff.either))
-  end given_Parallel_Of
+      ParallelParImpl(P.parallel)
+  end given
+
+  /** Defers evaluation of `Eff` computations until demanded.
+    *
+    * Enables safe recursive definitions and lazy evaluation patterns.
+    */
+  given [F[_], E] => (D: Defer[F]) => Defer[Of[F, E]]:
+    def defer[A](fa: => Eff[F, E, A]): Eff[F, E, A] =
+      lift(D.defer(fa.either))
+
+  /** Provides time measurement capabilities for `Eff` computations.
+    *
+    * Delegates to the underlying `Clock[F]` instance, lifting results as successes.
+    */
+  given [F[_], E] => (C: Clock[F], F: Monad[F]) => Clock[Of[F, E]]:
+    val applicative: Applicative[Of[F, E]] = summon[Monad[Of[F, E]]]
+
+    def monotonic: Eff[F, E, FiniteDuration] = liftF(C.monotonic)
+
+    def realTime: Eff[F, E, FiniteDuration] = liftF(C.realTime)
+
+  /** Provides unique token generation for `Eff` computations.
+    *
+    * Useful for fiber identification and other concurrency primitives.
+    */
+  given [F[_], E] => (U: Unique[F], F: Monad[F]) => Unique[Of[F, E]]:
+    val applicative: Applicative[Of[F, E]] = summon[Monad[Of[F, E]]]
+
+    def unique: Eff[F, E, Unique.Token] = liftF(U.unique)
+
+  /** Provides choice/alternative semantics for `Eff` computations.
+    *
+    * `combineK` tries the first computation; if it fails with a typed error, falls back to the
+    * second. This is equivalent to the `alt` extension method but via the `SemigroupK` typeclass.
+    */
+  given [F[_]: Monad, E] => SemigroupK[Of[F, E]]:
+    def combineK[A](x: Eff[F, E, A], y: Eff[F, E, A]): Eff[F, E, A] =
+      x.alt(y)
+
+  /** Combines two `Eff` computations when both succeed, using `Semigroup` to combine values.
+    *
+    * If either computation fails, the error propagates. Both computations must succeed for the
+    * combination to occur.
+    */
+  given [F[_]: Monad, E, A] => (S: Semigroup[A]) => Semigroup[Eff[F, E, A]]:
+    def combine(x: Eff[F, E, A], y: Eff[F, E, A]): Eff[F, E, A] =
+      x.flatMap(a => y.map(b => S.combine(a, b)))
+
+  /** Combines `Eff` computations with an identity element.
+    *
+    * `empty` produces a successful computation with `Monoid[A].empty`. Combining follows
+    * `Semigroup` semantics where both must succeed for values to be combined.
+    */
+  given [F[_]: Monad, E, A] => (M: Monoid[A]) => Monoid[Eff[F, E, A]]:
+    def empty: Eff[F, E, A] = succeed(M.empty)
+
+    def combine(x: Eff[F, E, A], y: Eff[F, E, A]): Eff[F, E, A] =
+      x.flatMap(a => y.map(b => M.combine(a, b)))
 end Eff
