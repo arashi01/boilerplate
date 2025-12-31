@@ -22,8 +22,8 @@ package boilerplate.effect
 
 import scala.util.Try
 
-import cats.Id
-import cats.effect.IO
+import cats.*
+import cats.effect.*
 import cats.syntax.all.*
 import munit.CatsEffectSuite
 
@@ -108,4 +108,50 @@ class SyntaxSuite extends CatsEffectSuite:
 
   test("Try.effR converts success with environment"):
     runEffR(Try(42).effR[IO, Unit, String](_.getMessage), ()).map(result => assertEquals(result, Right(42)))
+
+  // ===========================================================================
+  // Fiber Join Extensions
+  // ===========================================================================
+
+  test("Fiber.joinNever returns value on success"):
+    val eff: Eff[IO, String, Int] = Eff.succeed(42)
+    for
+      fiber <- GenSpawn[IO].start(eff.either)
+      liftedFiber = Eff.fiber[IO, String, Int](fiber, Functor[IO])
+      result <- liftedFiber.joinNever.either
+    yield assertEquals(result, Right(42))
+
+  test("Fiber.joinNever propagates typed error"):
+    val eff: Eff[IO, String, Int] = Eff.fail("boom")
+    for
+      fiber <- GenSpawn[IO].start(eff.either)
+      liftedFiber = Eff.fiber[IO, String, Int](fiber, Functor[IO])
+      result <- liftedFiber.joinNever.either
+    yield assertEquals(result, Left("boom"))
+
+  test("Fiber.joinOrFail returns value on success"):
+    val eff: Eff[IO, String, Int] = Eff.succeed(42)
+    for
+      fiber <- GenSpawn[IO].start(eff.either)
+      liftedFiber = Eff.fiber[IO, String, Int](fiber, Functor[IO])
+      result <- liftedFiber.joinOrFail("canceled").either
+    yield assertEquals(result, Right(42))
+
+  test("Fiber.joinOrFail propagates typed error"):
+    val eff: Eff[IO, String, Int] = Eff.fail("boom")
+    for
+      fiber <- GenSpawn[IO].start(eff.either)
+      liftedFiber = Eff.fiber[IO, String, Int](fiber, Functor[IO])
+      result <- liftedFiber.joinOrFail("canceled").either
+    yield assertEquals(result, Left("boom"))
+
+  test("Fiber.joinOrFail returns error on cancellation"):
+    for
+      deferred <- Deferred[IO, Unit]
+      eff: Eff[IO, String, Int] = Eff.liftF(deferred.get *> IO.pure(42))
+      fiber <- GenSpawn[IO].start(eff.either)
+      liftedFiber = Eff.fiber[IO, String, Int](fiber, Functor[IO])
+      _ <- fiber.cancel
+      result <- liftedFiber.joinOrFail("was canceled").either
+    yield assertEquals(result, Left("was canceled"))
 end SyntaxSuite

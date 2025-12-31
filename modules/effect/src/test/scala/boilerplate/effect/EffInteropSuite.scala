@@ -20,12 +20,9 @@
  */
 package boilerplate.effect
 
-import cats.effect.IO
-import cats.effect.kernel.Deferred
-import cats.effect.kernel.Ref
-import cats.effect.kernel.Resource
-import cats.effect.std.Queue
-import cats.effect.std.Semaphore
+import cats.*
+import cats.effect.*
+import cats.effect.std.*
 import cats.syntax.all.*
 import munit.CatsEffectSuite
 

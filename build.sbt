@@ -24,8 +24,12 @@ inThisBuild(
 
 val libraries = new {
   val `cats-effect` = Def.setting("org.typelevel" %%% "cats-effect" % "3.7.0-RC1")
+  val `cats-effect-laws` = Def.setting("org.typelevel" %%% "cats-effect-laws" % "3.7.0-RC1")
+  val `cats-effect-testkit` = Def.setting("org.typelevel" %%% "cats-effect-testkit" % "3.7.0-RC1")
+  val `discipline-munit` = Def.setting("org.typelevel" %%% "discipline-munit" % "2.0.0")
   val munit = Def.setting("org.scalameta" %%% "munit" % "1.2.1")
   val `munit-cats-effect` = Def.setting("org.typelevel" %%% "munit-cats-effect" % "2.2.0-RC1")
+  val `munit-scalacheck` = Def.setting("org.scalameta" %%% "munit-scalacheck" % "1.2.0")
   val `scala-java-time` = Def.setting("io.github.cquiroz" %%% "scala-java-time" % "2.6.0")
 }
 
@@ -38,6 +42,7 @@ val `boilerplate` =
     .settings(unitTestSettings)
     .settings(fileHeaderSettings)
     .settings(publishSettings)
+    .nativeSettings(nativeSettings)
 
 val `boilerplate-effect` =
   crossProject(JVMPlatform, JSPlatform, NativePlatform)
@@ -50,6 +55,23 @@ val `boilerplate-effect` =
     .settings(publishSettings)
     .settings(libraryDependencies += libraries.`cats-effect`.value)
     .settings(libraryDependencies += libraries.`munit-cats-effect`.value % Test)
+    .nativeSettings(nativeSettings)
+
+val `boilerplate-effect-laws` =
+  crossProject(JVMPlatform, JSPlatform, NativePlatform)
+    .withoutSuffixFor(JVMPlatform)
+    .crossType(CrossType.Pure)
+    .in(file("modules/effect-laws"))
+    .dependsOn(`boilerplate-effect`)
+    .settings(compilerSettings)
+    .settings(fileHeaderSettings)
+    .settings(publish / skip := true)
+    .settings(libraryDependencies += libraries.`cats-effect`.value)
+    .settings(libraryDependencies += libraries.`cats-effect-laws`.value)
+    .settings(libraryDependencies += libraries.`cats-effect-testkit`.value)
+    .settings(libraryDependencies += libraries.`discipline-munit`.value % Test)
+    .settings(libraryDependencies += libraries.`munit-cats-effect`.value % Test)
+    .nativeSettings(nativeSettings)
 
 val `boilerplate-jvm` =
   project
@@ -57,7 +79,8 @@ val `boilerplate-jvm` =
     .settings(publish / skip := true)
     .aggregate(
       `boilerplate`.jvm,
-      `boilerplate-effect`.jvm
+      `boilerplate-effect`.jvm,
+      `boilerplate-effect-laws`.jvm
     )
 
 val `boilerplate-js` =
@@ -66,7 +89,8 @@ val `boilerplate-js` =
     .settings(publish / skip := true)
     .aggregate(
       `boilerplate`.js,
-      `boilerplate-effect`.js
+      `boilerplate-effect`.js,
+      `boilerplate-effect-laws`.js
     )
 
 val `boilerplate-native` =
@@ -75,7 +99,8 @@ val `boilerplate-native` =
     .settings(publish / skip := true)
     .aggregate(
       `boilerplate`.native,
-      `boilerplate-effect`.native
+      `boilerplate-effect`.native,
+      `boilerplate-effect-laws`.native
     )
 
 val `boilerplate-root` =
@@ -87,6 +112,10 @@ val `boilerplate-root` =
       `boilerplate-js`,
       `boilerplate-native`
     )
+
+def nativeSettings = List(
+  dependencyOverrides += "org.scala-native" %%% "test-interface" % "0.5.9" % Test
+)
 
 def baseCompilerOptions = List(
   // Language features
@@ -144,6 +173,7 @@ def formattingSettings = List(
 def unitTestSettings: List[Setting[?]] = List(
   libraryDependencies ++= List(
     libraries.munit.value % Test,
+    libraries.`munit-scalacheck`.value % Test,
     libraries.`scala-java-time`.value % Test
   ),
   testFrameworks += new TestFramework("munit.Framework")

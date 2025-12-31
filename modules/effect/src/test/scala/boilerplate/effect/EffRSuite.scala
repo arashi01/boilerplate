@@ -23,10 +23,8 @@ package boilerplate.effect
 import scala.concurrent.duration.*
 import scala.util.Try
 
-import cats.Monad
-import cats.effect.IO
-import cats.effect.MonadCancelThrow
-import cats.effect.kernel.Outcome
+import cats.*
+import cats.effect.*
 import cats.syntax.all.*
 import munit.CatsEffectSuite
 

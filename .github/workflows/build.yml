@@ -33,7 +33,7 @@ jobs:
       matrix:
         java: [17, 25]
         os: [ubuntu-latest]
-        platform: [js]
+        platform: [jvm, native, js]
 
     steps:
       - name: Checkout
