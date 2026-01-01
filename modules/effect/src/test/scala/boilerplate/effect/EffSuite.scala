@@ -712,4 +712,120 @@ class EffSuite extends CatsEffectSuite:
       assert(r.isRight)
       assert(r.toOption.get.toMillis > 0)
     }
+
+  // ===========================================================================
+  // Data Typeclass Instances
+  // ===========================================================================
+  // These tests verify OUR implementation logic for data typeclasses.
+  // Law tests verify algebraic properties; these verify design decisions.
+
+  test("Foldable.foldLeft skips error values"):
+    import cats.Foldable
+    // Using Option as base since IO doesn't have Foldable
+    val F = summon[Foldable[Eff.Of[Option, String]]]
+    val failure: Eff[Option, String, Int] = Eff.fail("err")
+    val result = F.foldLeft(failure, 0)(_ + _)
+    assertEquals(result, 0) // Error treated as empty
+
+  test("Foldable.foldLeft accumulates success values"):
+    import cats.Foldable
+    val F = summon[Foldable[Eff.Of[Option, String]]]
+    val success: Eff[Option, String, Int] = Eff.succeed(42)
+    val result = F.foldLeft(success, 10)(_ + _)
+    assertEquals(result, 52)
+
+  test("Foldable.foldRight skips error values"):
+    import cats.{Eval, Foldable}
+    val F = summon[Foldable[Eff.Of[Option, String]]]
+    val failure: Eff[Option, String, Int] = Eff.fail("err")
+    val result = F.foldRight(failure, Eval.now(0))((a, acc) => acc.map(_ + a)).value
+    assertEquals(result, 0)
+
+  test("Foldable handles None in outer layer"):
+    import cats.Foldable
+    val F = summon[Foldable[Eff.Of[Option, String]]]
+    val absent: Eff[Option, String, Int] = Eff.lift(None)
+    val result = F.foldLeft(absent, 100)(_ + _)
+    assertEquals(result, 100) // Outer None means no values to fold
+
+  test("Traverse.traverse transforms success values"):
+    import cats.Traverse
+    val T = summon[Traverse[Eff.Of[Option, String]]]
+    val success: Eff[Option, String, Int] = Eff.succeed(21)
+    val result: Option[Eff[Option, String, Int]] = T.traverse(success)(a => Option(a * 2))
+    assertEquals(result.map(_.either), Some(Some(Right(42))))
+
+  test("Traverse.traverse preserves error values unchanged"):
+    import cats.Traverse
+    val T = summon[Traverse[Eff.Of[Option, String]]]
+    val failure: Eff[Option, String, Int] = Eff.fail("err")
+    val result: Option[Eff[Option, String, Int]] = T.traverse(failure)(a => Option(a * 2))
+    assertEquals(result.map(_.either), Some(Some(Left("err"))))
+
+  test("Traverse.traverse handles None in function result"):
+    import cats.Traverse
+    val T = summon[Traverse[Eff.Of[Option, String]]]
+    val success: Eff[Option, String, Int] = Eff.succeed(42)
+    val result: Option[Eff[Option, String, Int]] = T.traverse(success)(_ => None)
+    assertEquals(result, None)
+
+  test("Bifoldable.bifoldLeft folds error channel"):
+    import cats.Bifoldable
+    val BF = summon[Bifoldable[[E, A] =>> Eff[Option, E, A]]]
+    val failure: Eff[Option, String, Int] = Eff.fail("err")
+    val result = BF.bifoldLeft(failure, "")(
+      (acc, e) => acc + e, // error handler
+      (acc, _) => acc // success handler (shouldn't run)
+    )
+    assertEquals(result, "err")
+
+  test("Bifoldable.bifoldLeft folds success channel"):
+    import cats.Bifoldable
+    val BF = summon[Bifoldable[[E, A] =>> Eff[Option, E, A]]]
+    val success: Eff[Option, String, Int] = Eff.succeed(42)
+    val result = BF.bifoldLeft(success, 0)(
+      (acc, _) => acc, // error handler (shouldn't run)
+      (acc, a) => acc + a // success handler
+    )
+    assertEquals(result, 42)
+
+  test("Bifoldable handles None in outer layer"):
+    import cats.Bifoldable
+    val BF = summon[Bifoldable[[E, A] =>> Eff[Option, E, A]]]
+    val absent: Eff[Option, String, Int] = Eff.lift(None)
+    val result = BF.bifoldLeft(absent, "default")(
+      (acc, e) => acc + e,
+      (acc, a) => acc + a.toString
+    )
+    assertEquals(result, "default") // Outer None means no values to fold
+
+  test("Bitraverse.bitraverse transforms error channel"):
+    import cats.Bitraverse
+    val BT = summon[Bitraverse[[E, A] =>> Eff[Option, E, A]]]
+    val failure: Eff[Option, String, Int] = Eff.fail("err")
+    val result: Option[Eff[Option, Int, String]] = BT.bitraverse(failure)(
+      e => Option(e.length), // error to Int
+      a => Option(a.toString) // success to String
+    )
+    assertEquals(result.map(_.either), Some(Some(Left(3)))) // "err".length = 3
+
+  test("Bitraverse.bitraverse transforms success channel"):
+    import cats.Bitraverse
+    val BT = summon[Bitraverse[[E, A] =>> Eff[Option, E, A]]]
+    val success: Eff[Option, String, Int] = Eff.succeed(42)
+    val result: Option[Eff[Option, Int, String]] = BT.bitraverse(success)(
+      e => Option(e.length),
+      a => Option(a.toString)
+    )
+    assertEquals(result.map(_.either), Some(Some(Right("42"))))
+
+  test("Bitraverse.bitraverse handles None in function result"):
+    import cats.Bitraverse
+    val BT = summon[Bitraverse[[E, A] =>> Eff[Option, E, A]]]
+    val success: Eff[Option, String, Int] = Eff.succeed(42)
+    val result: Option[Eff[Option, Int, String]] = BT.bitraverse(success)(
+      _ => Option(0),
+      _ => None // Function returns None
+    )
+    assertEquals(result, None)
 end EffSuite

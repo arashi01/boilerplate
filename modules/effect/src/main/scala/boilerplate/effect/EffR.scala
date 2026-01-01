@@ -77,7 +77,7 @@ private[effect] trait EffRInstancesLowPriority5:
 
   private type Base[F[_], E] = [A] =>> Eff[F, E, A]
 
-  /** Provides fiber spawning and racing for `EffR` computations. */
+  /** Provides fibre spawning and racing for `EffR` computations. */
   given [F[_], R, E0] => (S: GenSpawn[Base[F, E0], Throwable]) => GenSpawn[Of[F, R, E0], Throwable]:
     def pure[A](a: A): EffR[F, R, E0, A] = wrapUnsafe((_: R) => S.pure(a))
 
@@ -963,7 +963,7 @@ object EffR extends EffRInstancesLowPriority0:
     /** Ensures resource cleanup regardless of outcome (success, failure, or cancellation).
       *
       * The `release` function receives the acquired resource and is guaranteed to run even if `use`
-      * fails or is canceled. This is the reader-aware variant of `bracket`.
+      * fails or is cancelled. This is the reader-aware variant of `bracket`.
       *
       * @param use The computation that uses the acquired resource.
       * @param release The cleanup function, executed unconditionally.
@@ -989,7 +989,7 @@ object EffR extends EffRInstancesLowPriority0:
     /** Fails with `onTimeout` if this computation does not complete within `duration`.
       *
       * Uses `GenTemporal` from cats-effect for time-based operations. On timeout, the original
-      * computation is canceled and the error value is returned.
+      * computation is cancelled and the error value is returned.
       *
       * @param duration Maximum time to wait for completion.
       * @param onTimeout Error value to return on timeout.
@@ -1213,4 +1213,17 @@ object EffR extends EffRInstancesLowPriority0:
 
     def combine(x: EffR[F, R, E, A], y: EffR[F, R, E, A]): EffR[F, R, E, A] =
       (r: R) => M.combine(x(r), y(r))
+
+  // ---------------------------------------------------------------------------
+  // Data Typeclass Instances
+  // ---------------------------------------------------------------------------
+  // Note: For EffR, data instances like Show, Eq, PartialOrder do not make sense
+  // because EffR is a function type (R => Eff[F, E, A]). Functions cannot be shown,
+  // compared for equality, or ordered in a meaningful way without running them.
+  // Therefore, we only provide Foldable, Traverse, Bifoldable, and Bitraverse
+  // which operate on the result after supplying an environment.
+  //
+  // However, to maintain API parity with Eff, we provide no data instances for EffR
+  // since the reader layer fundamentally changes the semantics - EffR is a function,
+  // not a value container.
 end EffR

@@ -51,6 +51,7 @@ import cats.effect.std.CyclicBarrier
 import cats.effect.std.Queue
 import cats.effect.std.Semaphore
 import cats.effect.std.Supervisor
+import cats.kernel.PartialOrder
 import cats.syntax.all.*
 
 /** Zero-cost typed error channel abstraction represented as `F[Either[E, A]]`. Refer to
@@ -70,13 +71,13 @@ private[effect] trait EffInstancesLowPriority5:
   import Eff.wrapUnsafe
   import Eff.unwrapUnsafe
 
-  /** Provides fiber spawning and racing for `Eff` computations.
+  /** Provides fibre spawning and racing for `Eff` computations.
     *
     * Enables `start`, `race`, `racePair`, `background` and related concurrent primitives.
     *
     * ==Typed Error Semantics==
-    * A fiber completing with a typed error `E` is considered a ''successful'' `Outcome` from the
-    * fiber's perspective — the typed error is carried within `Outcome.Succeeded`. Defects
+    * A fibre completing with a typed error `E` is considered a ''successful'' `Outcome` from the
+    * fibre's perspective — the typed error is carried within `Outcome.Succeeded`. Defects
     * (`Throwable`) propagate via `Outcome.Errored`.
     */
   given [F[_], E0] => (S: GenSpawn[F, Throwable]) => GenSpawn[Of[F, E0], Throwable]:
@@ -1455,8 +1456,8 @@ object Eff extends EffInstancesLowPriority0:
 
   /** `Parallel` instance enabling `parMapN`, `parTraverse`, etc.
     *
-    * Derives parallel behavior from `F`'s `Parallel` instance. The parallel applicative uses
-    * `Nested[P.F, Either[E, *], *]` which applies `F`'s parallelism while preserving short-circuit
+    * Derives parallel behaviour from `F`'s `Parallel` instance. The parallel applicative uses
+    * `Nested[P.F, Either[E, *], *]` which applies `F`'s parallelism whilst preserving short-circuit
     * semantics on the first error encountered.
     */
   given [M[_], E] => (P: Parallel[M]) => Parallel[Of[M, E]]:
@@ -1500,7 +1501,7 @@ object Eff extends EffInstancesLowPriority0:
 
   /** Provides unique token generation for `Eff` computations.
     *
-    * Useful for fiber identification and other concurrency primitives.
+    * Useful for fibre identification and other concurrency primitives.
     */
   given [F[_], E] => (U: Unique[F], F: Monad[F]) => Unique[Of[F, E]]:
     val applicative: Applicative[Of[F, E]] = summon[Monad[Of[F, E]]]
@@ -1535,4 +1536,114 @@ object Eff extends EffInstancesLowPriority0:
 
     def combine(x: Eff[F, E, A], y: Eff[F, E, A]): Eff[F, E, A] =
       x.flatMap(a => y.map(b => M.combine(a, b)))
+
+  // ---------------------------------------------------------------------------
+  // Data Typeclass Instances
+  // ---------------------------------------------------------------------------
+
+  /** `Show` instance for `Eff` delegating to the underlying `Show[F[Either[E, A]]]`.
+    *
+    * This enables textual representation of `Eff` values via the `show` method.
+    */
+  given [F[_], E, A] => (S: Show[F[Either[E, A]]]) => Show[Eff[F, E, A]]:
+    def show(fa: Eff[F, E, A]): String = S.show(fa.either)
+
+  /** `Eq` instance for `Eff` delegating to the underlying `Eq[F[Either[E, A]]]`.
+    *
+    * Equality is determined by the underlying effectful `Either` representation.
+    */
+  given [F[_], E, A] => (EQ: Eq[F[Either[E, A]]]) => Eq[Eff[F, E, A]]:
+    def eqv(x: Eff[F, E, A], y: Eff[F, E, A]): Boolean =
+      EQ.eqv(x.either, y.either)
+
+  /** `PartialOrder` instance for `Eff` delegating to the underlying
+    * `PartialOrder[F[Either[E, A]]]`.
+    *
+    * Ordering is determined by the underlying effectful `Either` representation.
+    */
+  given [F[_], E, A] => (PO: PartialOrder[F[Either[E, A]]]) => PartialOrder[Eff[F, E, A]]:
+    def partialCompare(x: Eff[F, E, A], y: Eff[F, E, A]): Double =
+      PO.partialCompare(x.either, y.either)
+
+  /** `Foldable` instance for `Eff` when `F` is `Foldable`.
+    *
+    * Folds over the success channel only, treating errors as empty.
+    */
+  given [F[_], E] => (FO: Foldable[F]) => Foldable[Of[F, E]]:
+    def foldLeft[A, B](fa: Eff[F, E, A], b: B)(f: (B, A) => B): B =
+      FO.foldLeft(fa.either, b) { (acc, eea) =>
+        eea.fold(_ => acc, a => f(acc, a))
+      }
+
+    def foldRight[A, B](fa: Eff[F, E, A], lb: Eval[B])(f: (A, Eval[B]) => Eval[B]): Eval[B] =
+      FO.foldRight(fa.either, lb) { (eea, acc) =>
+        eea.fold(_ => acc, a => f(a, acc))
+      }
+
+  /** `Traverse` instance for `Eff` when `F` is `Traverse`.
+    *
+    * Traverses over the success channel, passing errors through unchanged.
+    */
+  given [F[_], E] => (TR: Traverse[F]) => Traverse[Of[F, E]]:
+    def foldLeft[A, B](fa: Eff[F, E, A], b: B)(f: (B, A) => B): B =
+      TR.foldLeft(fa.either, b) { (acc, eea) =>
+        eea.fold(_ => acc, a => f(acc, a))
+      }
+
+    def foldRight[A, B](fa: Eff[F, E, A], lb: Eval[B])(f: (A, Eval[B]) => Eval[B]): Eval[B] =
+      TR.foldRight(fa.either, lb) { (eea, acc) =>
+        eea.fold(_ => acc, a => f(a, acc))
+      }
+
+    def traverse[G[_]: Applicative, A, B](fa: Eff[F, E, A])(f: A => G[B]): G[Eff[F, E, B]] =
+      Applicative[G].map(
+        TR.traverse(fa.either)(_.traverse(f))
+      )(Eff.lift)
+  end given
+
+  /** `Bifoldable` instance for `Eff` when `F` is `Foldable`.
+    *
+    * Folds over both error and success channels using `Bifoldable[Either]`.
+    */
+  given [F[_]] => (FO: Foldable[F]) => Bifoldable[[E, A] =>> Eff[F, E, A]]:
+    def bifoldLeft[A, B, C](fab: Eff[F, A, B], c: C)(f: (C, A) => C, g: (C, B) => C): C =
+      FO.foldLeft(fab.either, c) { (acc, eab) =>
+        Bifoldable[Either].bifoldLeft(eab, acc)(f, g)
+      }
+
+    def bifoldRight[A, B, C](fab: Eff[F, A, B], c: Eval[C])(
+      f: (A, Eval[C]) => Eval[C],
+      g: (B, Eval[C]) => Eval[C]
+    ): Eval[C] =
+      FO.foldRight(fab.either, c) { (eab, acc) =>
+        Bifoldable[Either].bifoldRight(eab, acc)(f, g)
+      }
+  end given
+
+  /** `Bitraverse` instance for `Eff` when `F` is `Traverse`.
+    *
+    * Traverses over both error and success channels using `Bitraverse[Either]`.
+    */
+  given [F[_]] => (TR: Traverse[F]) => Bitraverse[[E, A] =>> Eff[F, E, A]]:
+    def bifoldLeft[A, B, C](fab: Eff[F, A, B], c: C)(f: (C, A) => C, g: (C, B) => C): C =
+      TR.foldLeft(fab.either, c) { (acc, eab) =>
+        Bifoldable[Either].bifoldLeft(eab, acc)(f, g)
+      }
+
+    def bifoldRight[A, B, C](fab: Eff[F, A, B], c: Eval[C])(
+      f: (A, Eval[C]) => Eval[C],
+      g: (B, Eval[C]) => Eval[C]
+    ): Eval[C] =
+      TR.foldRight(fab.either, c) { (eab, acc) =>
+        Bifoldable[Either].bifoldRight(eab, acc)(f, g)
+      }
+
+    def bitraverse[G[_]: Applicative, A, B, C, D](fab: Eff[F, A, B])(
+      f: A => G[C],
+      g: B => G[D]
+    ): G[Eff[F, C, D]] =
+      Applicative[G].map(
+        TR.traverse(fab.either)(Bitraverse[Either].bitraverse(_)(f, g))
+      )(Eff.lift)
+  end given
 end Eff

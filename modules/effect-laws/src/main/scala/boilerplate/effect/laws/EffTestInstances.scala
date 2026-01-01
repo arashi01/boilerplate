@@ -24,6 +24,7 @@ import cats.*
 import cats.effect.*
 import cats.effect.testkit.TestInstances as CatsEffectTestInstances
 import cats.laws.discipline.SemigroupalTests.Isomorphisms
+import org.scalacheck.Arbitrary
 import org.scalacheck.Cogen
 import org.scalacheck.Prop
 import org.scalacheck.util.Pretty
@@ -64,3 +65,37 @@ trait EffTestInstances extends CatsEffectTestInstances with EffGenerators:
 end EffTestInstances
 
 object EffTestInstances extends EffTestInstances
+
+/** Test instances for `Eff[Option, E, A]` used in Foldable/Traverse law testing.
+  *
+  * Option is used as the base effect since it is both a Monad and Traverse, allowing us to test the
+  * Foldable, Traverse, Bifoldable, and Bitraverse instances which require `Foldable[F]` or
+  * `Traverse[F]` constraints that `IO` does not satisfy.
+  */
+trait EffOptionTestInstances:
+
+  /** Arbitrary for `Eff[Option, E, A]` generating the full space of Option[Either[E, A]]. */
+  implicit def arbitraryEffOption[E: Arbitrary, A: Arbitrary]: Arbitrary[Eff[Option, E, A]] =
+    Arbitrary(
+      for outer <- Arbitrary.arbOption[Either[E, A]].arbitrary
+      yield Eff.lift[Option, E, A](outer)
+    )
+
+  /** Cogen for `Eff[Option, E, A]` based on the underlying Option[Either[E, A]]. */
+  implicit def cogenEffOption[E: Cogen, A: Cogen]: Cogen[Eff[Option, E, A]] =
+    Cogen[Option[Either[E, A]]].contramap(_.either)
+
+  /** Equality for `Eff[Option, E, A]` based on the underlying Option[Either[E, A]]. */
+  implicit def eqEffOption[E: Eq, A: Eq]: Eq[Eff[Option, E, A]] =
+    Eq.by[Eff[Option, E, A], Option[Either[E, A]]](_.either)
+
+  /** Pretty printer for `Eff[Option, E, A]` in test failure messages. */
+  implicit def prettyEffOption[E, A]: Eff[Option, E, A] => Pretty =
+    eff => Pretty(_ => eff.either.toString)
+
+  /** Isomorphisms for `Eff.Of[Option, E]` required by Semigroupal tests. */
+  implicit def isomorphismsEffOption[E]: Isomorphisms[Eff.Of[Option, E]] =
+    Isomorphisms.invariant[Eff.Of[Option, E]]
+end EffOptionTestInstances
+
+object EffOptionTestInstances extends EffOptionTestInstances

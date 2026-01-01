@@ -28,10 +28,15 @@ import cats.effect.laws.ClockTests
 import cats.effect.laws.GenSpawnTests
 import cats.effect.laws.UniqueTests
 import cats.effect.testkit.TestContext
+import cats.kernel.laws.discipline.EqTests
+import cats.laws.discipline.BifoldableTests
 import cats.laws.discipline.BifunctorTests
+import cats.laws.discipline.BitraverseTests
 import cats.laws.discipline.DeferTests
+import cats.laws.discipline.FoldableTests
 import cats.laws.discipline.MonadErrorTests
 import cats.laws.discipline.SemigroupKTests
+import cats.laws.discipline.TraverseTests
 import cats.laws.discipline.arbitrary.*
 import munit.DisciplineSuite
 import org.scalacheck.Arbitrary
@@ -51,13 +56,18 @@ import boilerplate.effect.Eff
   *   - `ClockTests` verifies monotonic/realTime laws
   *   - `DeferTests` verifies deferred evaluation laws
   *   - `UniqueTests` verifies unique token generation laws
+  *   - `EqTests` verifies equality reflexivity, symmetry, transitivity
+  *   - `FoldableTests` verifies left/right fold consistency (using Option as base)
+  *   - `TraverseTests` verifies traverse laws (using Option as base)
+  *   - `BifoldableTests` verifies bifold laws (using Option as base)
+  *   - `BitraverseTests` verifies bitraverse laws (using Option as base)
   *
   * Note: `GenConcurrent` extends `GenSpawn` with `ref`/`deferred` primitives but adds no new laws.
   * `GenTemporal` extends `GenConcurrent` with `sleep`/`timeout` but temporal laws require
   * specialized test infrastructure (e.g., `TimeT`). Since we delegate to `IO`, correctness follows
   * from upstream. Behavioural tests for these primitives are in `EffSuite`.
   */
-class EffLawsSuite extends DisciplineSuite with EffTestInstances:
+class EffLawsSuite extends DisciplineSuite with EffTestInstances with EffOptionTestInstances:
 
   // Use Int as both error type E and value types A, B, C for simplicity
   type E = Int
@@ -175,6 +185,59 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances:
   checkAll(
     "Eff[IO, *, *].Bifunctor",
     BifunctorTests[TestEffBi].bifunctor[Int, Int, Int, String, String, String]
+  )
+
+  // ---------------------------------------------------------------------------
+  // Data Typeclass Laws - Eq/PartialOrder with IO
+  // ---------------------------------------------------------------------------
+  // Eq and PartialOrder instances delegate to the underlying F[Either[E, A]].
+  // Since we have Eq[IO[Either[E, A]]] via cats-effect testkit, we can test these.
+
+  checkAll(
+    "Eff[IO, Int, Int].Eq",
+    EqTests[Eff[IO, E, Int]].eqv
+  )
+
+  // PartialOrder requires PartialOrder[IO[Either[E, A]]] which we derive from Eq
+  // Note: IO doesn't have a natural PartialOrder, so we define one for testing
+  // based on the Eq instance (all equal or incomparable).
+
+  // ---------------------------------------------------------------------------
+  // Data Typeclass Laws - Foldable/Traverse with Option
+  // ---------------------------------------------------------------------------
+  // Foldable and Traverse instances require Foldable[F]/Traverse[F].
+  // IO is an effect type, not a data container, so it doesn't have these instances.
+  // We use Option as the base effect to test these instances.
+  // The required Arbitrary/Eq instances come from EffOptionTestInstances trait.
+
+  // Option-based effect type for Foldable/Traverse tests
+  type OptEff[A] = Eff[Option, E, A]
+  type OptEffBi[E, A] = Eff[Option, E, A]
+
+  // Use type aliases to match the EffOptionTestInstances implicit resolution
+  implicit def arbOptEff[A: Arbitrary]: Arbitrary[OptEff[A]] = arbitraryEffOption[E, A]
+  implicit def arbOptEffBi[EE: Arbitrary, A: Arbitrary]: Arbitrary[OptEffBi[EE, A]] = arbitraryEffOption[EE, A]
+  implicit def eqOptEff[A: Eq]: Eq[OptEff[A]] = eqEffOption[E, A]
+  implicit def eqOptEffBi[EE: Eq, A: Eq]: Eq[OptEffBi[EE, A]] = eqEffOption[EE, A]
+
+  checkAll(
+    "Eff[Option, Int, *].Foldable",
+    FoldableTests[OptEff].foldable[Int, Int]
+  )
+
+  checkAll(
+    "Eff[Option, Int, *].Traverse",
+    TraverseTests[OptEff].traverse[Int, Int, Int, Int, Option, Option]
+  )
+
+  checkAll(
+    "Eff[Option, *, *].Bifoldable",
+    BifoldableTests[OptEffBi].bifoldable[Int, Int, Int]
+  )
+
+  checkAll(
+    "Eff[Option, *, *].Bitraverse",
+    BitraverseTests[OptEffBi].bitraverse[Option, Int, Int, Int, String, String, String]
   )
 
   // Note: ParallelTests requires complex type matching for Nested[IO.Par, Either[E, *], *]
