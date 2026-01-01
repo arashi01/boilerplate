@@ -180,10 +180,10 @@ extension [F[_], A](fa: F[A])
 
 extension [F[_], E, A](fiber: Fiber[Eff.Of[F, E], Throwable, A])
 
-  /** Joins the fiber and returns its result, never completing if the fiber was cancelled.
+  /** Joins the fibre and returns its result, never completing if the fibre was cancelled.
     *
-    * If the fiber completes with a success, returns the value. If it completes with an error in the
-    * typed channel `E`, that error propagates. If the fiber was cancelled, this never completes.
+    * If the fibre completes with a success, returns the value. If it completes with an error in the
+    * typed channel `E`, that error propagates. If the fibre was cancelled, this never completes.
     *
     * This differs from cats-effect's `joinWithNever` in that it requires only
     * `GenSpawn[F, Throwable]` rather than `GenSpawn[Eff.Of[F, E], Throwable]`.
@@ -195,10 +195,10 @@ extension [F[_], E, A](fiber: Fiber[Eff.Of[F, E], Throwable, A])
       case Outcome.Canceled()    => Eff.lift(F.never[Either[E, A]])
     }(using F)
 
-  /** Joins the fiber and returns its result, failing with a typed error if cancelled.
+  /** Joins the fibre and returns its result, failing with a typed error if cancelled.
     *
-    * If the fiber completes with a success, returns the value. If it completes with an error in the
-    * typed channel `E`, that error propagates. If the fiber was cancelled, fails with `onCanceled`.
+    * If the fibre completes with a success, returns the value. If it completes with an error in the
+    * typed channel `E`, that error propagates. If the fibre was cancelled, fails with `onCanceled`.
     */
   inline def joinOrFail(onCanceled: => E)(using F: MonadCancel[F, Throwable]): Eff[F, E, A] =
     fiber.join.flatMap {

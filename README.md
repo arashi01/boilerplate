@@ -141,6 +141,8 @@ Full constructors:
 
 `Eff.Of[F, E]` (the type lambda `[A] =>> Eff[F, E, A]`) derives instances based on the underlying `F`:
 
+**Effect Typeclasses**
+
 | Typeclass                     | Requirement on `F`            | Capability                           |
 |-------------------------------|-------------------------------|--------------------------------------|
 | `Functor`                     | `Functor[F]`                  | `map`                                |
@@ -159,8 +161,24 @@ Full constructors:
 | `Unique`                      | `Unique[F]`                   | Unique token generation              |
 | `Defer`                       | `Defer[F]`                    | Lazy evaluation                      |
 | `SemigroupK`                  | `Monad[F]`                    | `combineK` / `<+>`                   |
+| `Semigroup`                   | `Monad[F]`, `Semigroup[A]`    | `combine` on success values          |
+| `Monoid`                      | `Monad[F]`, `Monoid[A]`       | `combine` with `empty`               |
 
-`EffR.Of[F, R, E]` mirrors these instances, threading the environment through all operations.
+**Data Typeclasses**
+
+| Typeclass                     | Requirement on `F`            | Behaviour                                        |
+|-------------------------------|-------------------------------|--------------------------------------------------|
+| `Show`                        | `Show[F[Either[E, A]]]`       | Textual representation via `show`                |
+| `Eq`                          | `Eq[F[Either[E, A]]]`         | Equality comparison                              |
+| `PartialOrder`                | `PartialOrder[F[Either[E,A]]]`| Partial ordering comparison                      |
+| `Foldable`                    | `Foldable[F]`                 | Fold over success channel; errors treated empty  |
+| `Traverse`                    | `Traverse[F]`                 | Traverse success channel; errors pass through    |
+| `Bifoldable`                  | `Foldable[F]`                 | Fold over both error and success channels        |
+| `Bitraverse`                  | `Traverse[F]`                 | Traverse both error and success channels         |
+
+`EffR.Of[F, R, E]` mirrors effect typeclass instances, threading the environment through all operations.
+Note that data typeclasses (`Show`, `Eq`, `Foldable`, etc.) are not available for `EffR` as it is representationally
+a function type (`R => Eff[F, E, A]`).
 
 
 #### `EffR[F, R, E, A]`
