@@ -6,11 +6,11 @@ Collection of utilities and common patterns useful across Scala 3 projects.
 
 ### effect
 
-Zero-cost typed-error effects layered atop Cats / Cats Effect.
+Zero-cost typed-error effects layered atop cats / cats-effect.
 
 Standard `MonadError[F, Throwable]` conflates recoverable domain errors with fatal defects, forcing defensive `recover`
 blocks or losing type safety. `Eff[F, E, A]` provides an explicit, compile-time-tracked error channel `E` separate from
-`Throwable`, enabling exhaustive pattern matching on failure cases whilst preserving full Cats Effect integration.
+`Throwable`, enabling exhaustive pattern matching on failure cases whilst preserving full cats-effect integration.
 
 **Core abstractions:**
 
@@ -19,14 +19,15 @@ blocks or losing type safety. `Eff[F, E, A]` provides an explicit, compile-time-
 
 Both erase at runtime whilst maintaining compile-time awareness of error and environment types.
 
-**Note on ZIO:** `Eff`/`EffR` are not replacements for ZIO. Eff/EffR is a wrapper over cats-effect—the environment
-channel and a simple function argument with no injection or layer management. Its primary value is as a drop-in for
+**Note on ZIO:** `Eff`/`EffR` are not replacements for ZIO. Eff/EffR is a minimal-cost wrapper over cats-effect—the environment
+channel is a simple function argument with no injection or layer management. Its primary value is as a drop-in for
 existing cats-effect codebases that want compile-time typed errors without switching ecosystems, whilst providing
 cleaner syntax than manually threading `EitherT` or composing `Kleisli[EitherT[F, E, *], R, A]`.
 
 ```scala
 import boilerplate.effect.*
 import cats.effect.IO
+import cats.syntax.all.*
 
 // Domain errors are explicit in the type signature
 sealed trait AppError
@@ -51,12 +52,15 @@ val result: IO[String] = workflow.fold(
   user => s"Welcome ${user.name}"
 )
 
-// Recover from all errors with a fallback value
+// Recover from all errors with a fallback value (provided convenience method)
 val fallback: UEff[IO, ValidUser] = workflow.valueOr(_ => defaultUser)
 
-// Or recover from specific errors via PartialFunction
-val recovered: Eff[IO, InvalidInput, ValidUser] =
+// Recover from specific errors via cats ApplicativeError syntax
+val recovered: Eff[IO, AppError, ValidUser] =
   workflow.recover { case NotFound(_) => defaultUser }
+
+// Transform the error channel via cats Bifunctor syntax
+val mapped: Eff[IO, String, ValidUser] = workflow.leftMap(_.toString)
 ```
 
 #### Dependency
@@ -102,24 +106,33 @@ Full constructors:
 
 ##### Combinators
 
-| Category    | Methods                                                                         |
-|-------------|---------------------------------------------------------------------------------|
-| Mapping     | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `bimap`, `mapError`, `transform` |
-| Composition | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`          |
-| Recovery    | `valueOr`, `catchAll`, `recover`, `recoverWith`, `onError`, `adaptError`        |
-| Alternative | `alt`, `orElseSucceed`, `orElseFail`                                            |
-| Folding     | `fold`, `foldF`, `redeem`, `redeemAll`                                          |
-| Guards      | `ensure`, `ensureOr`                                                            |
-| Observation | `tap`, `tapError`, `flatTapError`                                               |
-| Variance    | `widen`, `widenError`, `assume`, `assumeError`                                  |
-| Extraction  | `option`, `collectSome`, `collectRight`                                         |
-| Conversion  | `either`, `rethrow`, `absolve`, `eitherT`                                       |
-| Resource    | `bracket`, `bracketCase`, `timeout`                                             |
+| Category    | Methods                                                         |
+|-------------|-----------------------------------------------------------------|
+| Mapping     | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `transform`      |
+| Composition | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap` |
+| Recovery    | `valueOr`, `catchAll`                                           |
+| Alternative | `alt`, `orElseSucceed`, `orElseFail`                            |
+| Folding     | `fold`, `foldF`, `redeemAll`                                    |
+| Observation | `tap`, `tapError`, `flatTapError`                               |
+| Variance    | `widen`, `widenError`, `assume`, `assumeError`                  |
+| Extraction  | `option`, `collectSome`, `collectRight`                         |
+| Conversion  | `either`, `absolve`, `eitherT`                                  |
+| Resource    | `bracket`, `bracketCase`, `timeout`                             |
 
-**Method naming notes:**
+**cats syntax methods** (available via `cats.syntax.all.*` on our typeclass instances):
+
+| Category  | Methods                                               | Typeclass         |
+|-----------|-------------------------------------------------------|-------------------|
+| Bifunctor | `bimap`, `leftMap`                                    | `Bifunctor`       |
+| Recovery  | `recover`, `recoverWith`, `onError`, `adaptError`     | `ApplicativeError`|
+| Guards    | `ensure`, `ensureOr`                                  | `MonadError`      |
+| Folding   | `redeem`, `redeemWith`                                | `ApplicativeError`|
+| Conversion| `rethrow`                                             | `MonadError`      |
+
+**Convenience method naming notes:**
 
 - `valueOr(f: E => A)` — total recovery mapping all errors to success; named to avoid collision with cats'
-  `recover(pf: PartialFunction)`
+  `recover(pf: PartialFunction)` which uses `PartialFunction`
 - `catchAll(f: E => Eff)` — total recovery switching to alternative computation
 - `redeemAll(fe, fa)` — effectful fold allowing error type change `E => E2`; named to distinguish from cats'
   `redeemWith` which preserves error type
@@ -131,6 +144,7 @@ Full constructors:
 | Typeclass                     | Requirement on `F`            | Capability                           |
 |-------------------------------|-------------------------------|--------------------------------------|
 | `Functor`                     | `Functor[F]`                  | `map`                                |
+| `Bifunctor`                   | `Functor[F]`                  | `bimap`, `leftMap`                   |
 | `Monad`                       | `Monad[F]`                    | `flatMap`, `pure`                    |
 | `MonadError[_, E]`            | `Monad[F]`                    | Typed error channel (`E`)            |
 | `MonadError[_, EE]`           | `MonadError[F, EE]`           | Defect channel (e.g. `Throwable`)    |
@@ -148,9 +162,6 @@ Full constructors:
 
 `EffR.Of[F, R, E]` mirrors these instances, threading the environment through all operations.
 
-When cats syntax is in scope, our extension methods take precedence for unique names (`valueOr`, `catchAll`,
-`redeemAll`), whilst cats' `PartialFunction` methods (`recover`, `recoverWith`, `onError`, `adaptError`) remain
-accessible.
 
 #### `EffR[F, R, E, A]`
 
@@ -180,14 +191,22 @@ Full constructors:
 
 Mirrors `Eff` combinators, plus environment-specific operations:
 
-| Category    | Methods                                         |
-|-------------|-------------------------------------------------|
-| Environment | `provide`, `run`, `contramap`, `andThen`        |
-| Variance    | `widen`, `widenEnv`, `assume`, `assumeEnv`      |
-| Recovery    | `valueOr`, `catchAll`, `recover`, `recoverWith` |
-| Folding     | `fold`, `foldF`, `redeem`, `redeemAll`          |
-| Alternative | `alt`, `orElseSucceed`, `orElseFail`            |
-| Conversion  | `either`, `rethrow`, `absolve`, `kleisli`       |
+| Category    | Methods                                    |
+|-------------|--------------------------------------------|
+| Environment | `provide`, `run`, `contramap`, `andThen`   |
+| Variance    | `widen`, `widenEnv`, `assume`, `assumeEnv` |
+| Recovery    | `valueOr`, `catchAll`                      |
+| Folding     | `fold`, `foldF`, `redeemAll`               |
+| Alternative | `alt`, `orElseSucceed`, `orElseFail`       |
+| Conversion  | `either`, `absolve`, `kleisli`             |
+
+With `cats.syntax.all.*` in scope, additional methods from cats typeclasses are available:
+
+| Typeclass        | Methods                                   |
+|------------------|-------------------------------------------|
+| `Bifunctor`      | `bimap`, `leftMap`                        |
+| `ApplicativeError` | `recover`, `recoverWith`, `onError`, `adaptError`, `redeem` |
+| `MonadError`     | `ensure`, `ensureOr`, `rethrow`           |
 
 #### Cats-Effect Primitive Interop
 

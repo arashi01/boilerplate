@@ -170,13 +170,12 @@ class EffSuite extends CatsEffectSuite:
   // ===========================================================================
   // Mapping and Transformation
   // ===========================================================================
-  // Note: Basic map/flatMap laws verified by MonadCancelTests in EffLawsSuite
 
-  test("mapError transforms error"):
-    runEff(Eff.fail[IO, String, Int]("boom").mapError(_.length)).map(r => assertEquals(r, Left(4)))
+  test("leftMap transforms error"):
+    runEff(Eff.fail[IO, String, Int]("boom").leftMap(_.length)).map(r => assertEquals(r, Left(4)))
 
-  test("mapError preserves success"):
-    runEff(Eff.succeed[IO, String, Int](42).mapError(_.length)).map(r => assertEquals(r, Right(42)))
+  test("leftMap preserves success"):
+    runEff(Eff.succeed[IO, String, Int](42).leftMap(_.length)).map(r => assertEquals(r, Right(42)))
 
   test("bimap transforms both channels"):
     for
@@ -185,8 +184,6 @@ class EffSuite extends CatsEffectSuite:
     yield
       assertEquals(s, Right(42))
       assertEquals(f, Left(4))
-
-  // Note: flatMap associativity/identity covered by Monad laws in EffLawsSuite
 
   test("semiflatMap applies effectful function"):
     runEff(Eff.succeed[IO, String, Int](21).semiflatMap(a => IO.pure(a * 2))).map(r => assertEquals(r, Right(42)))
@@ -228,8 +225,6 @@ class EffSuite extends CatsEffectSuite:
   test("catchAll allows error type change"):
     val eff: Eff[IO, Int, Int] = Eff.fail[IO, String, Int]("boom").catchAll(e => Eff.fail(e.length))
     runEff(eff).map(r => assertEquals(r, Left(4)))
-
-  // Note: recover/recoverWith/onError/adaptError laws verified by ApplicativeError in EffLawsSuite
 
   // ===========================================================================
   // Alternative
@@ -303,11 +298,6 @@ class EffSuite extends CatsEffectSuite:
     runEff(eff).map(r => assertEquals(r, Left("side-effect")))
 
   // ===========================================================================
-  // Guards
-  // ===========================================================================
-  // Note: ensure/ensureOr laws verified by MonadError in EffLawsSuite
-
-  // ===========================================================================
   // Folding
   // ===========================================================================
 
@@ -321,8 +311,6 @@ class EffSuite extends CatsEffectSuite:
 
   test("foldF allows effectful handlers"):
     Eff.fail[IO, String, Int]("boom").foldF(e => IO.pure(e.length), a => IO.pure(a)).map(r => assertEquals(r, 4))
-
-  // Note: redeem laws verified by ApplicativeError in EffLawsSuite
 
   test("redeemAll allows error type change"):
     val eff = Eff
@@ -345,7 +333,6 @@ class EffSuite extends CatsEffectSuite:
   // ===========================================================================
   // Composition
   // ===========================================================================
-  // Note: *>, <*, product, void, as laws verified by Monad/Applicative in EffLawsSuite
 
   test("flatTap keeps original value"):
     var sideEffect = 0 // scalafix:ok DisableSyntax.var
@@ -417,8 +404,6 @@ class EffSuite extends CatsEffectSuite:
 
   test("eitherT wraps as EitherT"):
     Eff.fail[IO, String, Int]("err").eitherT.value.map(r => assertEquals(r, Left("err")))
-
-  // Note: rethrow laws verified by MonadError in EffLawsSuite
 
   test("absolve re-raises error into F"):
     val ex = new RuntimeException("boom")
@@ -614,7 +599,6 @@ class EffSuite extends CatsEffectSuite:
   // ===========================================================================
   // Typeclass Instances
   // ===========================================================================
-  // Note: Monad, MonadError, MonadCancel laws verified in EffLawsSuite
 
   test("typed errors and defects are distinguishable"):
     val typedError: Eff[IO, String, Int] = Eff.fail("typed")

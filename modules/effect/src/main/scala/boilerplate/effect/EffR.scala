@@ -27,6 +27,7 @@ import scala.concurrent.duration.FiniteDuration
 import scala.util.Try
 
 import cats.Applicative
+import cats.Bifunctor
 import cats.Defer
 import cats.Functor
 import cats.Monad
@@ -807,14 +808,6 @@ object EffR extends EffRInstancesLowPriority0:
     inline def transform[E2, B](f: Either[E, A] => Either[E2, B])(using Functor[F]): EffR[F, R, E2, B] =
       (r: R) => self(r).transform(f)
 
-    /** Fails with `onFailure` if `predicate` is false on success. */
-    inline def ensure(onFailure: => E)(predicate: A => Boolean)(using Functor[F]): EffR[F, R, E, A] =
-      (r: R) => self(r).ensure(onFailure)(predicate)
-
-    /** Fails with error computed from value if `predicate` is false on success. */
-    inline def ensureOr(onFailure: A => E)(predicate: A => Boolean)(using Functor[F]): EffR[F, R, E, A] =
-      (r: R) => self(r).ensureOr(onFailure)(predicate)
-
     // --- Composition Operators ---
 
     /** Sequences this computation with `that`, discarding the result of `this`. */
@@ -865,32 +858,6 @@ object EffR extends EffRInstancesLowPriority0:
     inline def catchAll[E2, B >: A](f: E => EffR[F, R, E2, B])(using Monad[F]): EffR[F, R, E2, B] =
       (r: R) => self(r).catchAll(e => f(e).run(r))
 
-    /** Recovers from certain errors by mapping them to a success value. */
-    inline def recover[A1 >: A](pf: PartialFunction[E, A1])(using Functor[F]): EffR[F, R, E, A1] =
-      (r: R) => self(r).recover(pf)
-
-    /** Recovers from certain errors by switching to a new computation. */
-    inline def recoverWith[E2 >: E](pf: PartialFunction[E, EffR[F, R, E2, A]])(using Monad[F]): EffR[F, R, E2, A] =
-      (r: R) =>
-        Eff.lift(
-          Monad[F].flatMap(self(r).either) {
-            case Left(e) if pf.isDefinedAt(e) => pf(e).run(r).either
-            case Left(e)                      => Monad[F].pure(Left(e))
-            case Right(a)                     => Monad[F].pure(Right(a))
-          }
-        )
-
-    /** Executes an effect when a matching error occurs, then re-raises the error.
-      *
-      * Aligns with cats' `onError` semantics using `PartialFunction`.
-      */
-    inline def onError(pf: PartialFunction[E, EffR[F, R, E, Unit]])(using Monad[F]): EffR[F, R, E, A] =
-      (r: R) => self(r).onError { case e if pf.isDefinedAt(e) => pf(e).run(r) }
-
-    /** Transforms certain errors using `pf` and re-raises them. */
-    inline def adaptError(pf: PartialFunction[E, E])(using Functor[F]): EffR[F, R, E, A] =
-      (r: R) => self(r).adaptError(pf)
-
     /** Fallback to an alternative computation when this one fails. */
     inline def alt[E2, B >: A](that: => EffR[F, R, E2, B])(using Monad[F]): EffR[F, R, E2, B] =
       (r: R) =>
@@ -907,10 +874,6 @@ object EffR extends EffRInstancesLowPriority0:
     inline def either: R => F[Either[E, A]] =
       (r: R) => self(r).either
 
-    /** Re-throws the error into `F` when `E <:< Throwable`. */
-    inline def rethrow(using ME: MonadError[F, Throwable], ev: E <:< Throwable): R => F[A] =
-      (r: R) => self(r).rethrow
-
     /** Absorbs an error into `F` when `E` matches the error type of `F`. */
     inline def absolve[EE](using ME: MonadError[F, EE], ev: E <:< EE): R => F[A] =
       (r: R) => self(r).absolve
@@ -922,18 +885,6 @@ object EffR extends EffRInstancesLowPriority0:
     /** Effectfully folds both channels, allowing different continuations. */
     inline def foldF[B](fe: E => F[B], fa: A => F[B])(using Monad[F]): R => F[B] =
       (r: R) => self(r).foldF(fe, fa)
-
-    /** Maps both error and success channels simultaneously. */
-    inline def bimap[E2, B](fe: E => E2, fb: A => B)(using Functor[F]): EffR[F, R, E2, B] =
-      (r: R) => self(r).bimap(fe, fb)
-
-    /** Transforms the error channel, akin to `leftMap`. */
-    inline def mapError[E2](f: E => E2)(using Functor[F]): EffR[F, R, E2, A] =
-      (r: R) => self(r).mapError(f)
-
-    /** Handles both error and success with pure functions, always succeeding. */
-    inline def redeem[B](fe: E => B, fa: A => B)(using Functor[F]): UEffR[F, R, B] =
-      (r: R) => self(r).redeem(fe, fa)
 
     /** Handles both error and success with effectful functions, allowing error type change.
       *
@@ -1164,6 +1115,14 @@ object EffR extends EffRInstancesLowPriority0:
 
     def tailRecM[A, B](a: A)(f: A => EffR[F, R, E, Either[A, B]]): EffR[F, R, E, B] =
       (r: R) => M.tailRecM(a)(a0 => f(a0)(r))
+
+  /** `Bifunctor` instance enabling `bimap` and `leftMap` on both error and success channels.
+    *
+    * Provides the canonical bifunctor operations via cats syntax.
+    */
+  given [F[_]: Functor, R] => Bifunctor[[E, A] =>> EffR[F, R, E, A]]:
+    def bimap[A, B, C, D](fab: EffR[F, R, A, B])(f: A => C, g: B => D): EffR[F, R, C, D] =
+      (r: R) => Bifunctor[[E, A] =>> Eff[F, E, A]].bimap(fab(r))(f, g)
 
   /** Provides `MonadError` directly for the typed error channel. */
   given [F[_], R, E] => (ME: MonadError[Base[F, E], E]) => MonadError[Of[F, R, E], E]:

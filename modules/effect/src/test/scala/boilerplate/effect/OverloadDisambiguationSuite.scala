@@ -161,125 +161,6 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(observed, Some(42))
 
   // ===========================================================================
-  // BIFUNCTOR - Eff extension selected
-  // ===========================================================================
-
-  test("bimap on Eff selects Eff extension over Bifunctor syntax"):
-    val eff: Eff[IO, String, Int] = Eff.fail("err")
-
-    val result = eff.bimap(_.toUpperCase, _ * 2)
-    val control = Eff.bimap(eff)(_.toUpperCase, _ * 2)
-
-    for
-      r <- result.either
-      c <- control.either
-    yield
-      assertEquals(r, Left("ERR"))
-      assertEquals(c, Left("ERR"))
-
-  // ===========================================================================
-  // APPLICATIVEERROR - cats ApplicativeErrorOps wins for PartialFunction overloads
-  // ===========================================================================
-
-  test("recover on Eff selects cats ApplicativeError (PartialFunction) - matching error"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-
-    // cats' recover from ApplicativeErrorOps is selected (uses PartialFunction)
-    // Our Eff.recover also uses PartialFunction with compatible semantics
-    val result: Eff[IO, String, Int] = eff.recover { case "boom" => 42 }
-    val control: Eff[IO, String, Int] = Eff.recover(eff)[Int] { case "boom" => 42 }
-
-    for
-      r <- result.either
-      c <- control.either
-    yield
-      assertEquals(r, Right(42))
-      assertEquals(c, Right(42))
-
-  test("recover on Eff selects cats ApplicativeError (PartialFunction) - non-matching error"):
-    val eff: Eff[IO, String, Int] = Eff.fail("other")
-
-    val result: Eff[IO, String, Int] = eff.recover { case "boom" => 42 }
-    val control: Eff[IO, String, Int] = Eff.recover(eff)[Int] { case "boom" => 42 }
-
-    for
-      r <- result.either
-      c <- control.either
-    yield
-      assertEquals(r, Left("other"))
-      assertEquals(c, Left("other"))
-
-  test("recoverWith on Eff selects cats ApplicativeError (PartialFunction)"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-
-    val result: Eff[IO, String, Int] = eff.recoverWith { case "boom" => Eff.succeed(42) }
-    val control: Eff[IO, String, Int] = Eff.recoverWith(eff) { case "boom" => Eff.succeed(42) }
-
-    for
-      r <- result.either
-      c <- control.either
-    yield
-      assertEquals(r, Right(42))
-      assertEquals(c, Right(42))
-
-  test("onError on Eff selects cats ApplicativeError (PartialFunction)"):
-    var observed: Option[String] = None // scalafix:ok DisableSyntax.var
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-
-    val result = eff.onError { case e => Eff.liftF(IO { observed = Some(e) }) }
-    val control = Eff.onError(eff) { case e => Eff.liftF(IO { observed = Some(e) }) }
-
-    for
-      r <- result.either
-      c <- control.either
-    yield
-      assertEquals(r, Left("boom"))
-      assertEquals(c, Left("boom"))
-      assertEquals(observed, Some("boom"))
-
-  test("adaptError on Eff selects cats ApplicativeError (PartialFunction)"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-
-    val result = eff.adaptError { case "boom" => "BOOM" }
-    val control = Eff.adaptError(eff) { case "boom" => "BOOM" }
-
-    for
-      r <- result.either
-      c <- control.either
-    yield
-      assertEquals(r, Left("BOOM"))
-      assertEquals(c, Left("BOOM"))
-
-  // ===========================================================================
-  // MONADERROR - cats MonadError wins for redeem
-  // ===========================================================================
-
-  test("redeem on Eff selects cats MonadError - control via Eff.redeem verifies our impl"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
-
-    // cats' redeem is selected via MonadError syntax
-    // Our Eff.redeem has same semantics (eliminates error channel)
-    val control: UEff[IO, String] = Eff.redeem(eff)(e => s"error: $e", a => s"value: $a")
-
-    for c <- control.either
-    yield assertEquals(c, Right("error: boom"))
-
-  test("rethrow on Eff selects Eff extension"):
-    val eff: Eff[IO, RuntimeException, Int] = Eff.fail(new RuntimeException("boom"))
-
-    val result: IO[Int] = eff.rethrow
-    val control: IO[Int] = Eff.rethrow(eff)
-
-    for
-      r <- result.attempt
-      c <- control.attempt
-    yield
-      assert(r.isLeft)
-      assert(r.left.exists(_.getMessage == "boom"))
-      assert(c.isLeft)
-      assert(c.left.exists(_.getMessage == "boom"))
-
-  // ===========================================================================
   // UNIQUE NAMES - No collision possible (our methods only)
   // ===========================================================================
 
@@ -330,19 +211,6 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
     yield
       assertEquals(r, Right("recovered: boom"))
       assertEquals(c, Right("recovered: boom"))
-
-  test("mapError on Eff is unique to boilerplate-effect"):
-    val eff: Eff[IO, String, Int] = Eff.fail("error")
-
-    val result = eff.mapError(_.toUpperCase)
-    val control = Eff.mapError(eff)(_.toUpperCase)
-
-    for
-      r <- result.either
-      c <- control.either
-    yield
-      assertEquals(r, Left("ERROR"))
-      assertEquals(c, Left("ERROR"))
 
   test("tapError on Eff is unique to boilerplate-effect"):
     var observed: Option[String] = None // scalafix:ok DisableSyntax.var
@@ -417,32 +285,6 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
   // ===========================================================================
   // EITHERT-DERIVED - Eff extensions selected (different type from EitherT)
   // ===========================================================================
-
-  test("ensure on Eff selects Eff extension (not EitherT)"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(5)
-
-    val result = eff.ensure("too small")(_ > 10)
-    val control = Eff.ensure(eff)("too small")(_ > 10)
-
-    for
-      r <- result.either
-      c <- control.either
-    yield
-      assertEquals(r, Left("too small"))
-      assertEquals(c, Left("too small"))
-
-  test("ensureOr on Eff selects Eff extension (not EitherT)"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(5)
-
-    val result = eff.ensureOr(n => s"$n is too small")(_ > 10)
-    val control = Eff.ensureOr(eff)(n => s"$n is too small")(_ > 10)
-
-    for
-      r <- result.either
-      c <- control.either
-    yield
-      assertEquals(r, Left("5 is too small"))
-      assertEquals(c, Left("5 is too small"))
 
   test("semiflatMap on Eff selects Eff extension (not EitherT)"):
     val eff: Eff[IO, String, Int] = Eff.succeed(21)
