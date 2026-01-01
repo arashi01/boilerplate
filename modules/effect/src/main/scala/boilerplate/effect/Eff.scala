@@ -881,14 +881,6 @@ object Eff extends EffInstancesLowPriority0:
     inline def map[B](f: A => B)(using Functor[F]): Eff[F, E, B] =
       Functor[F].map(self)(_.map(f))
 
-    /** Transforms the error channel, akin to `leftMap`. */
-    inline def mapError[E2](f: E => E2)(using Functor[F]): Eff[F, E2, A] =
-      Functor[F].map(self)(_.leftMap(f))
-
-    /** Maps both error and success channels simultaneously. */
-    inline def bimap[E2, B](fe: E => E2, fb: A => B)(using Functor[F]): Eff[F, E2, B] =
-      Functor[F].map(self)(_.bimap(fe, fb))
-
     /** Sequences computations, widening the error channel on demand. */
     inline def flatMap[E2 >: E, B](f: A => Eff[F, E2, B])(using Monad[F]): Eff[F, E2, B] =
       Monad[F].flatMap(self) {
@@ -910,10 +902,6 @@ object Eff extends EffInstancesLowPriority0:
     /** Effectfully folds both channels, allowing different continuations. */
     inline def foldF[B](fe: E => F[B], fa: A => F[B])(using Monad[F]): F[B] =
       Monad[F].flatMap(self)(_.fold(fe, fa))
-
-    /** Handles both error and success with pure functions, always succeeding. */
-    inline def redeem[B](fe: E => B, fa: A => B)(using Functor[F]): UEff[F, B] =
-      Functor[F].map(self)(_.fold(fe, fa).asRight)
 
     /** Handles both error and success with effectful functions, allowing error type change.
       *
@@ -991,20 +979,6 @@ object Eff extends EffInstancesLowPriority0:
     inline def transform[E2, B](f: Either[E, A] => Either[E2, B])(using Functor[F]): Eff[F, E2, B] =
       Functor[F].map(self)(f)
 
-    /** Fails with `onFailure` if the predicate is not satisfied. */
-    inline def ensure[E2 >: E](onFailure: => E2)(p: A => Boolean)(using Functor[F]): Eff[F, E2, A] =
-      Functor[F].map(self) {
-        case r @ Right(a) => if p(a) then r else Left(onFailure)
-        case l            => l
-      }
-
-    /** Fails with `onFailure(a)` if the predicate is not satisfied. */
-    inline def ensureOr[E2 >: E](onFailure: A => E2)(p: A => Boolean)(using Functor[F]): Eff[F, E2, A] =
-      Functor[F].map(self) {
-        case r @ Right(a) => if p(a) then r else Left(onFailure(a))
-        case l            => l
-      }
-
     /** Converts to `EitherT` for ecosystem interop. */
     inline def eitherT: EitherT[F, E, A] = EitherT(self)
 
@@ -1057,48 +1031,7 @@ object Eff extends EffInstancesLowPriority0:
         case Right(a) => Right(a)
       }
 
-    /** Recovers from certain errors by mapping them to a success value. */
-    inline def recover[A1 >: A](pf: PartialFunction[E, A1])(using Functor[F]): Eff[F, E, A1] =
-      Functor[F].map(self) {
-        case Left(e) if pf.isDefinedAt(e) => Right(pf(e))
-        case Left(e)                      => Left(e)
-        case Right(a)                     => Right(a)
-      }
-
-    /** Recovers from certain errors by switching to a new computation. */
-    inline def recoverWith[E2 >: E](pf: PartialFunction[E, Eff[F, E2, A]])(using Monad[F]): Eff[F, E2, A] =
-      Monad[F].flatMap(self) {
-        case Left(e) if pf.isDefinedAt(e) => pf(e)
-        case Left(e)                      => Monad[F].pure(Left(e))
-        case Right(a)                     => Monad[F].pure(Right(a))
-      }
-
-    /** Executes an effect when a matching error occurs, then re-raises the error.
-      *
-      * Aligns with cats' `onError` semantics using `PartialFunction`.
-      */
-    inline def onError(pf: PartialFunction[E, Eff[F, E, Unit]])(using Monad[F]): Eff[F, E, A] =
-      Monad[F].flatMap(self) {
-        case Left(e) if pf.isDefinedAt(e) => pf(e).flatMap(_ => Monad[F].pure(Left(e)))
-        case Left(e)                      => Monad[F].pure(Left(e))
-        case Right(a)                     => Monad[F].pure(Right(a))
-      }
-
-    /** Transforms certain errors using `pf` and re-raises them. */
-    inline def adaptError(pf: PartialFunction[E, E])(using Functor[F]): Eff[F, E, A] =
-      Functor[F].map(self) {
-        case Left(e) if pf.isDefinedAt(e) => Left(pf(e))
-        case other                        => other
-      }
-
     // --- Conversion Utilities ---
-
-    /** Re-throws the error into `F` when `E <:< Throwable`. */
-    inline def rethrow(using ME: MonadError[F, Throwable], ev: E <:< Throwable): F[A] =
-      Monad[F].flatMap(self) {
-        case Left(e)  => ME.raiseError(ev(e))
-        case Right(a) => Monad[F].pure(a)
-      }
 
     /** Absorbs an error into `F` when `E` matches the error type of `F`. */
     inline def absolve[EE](using ME: MonadError[F, EE], ev: E <:< EE): F[A] =
@@ -1475,6 +1408,14 @@ object Eff extends EffInstancesLowPriority0:
   /** Inherits `Functor` from the base effect, lifting over the error channel. */
   given [F[_]: Functor, E] => Functor[Of[F, E]]:
     def map[A, B](fa: Eff[F, E, A])(f: A => B): Eff[F, E, B] = fa.map(f)
+
+  /** `Bifunctor` instance enabling `bimap` and `leftMap` on both error and success channels.
+    *
+    * Provides the canonical bifunctor operations via cats syntax.
+    */
+  given [F[_]: Functor] => Bifunctor[[E, A] =>> Eff[F, E, A]]:
+    def bimap[A, B, C, D](fab: Eff[F, A, B])(f: A => C, g: B => D): Eff[F, C, D] =
+      Functor[F].map(fab)(_.bimap(f, g))
 
   /** `Monad` instance mirroring the `Either` structure with typed errors. */
   given [F[_]: Monad, E] => Monad[Of[F, E]]:

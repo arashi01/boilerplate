@@ -182,6 +182,24 @@ class EffRSuite extends CatsEffectSuite:
       assertEquals(c, Right(15))
 
   // ---------------------------------------------------------------------------
+  // Mapping and Transformation - Testing Bifunctor Instance
+  // ---------------------------------------------------------------------------
+
+  test("leftMap transforms error"):
+    runEffR(EffR.fail[IO, Unit, String, Int]("boom").leftMap(_.length), ()).map(r => assertEquals(r, Left(4)))
+
+  test("leftMap preserves success"):
+    runEffR(EffR.succeed[IO, Unit, String, Int](42).leftMap(_.length), ()).map(r => assertEquals(r, Right(42)))
+
+  test("bimap transforms both channels"):
+    for
+      s <- runEffR(EffR.succeed[IO, Unit, String, Int](21).bimap(_.length, _ * 2), ())
+      f <- runEffR(EffR.fail[IO, Unit, String, Int]("boom").bimap(_.length, _ * 2), ())
+    yield
+      assertEquals(s, Right(42))
+      assertEquals(f, Left(4))
+
+  // ---------------------------------------------------------------------------
   // Error Recovery - Environment Threading Through Recovery
   // ---------------------------------------------------------------------------
 

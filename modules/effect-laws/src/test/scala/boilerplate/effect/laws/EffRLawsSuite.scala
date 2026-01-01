@@ -28,6 +28,7 @@ import cats.effect.laws.ClockTests
 import cats.effect.laws.GenSpawnTests
 import cats.effect.laws.UniqueTests
 import cats.effect.testkit.TestContext
+import cats.laws.discipline.BifunctorTests
 import cats.laws.discipline.DeferTests
 import cats.laws.discipline.MonadErrorTests
 import cats.laws.discipline.SemigroupKTests
@@ -166,6 +167,24 @@ class EffRLawsSuite extends DisciplineSuite with EffRTestInstances:
   checkAll(
     "EffR[IO, Unit, Int, *].SemigroupK",
     SemigroupKTests[TestEffR].semigroupK[Int]
+  )
+
+  // --- Bifunctor laws ---
+
+  // For Bifunctor tests, we need to vary both error and success type parameters
+  type TestEffRBi[E, A] = EffR[IO, R, E, A]
+
+  implicit def arbTestEffRBi[E0: Arbitrary, A: Arbitrary]: Arbitrary[TestEffRBi[E0, A]] =
+    Arbitrary(
+      for either <- Arbitrary.arbitrary[Either[E0, A]]
+      yield EffR.from[IO, R, E0, A](either)
+    )
+
+  implicit def eqTestEffRBi[E0: Eq, A: Eq]: Eq[TestEffRBi[E0, A]] = eqEffR[R, E0, A]
+
+  checkAll(
+    "EffR[IO, Unit, *, *].Bifunctor",
+    BifunctorTests[TestEffRBi].bifunctor[Int, Int, Int, String, String, String]
   )
 
   // Note: ParallelTests requires complex type matching for the reader-wrapped parallel type.
