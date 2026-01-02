@@ -23,6 +23,7 @@ package boilerplate.effect
 import scala.annotation.publicInBinary
 import scala.annotation.targetName
 import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
 import scala.concurrent.duration.FiniteDuration
 import scala.util.Try
 
@@ -742,6 +743,95 @@ object EffR extends EffRInstancesLowPriority0:
   inline def delay[F[_], R, E, A](ea: => Either[E, A])(using F: Sync[F]): EffR[F, R, E, A] =
     (_: R) => Eff.delay(ea)
 
+  /** Suspends a synchronous side effect as a success value, ignoring the environment.
+    *
+    * Use this for synchronous side-effecting code that produces a plain value:
+    * {{{
+    * EffR.suspend[IO, Config, String, Long](System.currentTimeMillis())
+    * }}}
+    *
+    * For side effects that may produce typed errors, use [[delay]] instead.
+    */
+  inline def suspend[F[_], R, E, A](thunk: => A)(using F: Sync[F]): EffR[F, R, E, A] =
+    (_: R) => Eff.suspend(thunk)
+
+  // --- Temporal Factories ---
+
+  /** Suspends execution for the specified duration, ignoring the environment. */
+  inline def sleep[F[_], R, E](duration: FiniteDuration)(using T: GenTemporal[F, Throwable]): EffR[F, R, E, Unit] =
+    (_: R) => Eff.sleep(duration)
+
+  /** Returns the current monotonic time as a `FiniteDuration`. */
+  inline def monotonic[F[_], R, E](using C: Clock[F], F: Functor[F]): EffR[F, R, E, FiniteDuration] =
+    (_: R) => Eff.monotonic
+
+  /** Returns the current wall-clock time as a `FiniteDuration` since the epoch. */
+  inline def realTime[F[_], R, E](using C: Clock[F], F: Functor[F]): EffR[F, R, E, FiniteDuration] =
+    (_: R) => Eff.realTime
+
+  // --- Primitive Factories ---
+
+  /** Creates a new `Ref` initialised with `a`, operating in the `EffR` context. */
+  inline def ref[F[_], R, E, A](a: A)(using C: GenConcurrent[F, Throwable]): EffR[F, R, E, Ref[Eff.Of[F, E], A]] =
+    (_: R) => Eff.ref(a)
+
+  /** Creates an empty `Deferred` operating in the `EffR` context. */
+  inline def deferred[F[_], R, E, A](using C: GenConcurrent[F, Throwable]): EffR[F, R, E, Deferred[Eff.Of[F, E], A]] =
+    (_: R) => Eff.deferred
+
+  // --- Cancellation Factories ---
+
+  /** Introduces a self-cancellation point into the computation, ignoring the environment.
+    *
+    * In the EffR context, this immediately cancels the current fibre when evaluated. The resulting
+    * computation never produces a value or error — it is cancelled.
+    */
+  inline def canceled[F[_], R, E](using S: GenSpawn[F, Throwable]): EffR[F, R, E, Unit] =
+    (_: R) => Eff.canceled
+
+  /** Introduces a cooperative yielding point, ignoring the environment.
+    *
+    * Semantically equivalent to yielding control back to the scheduler, allowing other fibres to
+    * run.
+    */
+  inline def cede[F[_], R, E](using S: GenSpawn[F, Throwable]): EffR[F, R, E, Unit] =
+    (_: R) => Eff.cede
+
+  /** A computation that never completes, ignoring the environment.
+    *
+    * This is semantically equivalent to suspending indefinitely.
+    */
+  inline def never[F[_], R, E, A](using S: GenSpawn[F, Throwable]): EffR[F, R, E, A] =
+    (_: R) => Eff.never
+
+  // --- Future Interop ---
+
+  /** Converts a `Future` into an `EffR`, translating failures via `ifFailure`.
+    *
+    * The `Future` is evaluated lazily when the effect is run. Exceptions thrown by the `Future` are
+    * caught and translated to typed errors.
+    */
+  inline def fromFuture[F[_], R, E, A](future: F[Future[A]], ifFailure: Throwable => E)(using A: Async[F]): EffR[F, R, E, A] =
+    (_: R) => Eff.fromFuture(future, ifFailure)
+
+  // --- Conditional Execution ---
+
+  /** Executes `eff` only when `cond` is true, otherwise succeeds with `Unit`. */
+  inline def when[F[_]: Applicative, R, E](cond: Boolean)(eff: => EffR[F, R, E, Unit]): EffR[F, R, E, Unit] =
+    if cond then eff else unit[F, R, E]
+
+  /** Executes `eff` only when `cond` is false, otherwise succeeds with `Unit`. */
+  inline def unless[F[_]: Applicative, R, E](cond: Boolean)(eff: => EffR[F, R, E, Unit]): EffR[F, R, E, Unit] =
+    if cond then unit[F, R, E] else eff
+
+  /** Raises an error when `cond` is true, otherwise succeeds with `Unit`. */
+  inline def raiseWhen[F[_]: Applicative, R, E](cond: Boolean)(e: => E): EffR[F, R, E, Unit] =
+    if cond then fail(e) else unit[F, R, E]
+
+  /** Raises an error when `cond` is false, otherwise succeeds with `Unit`. */
+  inline def raiseUnless[F[_]: Applicative, R, E](cond: Boolean)(e: => E): EffR[F, R, E, Unit] =
+    if cond then unit[F, R, E] else fail(e)
+
   extension [F[_], R, E, A](self: EffR[F, R, E, A])
     /** Supplies an environment and yields the underlying `Eff`. */
     inline def run(env: R): Eff[F, E, A] = self(env)
@@ -997,6 +1087,94 @@ object EffR extends EffRInstancesLowPriority0:
       */
     inline def timeout(duration: FiniteDuration, onTimeout: => E)(using GT: GenTemporal[F, Throwable]): EffR[F, R, E, A] =
       (r: R) => self(r).timeout(duration, onTimeout)
+
+    // --- Concurrency Combinators ---
+
+    /** Starts this computation as a fibre, returning immediately.
+      *
+      * The returned `Fiber` can be joined or cancelled. A fibre completing with a typed error `E`
+      * is considered a successful `Outcome` — the typed error is carried within
+      * `Outcome.Succeeded`.
+      */
+    inline def start(using S: GenSpawn[F, Throwable]): EffR[F, R, E, Fiber[Eff.Of[F, E], Throwable, A]] =
+      (r: R) => self(r).start
+
+    /** Races this computation against `that`, returning the winner's result.
+      *
+      * The loser is cancelled. If both complete simultaneously, the left result is preferred.
+      */
+    inline def race[B](that: EffR[F, R, E, B])(using S: GenSpawn[F, Throwable]): EffR[F, R, E, Either[A, B]] =
+      (r: R) => self(r).race(that.run(r))
+
+    /** Runs this computation and `that` concurrently, returning both results.
+      *
+      * If either fails with a typed error, the other is cancelled and the error propagates.
+      */
+    inline def both[B](that: EffR[F, R, E, B])(using S: GenSpawn[F, Throwable]): EffR[F, R, E, (A, B)] =
+      (r: R) => self(r).both(that.run(r))
+
+    // --- Temporal Combinators ---
+
+    /** Delays execution of this computation by `duration`. */
+    inline def delayBy(duration: FiniteDuration)(using T: GenTemporal[F, Throwable]): EffR[F, R, E, A] =
+      (r: R) => self(r).delayBy(duration)
+
+    /** Executes this computation, then waits for `duration` before returning. */
+    inline def andWait(duration: FiniteDuration)(using T: GenTemporal[F, Throwable]): EffR[F, R, E, A] =
+      (r: R) => self(r).andWait(duration)
+
+    /** Returns the result paired with the execution duration. */
+    inline def timed(using T: GenTemporal[F, Throwable]): EffR[F, R, E, (FiniteDuration, A)] =
+      (r: R) => self(r).timed
+
+    /** Returns `fallback` if this computation does not complete within `duration`.
+      *
+      * Unlike [[timeout]], this returns the fallback value directly rather than failing with an
+      * error.
+      */
+    inline def timeoutTo[B >: A](duration: FiniteDuration, fallback: => EffR[F, R, E, B])(using
+      T: GenTemporal[F, Throwable]): EffR[F, R, E, B] =
+      (r: R) => self(r).timeoutTo(duration, fallback.run(r))
+
+    // --- Cancellation Combinators ---
+
+    /** Registers a finaliser to run if this computation is cancelled.
+      *
+      * The finaliser only runs on cancellation, not on success or error.
+      */
+    inline def onCancel(fin: EffR[F, R, E, Unit])(using S: GenSpawn[F, Throwable]): EffR[F, R, E, A] =
+      (r: R) => self(r).onCancel(fin.run(r))
+
+    /** Ensures `fin` runs after this computation regardless of outcome. */
+    inline def guarantee(fin: EffR[F, R, E, Unit])(using S: GenSpawn[F, Throwable]): EffR[F, R, E, A] =
+      (r: R) => self(r).guarantee(fin.run(r))
+
+    /** Ensures `fin` runs with the outcome after this computation. */
+    inline def guaranteeCase(fin: Outcome[Eff.Of[F, E], Throwable, A] => EffR[F, R, E, Unit])(using
+      S: GenSpawn[F, Throwable]): EffR[F, R, E, A] =
+      (r: R) => self(r).guaranteeCase(outcome => fin(outcome).run(r))
+
+    // --- Parallel Combinators ---
+
+    /** Runs this computation and `that` in parallel, discarding the result of `this`. */
+    @targetName("parProductR")
+    inline def &>[B](that: EffR[F, R, E, B])(using S: GenSpawn[F, Throwable]): EffR[F, R, E, B] =
+      (r: R) => self(r).both(that.run(r)).map(_._2)
+
+    /** Runs this computation and `that` in parallel, discarding the result of `that`. */
+    @targetName("parProductL")
+    inline def <&[B](that: EffR[F, R, E, B])(using S: GenSpawn[F, Throwable]): EffR[F, R, E, A] =
+      (r: R) => self(r).both(that.run(r)).map(_._1)
+
+    // --- Error Observation ---
+
+    /** Observes the attempt result without altering the outcome.
+      *
+      * The observation function receives `Right(a)` on success or `Left(e)` on typed error. Defects
+      * propagate through without observation.
+      */
+    inline def attemptTap(f: Either[E, A] => EffR[F, R, E, Unit])(using Monad[F]): EffR[F, R, E, A] =
+      (r: R) => self(r).attemptTap(ea => f(ea).run(r))
   end extension
 
   /** Creates a natural transformation from `EffR.Of[F, R, E]` to any `G[_]`.
