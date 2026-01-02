@@ -649,7 +649,7 @@ class EffRSuite extends CatsEffectSuite:
       start <- IO.monotonic
       _ <- runEffR(EffR.sleep[IO, Unit, String](10.millis), ())
       end <- IO.monotonic
-    yield assert(clue(end - start) >= 10.millis)
+    yield assert(clue(end - start) >= 9.millis) // 1ms tolerance for JS timer imprecision
 
   test("EffR.monotonic returns monotonic time"):
     for
@@ -786,7 +786,7 @@ class EffRSuite extends CatsEffectSuite:
       end <- IO.monotonic
     yield
       assertEquals(result, Right(42))
-      assert(clue(end - start) >= 10.millis)
+      assert(clue(end - start) >= 9.millis) // 1ms tolerance for JS timer imprecision
 
   test("andWait waits after execution"):
     for
@@ -795,7 +795,7 @@ class EffRSuite extends CatsEffectSuite:
       end <- IO.monotonic
     yield
       assertEquals(result, Right(42))
-      assert(clue(end - start) >= 10.millis)
+      assert(clue(end - start) >= 9.millis) // 1ms tolerance for JS timer imprecision
 
   test("timed returns duration with result"):
     runEffR(EffR.succeed[IO, Unit, String, Int](42).timed, ()).map {

@@ -674,7 +674,7 @@ class EffSuite extends CatsEffectSuite:
       start <- IO.monotonic
       _ <- T.sleep(10.millis).either
       end <- IO.monotonic
-    yield assert(clue(end - start) >= 10.millis)
+    yield assert(clue(end - start) >= 9.millis) // 1ms tolerance for JS timer imprecision
 
   test("GenTemporal.timeout fails with TimeoutException on exceeded"):
     import cats.effect.kernel.GenTemporal
@@ -856,7 +856,7 @@ class EffSuite extends CatsEffectSuite:
       start <- IO.monotonic
       _ <- runEff(Eff.sleep[IO, String](10.millis))
       end <- IO.monotonic
-    yield assert(clue(end - start) >= 10.millis)
+    yield assert(clue(end - start) >= 9.millis) // 1ms tolerance for JS timer imprecision
 
   test("Eff.monotonic returns monotonic time"):
     for
@@ -996,7 +996,7 @@ class EffSuite extends CatsEffectSuite:
       end <- IO.monotonic
     yield
       assertEquals(result, Right(42))
-      assert(clue(end - start) >= 10.millis)
+      assert(clue(end - start) >= 9.millis) // 1ms tolerance for JS timer imprecision
 
   test("andWait waits after execution"):
     for
@@ -1005,7 +1005,7 @@ class EffSuite extends CatsEffectSuite:
       end <- IO.monotonic
     yield
       assertEquals(result, Right(42))
-      assert(clue(end - start) >= 10.millis)
+      assert(clue(end - start) >= 9.millis) // 1ms tolerance for JS timer imprecision
 
   test("timed returns duration with result"):
     runEff(Eff.succeed[IO, String, Int](42).timed).map {
