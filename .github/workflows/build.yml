@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   build-test:
-    name: Build & Test / JDK ${{ matrix.java }} / ${{ matrix.os }})
+    name: Build & Test / ${{ matrix.platform }} / JDK ${{ matrix.java }} / ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
