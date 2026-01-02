@@ -828,4 +828,301 @@ class EffSuite extends CatsEffectSuite:
       _ => None // Function returns None
     )
     assertEquals(result, None)
+
+  // ===========================================================================
+  // Static Factory Tests - New APIs
+  // ===========================================================================
+
+  test("Eff.suspend captures side effect as success"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.suspend[IO, String, Int] { executed = true; 42 }
+    assert(!executed)
+    runEff(eff).map { r =>
+      assert(executed)
+      assertEquals(r, Right(42))
+    }
+
+  test("Eff[F].suspend is equivalent to static Eff.suspend"):
+    var executed = false // scalafix:ok DisableSyntax.var
+    val eff = Eff[IO].suspend { executed = true; 42 }
+    assert(!executed)
+    runEff(eff).map { r =>
+      assert(executed)
+      assertEquals(r, Right(42))
+    }
+
+  test("Eff.sleep suspends for specified duration"):
+    for
+      start <- IO.monotonic
+      _ <- runEff(Eff.sleep[IO, String](10.millis))
+      end <- IO.monotonic
+    yield assert(clue(end - start) >= 10.millis)
+
+  test("Eff.monotonic returns monotonic time"):
+    for
+      t1 <- runEff(Eff.monotonic[IO, String])
+      _ <- IO.sleep(5.millis)
+      t2 <- runEff(Eff.monotonic[IO, String])
+    yield
+      assert(t1.isRight)
+      assert(t2.isRight)
+      assert(t2.toOption.get >= t1.toOption.get)
+
+  test("Eff.realTime returns wall clock time"):
+    runEff(Eff.realTime[IO, String]).map { r =>
+      assert(r.isRight)
+      assert(r.toOption.get.toMillis > 0)
+    }
+
+  test("Eff.ref creates Ref directly"):
+    for
+      refResult <- runEff(Eff.ref[IO, String, Int](42))
+      value <- refResult match
+                 case Right(ref) => ref.get.either
+                 case Left(e)    => IO.pure(Left(e))
+    yield assertEquals(value, Right(42))
+
+  test("Eff.deferred creates Deferred directly"):
+    for
+      deferredResult <- runEff(Eff.deferred[IO, String, Int])
+      _ <- deferredResult match
+             case Right(d) =>
+               for
+                 _ <- d.complete(42).either
+                 value <- d.get.either
+               yield assertEquals(value, Right(42))
+             case Left(e) => IO.pure(fail(s"Deferred creation failed: $e"))
+    yield ()
+
+  test("Eff.canceled introduces cancellation"):
+    val prog = Eff.canceled[IO, String].void
+    prog.either.start.flatMap(_.join).map(oc => assert(oc.isCanceled))
+
+  test("Eff.cede yields to scheduler"):
+    runEff(Eff.cede[IO, String]).map(r => assertEquals(r, Right(())))
+
+  test("Eff.never never completes"):
+    val prog = Eff.never[IO, String, Int]
+    prog.either.timeout(50.millis).attempt.map { r =>
+      assert(r.isLeft) // Should timeout
+    }
+
+  test("Eff.fromFuture converts successful Future"):
+    import scala.concurrent.Future
+    val eff = Eff.fromFuture(IO(Future.successful(42)), _.getMessage)
+    runEff(eff).map(r => assertEquals(r, Right(42)))
+
+  test("Eff.fromFuture converts failed Future via mapper"):
+    import scala.concurrent.Future
+    val ex = new RuntimeException("boom")
+    val eff = Eff.fromFuture(IO(Future.failed[Int](ex)), _.getMessage)
+    runEff(eff).map(r => assertEquals(r, Left("boom")))
+
+  test("Eff.raiseWhen raises on true"):
+    runEff(Eff.raiseWhen[IO, String](true)("boom")).map(r => assertEquals(r, Left("boom")))
+
+  test("Eff.raiseWhen succeeds on false"):
+    runEff(Eff.raiseWhen[IO, String](false)("boom")).map(r => assertEquals(r, Right(())))
+
+  test("Eff.raiseUnless raises on false"):
+    runEff(Eff.raiseUnless[IO, String](false)("boom")).map(r => assertEquals(r, Left("boom")))
+
+  test("Eff.raiseUnless succeeds on true"):
+    runEff(Eff.raiseUnless[IO, String](true)("boom")).map(r => assertEquals(r, Right(())))
+
+  // ===========================================================================
+  // Concurrency Extension Tests
+  // ===========================================================================
+
+  test("start spawns fibre and allows join"):
+    val eff = Eff.succeed[IO, String, Int](42).start
+    for
+      fibResult <- runEff(eff)
+      outcome <- fibResult match
+                   case Right(fib) => fib.join.either
+                   case Left(e)    => IO.pure(Left(e))
+    yield outcome match
+      case Right(Outcome.Succeeded(effResult)) =>
+        // Need to extract the actual value from the Eff
+        ()
+      case _ => fail("Expected Succeeded outcome")
+
+  test("race returns winner"):
+    val slow = Eff.liftF[IO, String, Int](IO.sleep(1.second) *> IO.pure(1))
+    val fast = Eff.succeed[IO, String, Int](2)
+    runEff(slow.race(fast)).map { r =>
+      assertEquals(r, Right(Right(2))) // fast wins
+    }
+
+  test("race cancels loser"):
+    var slowRan = false // scalafix:ok DisableSyntax.var
+    val slow = Eff.liftF[IO, String, Int](IO.sleep(1.second) *> IO { slowRan = true; 1 })
+    val fast = Eff.succeed[IO, String, Int](2)
+    runEff(slow.race(fast))
+      .flatMap { _ =>
+        IO.sleep(50.millis).as(!slowRan) // slow should have been cancelled
+      }
+      .map(assert(_))
+
+  test("both runs concurrently and returns tuple"):
+    val a = Eff.succeed[IO, String, Int](1)
+    val b = Eff.succeed[IO, String, Int](2)
+    runEff(a.both(b)).map(r => assertEquals(r, Right((1, 2))))
+
+  test("both fails fast on error"):
+    val good = Eff.liftF[IO, String, Int](IO.sleep(1.second) *> IO.pure(1))
+    val bad = Eff.fail[IO, String, Int]("boom")
+    runEff(good.both(bad)).map(r => assertEquals(r, Left("boom")))
+
+  test("background spawns supervised fibre"):
+    val eff = Eff.succeed[IO, String, Int](42)
+    eff.background
+      .use { join =>
+        IO.sleep(10.millis) *> join
+      }
+      .map {
+        case Outcome.Succeeded(effResult) => () // Success
+        case _                            => fail("Expected Succeeded outcome")
+      }
+
+  // ===========================================================================
+  // Temporal Extension Tests
+  // ===========================================================================
+
+  test("delayBy delays execution"):
+    for
+      start <- IO.monotonic
+      result <- runEff(Eff.succeed[IO, String, Int](42).delayBy(10.millis))
+      end <- IO.monotonic
+    yield
+      assertEquals(result, Right(42))
+      assert(clue(end - start) >= 10.millis)
+
+  test("andWait waits after execution"):
+    for
+      start <- IO.monotonic
+      result <- runEff(Eff.succeed[IO, String, Int](42).andWait(10.millis))
+      end <- IO.monotonic
+    yield
+      assertEquals(result, Right(42))
+      assert(clue(end - start) >= 10.millis)
+
+  test("timed returns duration with result"):
+    runEff(Eff.succeed[IO, String, Int](42).timed).map {
+      case Right((dur, value)) =>
+        assertEquals(value, 42)
+        assert(dur >= 0.nanos)
+      case Left(e) => fail(s"Unexpected error: $e")
+    }
+
+  test("timeoutTo returns fallback on timeout"):
+    val slow = Eff.liftF[IO, String, Int](IO.sleep(1.second) *> IO.pure(1))
+    val fallback = Eff.succeed[IO, String, Int](42)
+    runEff(slow.timeoutTo(10.millis, fallback)).map(r => assertEquals(r, Right(42)))
+
+  test("timeoutTo returns value within duration"):
+    val fast = Eff.succeed[IO, String, Int](42)
+    val fallback = Eff.succeed[IO, String, Int](0)
+    runEff(fast.timeoutTo(1.second, fallback)).map(r => assertEquals(r, Right(42)))
+
+  // ===========================================================================
+  // Cancellation Extension Tests
+  // ===========================================================================
+
+  test("onCancel runs finaliser on cancellation"):
+    var finRan = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.canceled[IO, String].onCancel(Eff.liftF(IO { finRan = true }))
+    eff.either.start.flatMap(_.join).map { oc =>
+      assert(oc.isCanceled)
+      assert(finRan)
+    }
+
+  test("onCancel does not run on success"):
+    var finRan = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).onCancel(Eff.liftF(IO { finRan = true }))
+    runEff(eff).map { r =>
+      assertEquals(r, Right(42))
+      assert(!finRan)
+    }
+
+  test("guarantee runs finaliser on success"):
+    var finRan = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).guarantee(Eff.liftF(IO { finRan = true }))
+    runEff(eff).map { r =>
+      assertEquals(r, Right(42))
+      assert(finRan)
+    }
+
+  test("guarantee runs finaliser on error"):
+    var finRan = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.fail[IO, String, Int]("boom").guarantee(Eff.liftF(IO { finRan = true }))
+    runEff(eff).map { r =>
+      assertEquals(r, Left("boom"))
+      assert(finRan)
+    }
+
+  test("guaranteeCase provides outcome"):
+    var observedSuccess = false // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).guaranteeCase {
+      case Outcome.Succeeded(_) => Eff.liftF(IO { observedSuccess = true })
+      case _                    => Eff.unit[IO, String]
+    }
+    runEff(eff).map { r =>
+      assertEquals(r, Right(42))
+      assert(observedSuccess)
+    }
+
+  // ===========================================================================
+  // Parallel Extension Tests
+  // ===========================================================================
+
+  test("&> runs in parallel discarding left"):
+    val a = Eff.succeed[IO, String, Int](1)
+    val b = Eff.succeed[IO, String, String]("two")
+    runEff(a &> b).map(r => assertEquals(r, Right("two")))
+
+  test("<& runs in parallel discarding right"):
+    val a = Eff.succeed[IO, String, Int](1)
+    val b = Eff.succeed[IO, String, String]("two")
+    runEff(a <& b).map(r => assertEquals(r, Right(1)))
+
+  test("&> short-circuits on left error"):
+    val a = Eff.fail[IO, String, Int]("boom")
+    val b = Eff.succeed[IO, String, String]("two")
+    runEff(a &> b).map(r => assertEquals(r, Left("boom")))
+
+  test("<& short-circuits on right error"):
+    val a = Eff.succeed[IO, String, Int](1)
+    val b = Eff.fail[IO, String, String]("boom")
+    runEff(a <& b).map(r => assertEquals(r, Left("boom")))
+
+  // ===========================================================================
+  // Error Observation Extension Tests
+  // ===========================================================================
+
+  test("attemptTap observes success"):
+    var observed: Option[Either[String, Int]] = None // scalafix:ok DisableSyntax.var
+    val eff = Eff.succeed[IO, String, Int](42).attemptTap { ea =>
+      observed = Some(ea)
+      Eff.unit[IO, String]
+    }
+    runEff(eff).map { r =>
+      assertEquals(r, Right(42))
+      assertEquals(observed, Some(Right(42)))
+    }
+
+  test("attemptTap observes error"):
+    var observed: Option[Either[String, Int]] = None // scalafix:ok DisableSyntax.var
+    val eff = Eff.fail[IO, String, Int]("boom").attemptTap { ea =>
+      observed = Some(ea)
+      Eff.unit[IO, String]
+    }
+    runEff(eff).map { r =>
+      assertEquals(r, Left("boom"))
+      assertEquals(observed, Some(Left("boom")))
+    }
+
+  test("attemptTap propagates side effect error"):
+    val eff = Eff.succeed[IO, String, Int](42).attemptTap(_ => Eff.fail("side-effect"))
+    runEff(eff).map(r => assertEquals(r, Left("side-effect")))
 end EffSuite
