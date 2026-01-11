@@ -36,9 +36,9 @@ object NonEmptyString extends OpaqueType[NonEmptyString]:
   inline def wrap(s: String): NonEmptyString = s
   inline def unwrap(s: NonEmptyString): String = s
 
-  def validate(s: String): Error | Unit =
-    if s.nonEmpty then ()
-    else new IllegalArgumentException("String must be non-empty")
+  protected inline def validate(s: String): Option[Error] =
+    if s.nonEmpty then None
+    else Some(new IllegalArgumentException("String must be non-empty"))
 
 /** Numeric opaque type: must be positive. */
 opaque type PositiveInt = Int
@@ -50,9 +50,9 @@ object PositiveInt extends OpaqueType[PositiveInt]:
   inline def wrap(n: Int): PositiveInt = n
   inline def unwrap(n: PositiveInt): Int = n
 
-  def validate(n: Int): Error | Unit =
-    if n > 0 then ()
-    else new IllegalArgumentException(s"Value must be positive, got: $n")
+  protected inline def validate(n: Int): Option[Error] =
+    if n > 0 then None
+    else Some(new IllegalArgumentException(s"$n must be positive"))
 
 /** Domain-specific error type for Email validation. */
 final class EmailError(message: String) extends RuntimeException(message)
@@ -70,9 +70,9 @@ object Email extends OpaqueType[Email]:
   inline def wrap(s: String): Email = s
   inline def unwrap(e: Email): String = e
 
-  def validate(s: String): Error | Unit =
-    if s.contains("@") then ()
-    else new EmailError(s"Invalid email format: $s")
+  protected inline def validate(s: String): Option[Error] =
+    if s.contains("@") then None
+    else Some(new EmailError(s"Invalid email format: $s"))
 
 // ============================================================================
 // Phantom Type Fixtures - Test OpaqueType with Phantom Type Parameters
@@ -94,9 +94,9 @@ object Distance:
     inline def wrap(d: Double): Distance[boilerplate.Metres] = d
     inline def unwrap(d: Distance[boilerplate.Metres]): Double = d
 
-    def validate(d: Double): Error | Unit =
-      if d >= 0.0 then ()
-      else new IllegalArgumentException(s"Distance cannot be negative: $d")
+    protected inline def validate(d: Double): Option[Error] =
+      if d >= 0.0 then None
+      else Some(new IllegalArgumentException(s"Distance cannot be negative: $d"))
 
   /** Companion for Feet-tagged Distance. */
   object Feet extends OpaqueType[Distance[boilerplate.Feet]]:
@@ -106,9 +106,9 @@ object Distance:
     inline def wrap(d: Double): Distance[boilerplate.Feet] = d
     inline def unwrap(d: Distance[boilerplate.Feet]): Double = d
 
-    def validate(d: Double): Error | Unit =
-      if d >= 0.0 then ()
-      else new IllegalArgumentException(s"Distance cannot be negative: $d")
+    protected inline def validate(d: Double): Option[Error] =
+      if d >= 0.0 then None
+      else Some(new IllegalArgumentException(s"Distance cannot be negative: $d"))
 end Distance
 
 class OpaqueTypeSuite extends FunSuite:
@@ -230,26 +230,6 @@ class OpaqueTypeSuite extends FunSuite:
     import Distance.Metres.given
     val metres = Distance.Metres.wrap(100.0)
     assertEquals(metres.unwrap, 100.0)
-
-  // -------------------------------------------------------------------------
-  // validate: Union Type Semantics
-  // -------------------------------------------------------------------------
-
-  test("validate returns Unit for valid input"):
-    val result = NonEmptyString.validate("valid")
-    assertEquals(result, ())
-
-  test("validate returns error instance for invalid input"):
-    val result = NonEmptyString.validate("")
-    result match
-      case e: IllegalArgumentException => assert(e.getMessage.contains("non-empty"))
-      case _                           => fail("Expected error, got ()")
-
-  test("validate error is subtype of Throwable"):
-    val result = Email.validate("bad")
-    result match
-      case _: EmailError => assert(true)
-      case _             => fail("Expected EmailError")
 
   // -------------------------------------------------------------------------
   // wrap/unwrap: Low-Level Operations

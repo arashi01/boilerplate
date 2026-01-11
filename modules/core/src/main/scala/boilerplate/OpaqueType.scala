@@ -33,8 +33,8 @@ package boilerplate
   *   inline def wrap(s: String): UserId   = s
   *   inline def unwrap(id: UserId): String = id
   *
-  *   def validate(s: String): Error | Unit =
-  *     if s.nonEmpty then () else new IllegalArgumentException("empty")
+  *   protected def validate(s: String): Option[Error] =
+  *     if s.nonEmpty then None else Some(new IllegalArgumentException("empty"))
   *
   * UserId.from("abc")  // Right(UserId("abc"))
   * "abc".as[UserId]    // Right(UserId("abc"))
@@ -54,8 +54,17 @@ trait OpaqueType[A]:
   /** Extracts the underlying value from the opaque type. */
   inline def unwrap(value: A): Type
 
-  /** Validates the raw value, returning `()` on success or the error instance on failure. */
-  def validate(value: Type): Error | Unit
+  /** Validates the raw value, returning `None` on success or `Some(error)` on failure.
+    *
+    * Uses `Option[Error]` rather than the more semantically natural `Error | Unit` union type due
+    * to a Scala Native codegen limitation:
+    * [[https://github.com/scala-native/scala-native/issues/4747 issue #4747]] forces
+    * `nir.Type.Unit` for the entire if-expression when one branch returns `Unit`, breaking union
+    * type discrimination at runtime. When
+    * [[https://github.com/scala-native/scala-native/pull/4748 PR #4748]] is merged, consider
+    * migrating back to `Error | Unit`.
+    */
+  protected inline def validate(value: Type): Option[Error]
 
   // Transparent inline preserves singleton type with refinements, enabling =:= evidence at call sites.
   /** Provides this companion as the given instance for extension method resolution. */
@@ -67,14 +76,14 @@ trait OpaqueType[A]:
   /** Safe construction returning `Right(wrapped)` if valid, `Left(error)` otherwise. */
   final inline def from(value: Type): Either[Error, A] =
     validate(value) match
-      case e: Throwable => Left(e.asInstanceOf[Error]) // scalafix:ok
-      case _            => Right(wrap(value))
+      case None    => Right(wrap(value))
+      case Some(e) => Left(e)
 
   /** Unsafe construction that throws [[Error]] on validation failure. */
   final inline def fromUnsafe(value: Type): A =
     validate(value) match
-      case e: Throwable => throw e // scalafix:ok
-      case _            => wrap(value)
+      case None    => wrap(value)
+      case Some(e) => throw e // scalafix:ok
 
 end OpaqueType
 
