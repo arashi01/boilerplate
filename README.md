@@ -1,16 +1,123 @@
 # Boilerplate
 
-Collection of utilities and common patterns useful across Scala 3 projects.
+Foundational Scala 3 utilities: opaque type construction, null-safe handling, and zero-cost typed-error effects.
 
 ## Modules
 
-### effect
+- **`boilerplate`** — Core utilities for opaque types and nullable values
+- **`boilerplate-effect`** — Optional typed-error effects atop cats-effect
 
-Zero-cost typed-error effects layered atop cats / cats-effect.
+---
 
-Standard `MonadError[F, Throwable]` conflates recoverable domain errors with fatal defects, forcing defensive `recover`
-blocks or losing type safety. `Eff[F, E, A]` provides an explicit, compile-time-tracked error channel `E` separate from
-`Throwable`, enabling exhaustive pattern matching on failure cases whilst preserving full cats-effect integration.
+### boilerplate (core)
+
+```scala
+libraryDependencies += "io.github.arashi01" %% "boilerplate" % "<version>"
+```
+
+#### OpaqueType
+
+Base trait for opaque type companions providing validated construction.
+
+```scala
+import boilerplate.OpaqueType
+
+opaque type UserId = String
+object UserId extends OpaqueType[UserId]:
+  type Type  = String
+  type Error = IllegalArgumentException
+
+  inline def wrap(s: String): UserId    = s
+  inline def unwrap(id: UserId): String = id
+
+  def validate(s: String): Error | Unit =
+    if s.nonEmpty then () else new IllegalArgumentException("UserId cannot be empty")
+
+// Construction via companion
+val id: Either[IllegalArgumentException, UserId] = UserId.from("user-123")
+val direct: UserId = UserId.fromUnsafe("user-123")  // Throws on invalid input
+
+// Construction via extension syntax
+val id2: Either[IllegalArgumentException, UserId] = "user-123".as[UserId]
+val direct2: UserId = "user-123".asUnsafe[UserId]
+
+// Extraction via unwrap (defined in companion)
+val underlying: String = UserId.unwrap(direct)
+```
+
+The trait provides:
+
+| Member                  | Description                                                      |
+|-------------------------|------------------------------------------------------------------|
+| `type Type`             | The underlying representation type                               |
+| `type Error`            | The validation error type (must extend `Throwable`)              |
+| `wrap(value)`           | Wraps a raw value as the opaque type (no validation)             |
+| `unwrap(value)`         | Extracts the underlying value from the opaque type               |
+| `validate(value)`       | Returns `()` on success or the error instance on failure         |
+| `from(value)`           | Validated construction returning `Either[Error, A]`              |
+| `fromUnsafe(value)`     | Throws `Error` on validation failure                             |
+| `value.as[A]`           | Extension syntax for `from`: `"x".as[UserId]`                    |
+| `value.asUnsafe[A]`     | Extension syntax for `fromUnsafe`: `"x".asUnsafe[UserId]`        |
+| `value.unwrap`          | Extension syntax for `unwrap`: `userId.unwrap`                   |
+
+#### nullable
+
+Extensions for Scala 3's explicit nulls feature. Inline null checks become verbose without a `CanEqual` instance; these
+extensions provide concise, type-safe null handling.
+
+**Extensions on `A | Null`:**
+
+| Method              | Description                                                   |
+|---------------------|---------------------------------------------------------------|
+| `option`            | `Some(value)` if non-null, `None` otherwise                   |
+| `either(leftError)` | `Right(value)` if non-null, `Left(leftError)` otherwise       |
+| `mapOpt(f)`         | Maps through `f` if non-null, returning `Option[B]`           |
+| `flatMapOpt(f)`     | FlatMaps through `f: A => Option[B]` if non-null              |
+
+**Extensions on `Option[A | Null]`:**
+
+Useful when combining `Option`-returning operations with nullable values from Java interop.
+
+| Method           | Description                                                         |
+|------------------|---------------------------------------------------------------------|
+| `flattenNull`    | Converts `Some(null)` to `None`                                     |
+| `mapNull(f)`     | Maps through `f`, treating inner null as `None`                     |
+| `flatMapNull(f)` | FlatMaps through `f: A => Option[B]`, treating inner null as `None` |
+
+**Extensions on `Either[E, A | Null]`:**
+
+| Method                      | Description                                                            |
+|-----------------------------|------------------------------------------------------------------------|
+| `flattenNull(leftError)`    | Converts `Right(null)` to `Left(leftError)`                            |
+| `mapNull(leftError)(f)`     | Maps through `f`, treating inner null as `Left`                        |
+| `flatMapNull(leftError)(f)` | FlatMaps through `f: A => Either[E, B]`, treating inner null as `Left` |
+
+```scala
+import boilerplate.nullable.*
+
+// Basic null handling
+val value: String | Null = possiblyNullValue()
+value.option              // Option[String]
+value.either("was null")  // Either[String, String]
+
+// Option[A | Null] from Java interop
+val opt: Option[String | Null] = Some(javaMethod())
+opt.flattenNull           // Option[String] — Some(null) becomes None
+
+// Chaining with Either
+val result: Either[String, String | Null] = Right(javaMethod())
+result.flattenNull("null value")  // Either[String, String]
+```
+
+---
+
+### boilerplate-effect
+
+Zero-cost typed-error effects layered atop cats-effect.
+
+Standard `MonadError[F, Throwable]` conflates recoverable domain errors with fatal defects. `Eff[F, E, A]` provides an
+explicit, compile-time-tracked error channel `E` separate from `Throwable`, enabling exhaustive pattern matching on
+failure cases whilst preserving full cats-effect integration.
 
 **Core abstractions:**
 
@@ -19,10 +126,9 @@ blocks or losing type safety. `Eff[F, E, A]` provides an explicit, compile-time-
 
 Both erase at runtime whilst maintaining compile-time awareness of error and environment types.
 
-**Note on ZIO:** `Eff`/`EffR` are not replacements for ZIO. Eff/EffR is a minimal-cost wrapper over cats-effect—the environment
-channel is a simple function argument with no injection or layer management. Its primary value is as a drop-in for
-existing cats-effect codebases that want compile-time typed errors without switching ecosystems, whilst providing
-cleaner syntax than manually threading `EitherT` or composing `Kleisli[EitherT[F, E, *], R, A]`.
+**Note:** `Eff`/`EffR` are not ZIO replacements. They provide a minimal-cost wrapper for cats-effect codebases wanting
+compile-time typed errors without ecosystem changes—cleaner syntax than manually threading `EitherT` or composing
+`Kleisli[EitherT[F, E, *], R, A]`.
 
 ```scala
 import boilerplate.effect.*
@@ -494,65 +600,6 @@ Supervisor[IO](await = true).use { sup =>
     result <- fiber.joinNever                       // or fiber.joinOrFail(AppError.Cancelled)
   yield result
 }.either
-```
-
----
-
-### nullable
-
-Utilities for working with Scala 3's explicit nulls feature. When strict equality is enabled, inline null checks become
-verbose without a `CanEqual` instance. These extensions provide a concise, type-safe way to handle nullable values.
-
-#### Dependency Coordinates
-
-```scala
-libraryDependencies += "io.github.arashi01" %% /* or `%%%` */ "boilerplate" % "<version>"
-```
-
-#### Extensions on `A | Null`
-
-| Method              | Description                                                                          |
-|---------------------|--------------------------------------------------------------------------------------|
-| `option`            | Converts to `Option[A]` — `Some(value)` if non-null, `None` otherwise                |
-| `either(leftError)` | Converts to `Either[E, A]` — `Right(value)` if non-null, `Left(leftError)` otherwise |
-| `mapOpt(f)`         | Maps through `f` if non-null, returning `Option[B]`                                  |
-| `flatMapOpt(f)`     | FlatMaps through `f: A => Option[B]` if non-null                                     |
-
-#### Extensions on `Option[A | Null]`
-
-Useful when combining `Option`-returning operations with nullable values from Java interop.
-
-| Method           | Description                                                         |
-|------------------|---------------------------------------------------------------------|
-| `flattenNull`    | Converts `Some(null)` to `None`                                     |
-| `mapNull(f)`     | Maps through `f`, treating inner null as `None`                     |
-| `flatMapNull(f)` | FlatMaps through `f: A => Option[B]`, treating inner null as `None` |
-
-#### Extensions on `Either[E, A | Null]`
-
-| Method                      | Description                                                            |
-|-----------------------------|------------------------------------------------------------------------|
-| `flattenNull(leftError)`    | Converts `Right(null)` to `Left(leftError)`                            |
-| `mapNull(leftError)(f)`     | Maps through `f`, treating inner null as `Left`                        |
-| `flatMapNull(leftError)(f)` | FlatMaps through `f: A => Either[E, B]`, treating inner null as `Left` |
-
-#### Usage
-
-```scala
-import boilerplate.nullable.*
-
-// Basic null handling
-val value: String | Null = possiblyNullValue()
-value.option // Option[String]
-value.either("was null") // Either[String, String]
-
-// Handling Option[A | Null] from Java interop
-val opt: Option[String | Null] = Some(javaMethod())
-opt.flattenNull // Option[String] — Some(null) becomes None
-
-// Chaining with Either
-val result: Either[String, String | Null] = Right(javaMethod())
-result.flattenNull("null value") // Either[String, String]
 ```
 
 ---
