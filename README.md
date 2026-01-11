@@ -30,8 +30,8 @@ object UserId extends OpaqueType[UserId]:
   inline def wrap(s: String): UserId    = s
   inline def unwrap(id: UserId): String = id
 
-  def validate(s: String): Error | Unit =
-    if s.nonEmpty then () else new IllegalArgumentException("UserId cannot be empty")
+  protected inline def validate(s: String): Option[Error] =
+    if s.nonEmpty then None else Some(new IllegalArgumentException("UserId cannot be empty"))
 
 // Construction via companion
 val id: Either[IllegalArgumentException, UserId] = UserId.from("user-123")
@@ -53,7 +53,7 @@ The trait provides:
 | `type Error`            | The validation error type (must extend `Throwable`)              |
 | `wrap(value)`           | Wraps a raw value as the opaque type (no validation)             |
 | `unwrap(value)`         | Extracts the underlying value from the opaque type               |
-| `validate(value)`       | Returns `()` on success or the error instance on failure         |
+| `validate(value)`       | Returns `None` on success or `Some(error)` on failure            |
 | `from(value)`           | Validated construction returning `Either[Error, A]`              |
 | `fromUnsafe(value)`     | Throws `Error` on validation failure                             |
 | `value.as[A]`           | Extension syntax for `from`: `"x".as[UserId]`                    |
