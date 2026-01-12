@@ -40,7 +40,7 @@ package boilerplate
   * "abc".as[UserId]    // Right(UserId("abc"))
   * }}}
   */
-trait OpaqueType[A]:
+transparent trait OpaqueType[A]:
 
   /** The underlying representation type. */
   type Type
@@ -49,10 +49,10 @@ trait OpaqueType[A]:
   type Error <: Throwable
 
   /** Wraps a raw value as the opaque type. No validation is performed. */
-  inline def wrap(value: Type): A
+  def wrap(value: Type): A
 
   /** Extracts the underlying value from the opaque type. */
-  inline def unwrap(value: A): Type
+  def unwrap(value: A): Type
 
   /** Validates the raw value, returning `None` on success or `Some(error)` on failure.
     *
