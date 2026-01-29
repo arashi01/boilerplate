@@ -1,6 +1,13 @@
+val scalaNativeLibraryVersion = "0.5.10"
+val scalaNativeVersion = settingKey[String]("Scala Native version")
+scalaNativeVersion := scalaNativeLibraryVersion
+enablePlugins(BuildInfoPlugin)
+buildInfoKeys := Seq[BuildInfoKey](scalaNativeVersion)
+buildInfoObject := "BuildInfo"
+
 addSbtPlugin("org.portable-scala" % "sbt-scalajs-crossproject" % "1.3.2")
 addSbtPlugin("org.portable-scala" % "sbt-scala-native-crossproject" % "1.3.2")
-addSbtPlugin("org.scala-native" % "sbt-scala-native" % "0.5.9")
+addSbtPlugin("org.scala-native" % "sbt-scala-native" % scalaNativeLibraryVersion)
 addSbtPlugin("org.scala-js" % "sbt-scalajs" % "1.20.1")
 
 addSbtPlugin("com.github.sbt" % "sbt-dynver" % "5.1.1")
