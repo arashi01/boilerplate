@@ -1,6 +1,6 @@
 inThisBuild(
   List(
-    scalaVersion := "3.7.4",
+    scalaVersion := "3.8.1",
     organization := "io.github.arashi01",
     description := "Collection of utilities and common patterns useful across Scala 3 projects.",
     startYear := Some(2025),
@@ -153,7 +153,7 @@ def baseCompilerOptions = List(
 def compilerOptions = baseCompilerOptions ++ List(
   "-Yexplicit-nulls",
   "-Xcheck-macros",
-  "-Xfatal-warnings"
+  "-Werror"
   // Suppress warning for intentional inline class instantiation in codec derivation
 //  "-Wconf:msg=New anonymous class definition will be duplicated at each inline site:s"
 )
