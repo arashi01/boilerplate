@@ -114,7 +114,7 @@ val `boilerplate-root` =
     )
 
 def nativeSettings = List(
-  dependencyOverrides += "org.scala-native" %%% "test-interface" % "0.5.9" % Test
+  dependencyOverrides += "org.scala-native" %%% "test-interface" % buildinfo.BuildInfo.scalaNativeVersion % Test
 )
 
 def baseCompilerOptions = List(
