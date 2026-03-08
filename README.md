@@ -67,12 +67,16 @@ extensions provide concise, type-safe null handling.
 
 **Extensions on `A | Null`:**
 
-| Method              | Description                                                   |
-|---------------------|---------------------------------------------------------------|
-| `option`            | `Some(value)` if non-null, `None` otherwise                   |
-| `either(leftError)` | `Right(value)` if non-null, `Left(leftError)` otherwise       |
-| `mapOpt(f)`         | Maps through `f` if non-null, returning `Option[B]`           |
-| `flatMapOpt(f)`     | FlatMaps through `f: A => Option[B]` if non-null              |
+| Method               | Description                                                  |
+|----------------------|--------------------------------------------------------------|
+| `getOrElse(default)` | Returns the value if non-null, or the provided default       |
+| `unsafe`             | Asserts non-null; throws `NullPointerException` if null      |
+| `unsafe(msg)`        | Asserts non-null; throws `NullPointerException` with message |
+| `fold(ifNull)(f)`    | Applies `f` if non-null, returns `ifNull` otherwise          |
+| `option`             | `Some(value)` if non-null, `None` otherwise                  |
+| `either(leftError)`  | `Right(value)` if non-null, `Left(leftError)` otherwise      |
+| `mapOpt(f)`          | Maps through `f` if non-null, returning `Option[B]`          |
+| `flatMapOpt(f)`      | FlatMaps through `f: A => Option[B]` if non-null             |
 
 **Extensions on `Option[A | Null]`:**
 
@@ -95,8 +99,13 @@ Useful when combining `Option`-returning operations with nullable values from Ja
 ```scala
 import boilerplate.nullable.*
 
-// Basic null handling
+// Direct null handling — no boxing
 val value: String | Null = possiblyNullValue()
+value.getOrElse("fallback")       // String — default if null
+value.unsafe("context for NPE")   // String — throws NPE with message if null
+value.fold("default")(_.toUpperCase) // String — transform or default
+
+// Conversion to Option / Either
 value.option              // Option[String]
 value.either("was null")  // Either[String, String]
 

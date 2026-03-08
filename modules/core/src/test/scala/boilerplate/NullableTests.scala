@@ -57,6 +57,100 @@ class NullableTests extends FunSuite:
     assertEquals(value.either("error"), Left("error"))
   }
 
+  // --- getOrElse ---
+
+  test("getOrElse: returns value for non-null") {
+    val value: String | Null = "hello"
+    assertEquals(value.getOrElse("default"), "hello")
+  }
+
+  test("getOrElse: returns default for null") {
+    val value: String | Null = null
+    assertEquals(value.getOrElse("default"), "default")
+  }
+
+  test("getOrElse: does not evaluate default when non-null") {
+    var evaluated = false // scalafix:ok
+    val value: String | Null = "hello"
+    value.getOrElse { evaluated = true; "default" }
+    assert(!evaluated)
+  }
+
+  test("getOrElse: does not treat falsy values as null") {
+    assertEquals((0: Int | Null).getOrElse(42), 0)
+    assertEquals((false: Boolean | Null).getOrElse(true), false)
+    assertEquals(("": String | Null).getOrElse("default"), "")
+  }
+
+  // --- unsafe ---
+
+  test("unsafe: returns value for non-null") {
+    val value: String | Null = "hello"
+    assertEquals(value.unsafe, "hello")
+  }
+
+  test("unsafe: throws NullPointerException for null") {
+    val value: String | Null = null
+    intercept[NullPointerException](value.unsafe)
+  }
+
+  test("unsafe: does not treat falsy values as null") {
+    assertEquals((0: Int | Null).unsafe, 0)
+    assertEquals((false: Boolean | Null).unsafe, false)
+    assertEquals(("": String | Null).unsafe, "")
+  }
+
+  // --- unsafe(msg) ---
+
+  test("unsafe(msg): returns value for non-null") {
+    val value: String | Null = "hello"
+    assertEquals(value.unsafe("should not throw"), "hello")
+  }
+
+  test("unsafe(msg): throws NullPointerException with specified message") {
+    val value: String | Null = null
+    val ex = intercept[NullPointerException](value.unsafe("custom message"))
+    assertEquals(ex.getMessage, "custom message")
+  }
+
+  test("unsafe(msg): does not treat falsy values as null") {
+    assertEquals((0: Int | Null).unsafe("nope"), 0)
+    assertEquals((false: Boolean | Null).unsafe("nope"), false)
+    assertEquals(("": String | Null).unsafe("nope"), "")
+  }
+
+  // --- fold ---
+
+  test("fold: applies transform to non-null value") {
+    val value: String | Null = "hello"
+    assertEquals(value.fold("default")(_.length), 5)
+  }
+
+  test("fold: returns ifNull for null value") {
+    val value: String | Null = null
+    assertEquals(value.fold("default")(identity), "default")
+  }
+
+  test("fold: does not evaluate ifNull when non-null") {
+    var evaluated = false // scalafix:ok
+    val value: String | Null = "hello"
+    value.fold { evaluated = true; "default" }(identity)
+    assert(!evaluated)
+  }
+
+  test("fold: does not evaluate transform when null") {
+    var evaluated = false // scalafix:ok
+    val value: String | Null = null
+    value.fold("default") { v => evaluated = true; v }
+    assert(!evaluated)
+  }
+
+  test("fold: does not treat falsy values as null") {
+    assertEquals((0: Int | Null).fold(42)(identity), 0)
+    assertEquals((false: Boolean | Null).fold(true)(identity), false)
+    assertEquals(("": String | Null).fold("default")(identity), "")
+  }
+
   // --- mapOpt ---
 
   test("mapOpt: applies function to non-null value") {

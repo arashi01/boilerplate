@@ -1,6 +1,6 @@
 inThisBuild(
   List(
-    scalaVersion := "3.8.1",
+    scalaVersion := "3.8.2",
     organization := "io.github.arashi01",
     description := "Collection of utilities and common patterns useful across Scala 3 projects.",
     startYear := Some(2025),
@@ -27,7 +27,7 @@ val libraries = new {
   val `cats-effect-laws` = Def.setting("org.typelevel" %%% "cats-effect-laws" % "3.7.0-RC1")
   val `cats-effect-testkit` = Def.setting("org.typelevel" %%% "cats-effect-testkit" % "3.7.0-RC1")
   val `discipline-munit` = Def.setting("org.typelevel" %%% "discipline-munit" % "2.0.0")
-  val munit = Def.setting("org.scalameta" %%% "munit" % "1.2.1")
+  val munit = Def.setting("org.scalameta" %%% "munit" % "1.2.4")
   val `munit-cats-effect` = Def.setting("org.typelevel" %%% "munit-cats-effect" % "2.2.0-RC1")
   val `munit-scalacheck` = Def.setting("org.scalameta" %%% "munit-scalacheck" % "1.2.0")
   val `scala-java-time` = Def.setting("io.github.cquiroz" %%% "scala-java-time" % "2.6.0")
