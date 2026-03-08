@@ -10,8 +10,6 @@ inThisBuild(
     dynver := versionSetting.toTaskable.toTask.value,
     versionScheme := Some("semver-spec"),
     licenses := List("MIT" -> url("https://opensource.org/licenses/MIT")),
-    sonatypeCredentialHost := Sonatype.sonatypeCentralHost,
-    publishCredentials,
     scmInfo := Some(
       ScmInfo(
         url("https://github.com/arashi01/boilerplate"),
@@ -193,17 +191,6 @@ def fileHeaderSettings: List[Setting[?]] =
     headerEmptyLine := false
   )
 
-def publishCredentials: Setting[Task[Seq[Credentials]]] = credentials :=
-  (for {
-    user <- Option(System.getenv("PUBLISH_USER"))
-    pass <- Option(System.getenv("PUBLISH_USER_PASSPHRASE"))
-  } yield Credentials(
-    "Sonatype Nexus Repository Manager",
-    sonatypeCredentialHost.value,
-    user,
-    pass
-  )).toSeq
-
 def pgpSettings: List[Setting[?]] = List(
   PgpKeys.pgpSelectPassphrase := None,
   usePgpKeyHex(System.getenv("SIGNING_KEY_ID"))
@@ -233,14 +220,18 @@ def versionSetting: Def.Initialize[String] = Def.setting(
   )
 )
 
-def publishSettings: List[Setting[?]] = publishCredentials +: pgpSettings ++: List(
+def publishSettings: List[Setting[?]] = pgpSettings ++: List(
   packageOptions += Package.ManifestAttributes(
     "Build-Jdk" -> System.getProperty("java.version"),
     "Specification-Title" -> name.value,
     "Specification-Version" -> Keys.version.value,
     "Implementation-Title" -> name.value
   ),
-  publishTo := sonatypePublishToBundle.value,
+  publishTo := {
+    val centralSnapshots = "https://central.sonatype.com/repository/maven-snapshots/"
+    if (version.value.toLowerCase.contains("snapshot")) Some("central-snapshots".at(centralSnapshots))
+    else localStaging.value
+  },
   pomIncludeRepository := (_ => false),
   publishMavenStyle := true,
   developers := List(
