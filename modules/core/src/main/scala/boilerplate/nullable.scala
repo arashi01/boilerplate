@@ -44,6 +44,58 @@ object nullable:
       else Right(value.asInstanceOf[A])
     // scalafix:on
 
+    /** Returns the value if non-null, or the provided default.
+      *
+      * Useful for Java interop where null is possible but a safe fallback exists.
+      *
+      * @param default The value to return if null (evaluated lazily).
+      * @return The non-null value, or default.
+      */
+    transparent inline def getOrElse[B >: A](inline default: => B): B =
+      // scalafix:off
+      if value.asInstanceOf[AnyRef] eq null then default
+      else value.asInstanceOf[B]
+    // scalafix:on
+
+    /** Asserts non-null, throwing NullPointerException if null.
+      *
+      * Like stdlib `.nn` but within the boilerplate API for a single-import experience.
+      *
+      * @return The non-null value.
+      * @throws NullPointerException if the value is null.
+      */
+    transparent inline def unsafe: A =
+      // scalafix:off
+      if value.asInstanceOf[AnyRef] eq null then throw new NullPointerException("tried to cast away nullability, but value is null")
+      else value.asInstanceOf[A]
+    // scalafix:on
+
+    /** Asserts non-null with a descriptive message, throwing NullPointerException if null.
+      *
+      * @param msg The message for the NullPointerException.
+      * @return The non-null value.
+      * @throws NullPointerException if the value is null.
+      */
+    transparent inline def unsafe(inline msg: String): A =
+      // scalafix:off
+      if value.asInstanceOf[AnyRef] eq null then throw new NullPointerException(msg)
+      else value.asInstanceOf[A]
+    // scalafix:on
+
+    /** Folds over a nullable value, applying a function if non-null or returning a default.
+      *
+      * Unlike `mapOpt`, this avoids intermediate Option allocation.
+      *
+      * @param ifNull The value to return if null (evaluated lazily).
+      * @param f The function to apply if the value is non-null.
+      * @return The result of `f` applied to the non-null value, or `ifNull`.
+      */
+    transparent inline def fold[B](inline ifNull: => B)(inline f: A => B): B =
+      // scalafix:off
+      if value.asInstanceOf[AnyRef] eq null then ifNull
+      else f(value.asInstanceOf[A])
+    // scalafix:on
+
     /** Maps a nullable value through a function, returning None if null.
       *
       * @param f The function to apply if the value is non-null.
