@@ -42,6 +42,18 @@ val `boilerplate` =
     .settings(publishSettings)
     .nativeSettings(nativeSettings)
 
+val `boilerplate-codecs` =
+  crossProject(JVMPlatform, JSPlatform, NativePlatform)
+    .withoutSuffixFor(JVMPlatform)
+    .crossType(CrossType.Full)
+    .in(file("modules/codecs"))
+    .dependsOn(`boilerplate`)
+    .settings(compilerSettings)
+    .settings(unitTestSettings)
+    .settings(fileHeaderSettings)
+    .settings(publishSettings)
+    .nativeSettings(nativeSettings)
+
 val `boilerplate-effect` =
   crossProject(JVMPlatform, JSPlatform, NativePlatform)
     .withoutSuffixFor(JVMPlatform)
@@ -77,6 +89,7 @@ val `boilerplate-jvm` =
     .settings(publish / skip := true)
     .aggregate(
       `boilerplate`.jvm,
+      `boilerplate-codecs`.jvm,
       `boilerplate-effect`.jvm,
       `boilerplate-effect-laws`.jvm
     )
@@ -87,6 +100,7 @@ val `boilerplate-js` =
     .settings(publish / skip := true)
     .aggregate(
       `boilerplate`.js,
+      `boilerplate-codecs`.js,
       `boilerplate-effect`.js,
       `boilerplate-effect-laws`.js
     )
@@ -97,6 +111,7 @@ val `boilerplate-native` =
     .settings(publish / skip := true)
     .aggregate(
       `boilerplate`.native,
+      `boilerplate-codecs`.native,
       `boilerplate-effect`.native,
       `boilerplate-effect-laws`.native
     )

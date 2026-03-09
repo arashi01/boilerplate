@@ -22,7 +22,7 @@ package boilerplate
 
 /** Base trait for opaque type companion objects providing validated construction.
   *
-  * Implementors define [[Type]], [[Error]], [[wrap]], [[unwrap]], and [[validate]].
+  * Implementors define [[Type]], [[Error]], [[wrap]], [[unwrap]], [[apply]], and [[validate]].
   *
   * {{{
   * opaque type UserId = String
@@ -32,10 +32,12 @@ package boilerplate
   *
   *   inline def wrap(s: String): UserId   = s
   *   inline def unwrap(id: UserId): String = id
+  *   inline def apply(inline value: String): UserId = fromUnsafe(value)
   *
   *   protected def validate(s: String): Option[Error] =
   *     if s.nonEmpty then None else Some(new IllegalArgumentException("empty"))
   *
+  * UserId("abc")       // UserId("abc") — throws on invalid input
   * UserId.from("abc")  // Right(UserId("abc"))
   * "abc".as[UserId]    // Right(UserId("abc"))
   * }}}
@@ -85,6 +87,19 @@ transparent trait OpaqueType[A]:
       case None    => wrap(value)
       case Some(e) => throw e // scalafix:ok
 
+  /** Direct construction. For runtime-only validation, delegate to [[fromUnsafe]]:
+    * {{{
+    * inline def apply(inline value: String): UserId = fromUnsafe(value)
+    * }}}
+    * For compile-time validation of literals, use `inline if` + `compiletime.error`:
+    * {{{
+    * inline def apply(inline value: Int): PositiveInt =
+    *   inline if value <= 0 then compiletime.error("must be positive")
+    *   else wrap(value)
+    * }}}
+    */
+  inline def apply(inline value: Type): A
+
 end OpaqueType
 
 /** Summoning for [[OpaqueType]] instances. */
@@ -102,6 +117,16 @@ extension [B](b: B)
 extension [B](b: B)
   inline def asUnsafe[A](using c: OpaqueType[A])(using ev: c.Type =:= B): A =
     c.fromUnsafe(ev.flip(b))
+
+/** Direct construction via extension syntax: `42.const[PositiveInt]`.
+  *
+  * Delegates to [[OpaqueType.apply]]. For companions that override `apply` with `inline if` +
+  * `compiletime.error`, use the direct `Companion(literal)` syntax instead — the `=:=` evidence
+  * conversion prevents inline constant propagation through this extension.
+  */
+extension [B](inline b: B)
+  inline def const[A](using c: OpaqueType[A])(using ev: c.Type =:= B): A =
+    c.apply(ev.flip(b))
 
 /** Extraction via extension syntax: `email.unwrap`. */
 extension [A](a: A)

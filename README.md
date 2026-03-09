@@ -1,10 +1,11 @@
 # Boilerplate
 
-Foundational Scala 3 utilities: opaque type construction, null-safe handling, and zero-cost typed-error effects.
+Foundational Scala 3 utilities: opaque type construction, null-safe handling, cross-platform codecs, and zero-cost typed-error effects.
 
 ## Modules
 
 - **`boilerplate`** — Core utilities for opaque types and nullable values
+- **`boilerplate-codecs`** — Cross-platform codecs (Base64)
 - **`boilerplate-effect`** — Optional typed-error effects atop cats-effect
 
 ---
@@ -29,20 +30,46 @@ object UserId extends OpaqueType[UserId]:
 
   inline def wrap(s: String): UserId    = s
   inline def unwrap(id: UserId): String = id
+  inline def apply(inline value: String): UserId = fromUnsafe(value)
 
   protected inline def validate(s: String): Option[Error] =
     if s.nonEmpty then None else Some(new IllegalArgumentException("UserId cannot be empty"))
 
-// Construction via companion
+// Direct construction via apply
+val direct: UserId = UserId("user-123")              // Throws on invalid input
+
+// Safe construction via companion
 val id: Either[IllegalArgumentException, UserId] = UserId.from("user-123")
-val direct: UserId = UserId.fromUnsafe("user-123")  // Throws on invalid input
 
 // Construction via extension syntax
 val id2: Either[IllegalArgumentException, UserId] = "user-123".as[UserId]
 val direct2: UserId = "user-123".asUnsafe[UserId]
+val direct3: UserId = "user-123".const[UserId]
 
 // Extraction via unwrap (defined in companion)
 val underlying: String = UserId.unwrap(direct)
+```
+
+Companions that want **compile-time validation** of literals override `apply` with `inline if` + `compiletime.error`:
+
+```scala
+opaque type PositiveInt = Int
+object PositiveInt extends OpaqueType[PositiveInt]:
+  type Type  = Int
+  type Error = IllegalArgumentException
+
+  inline def wrap(n: Int): PositiveInt    = n
+  inline def unwrap(p: PositiveInt): Int  = p
+
+  inline def apply(inline value: Int): PositiveInt =
+    inline if value <= 0 then compiletime.error("value must be positive")
+    else wrap(value)
+
+  protected inline def validate(n: Int): Option[Error] =
+    if n > 0 then None else Some(new IllegalArgumentException(s"$n must be positive"))
+
+PositiveInt(42)   // compiles
+PositiveInt(-1)   // compile-time error: "value must be positive"
 ```
 
 The trait provides:
@@ -53,11 +80,13 @@ The trait provides:
 | `type Error`            | The validation error type (must extend `Throwable`)              |
 | `wrap(value)`           | Wraps a raw value as the opaque type (no validation)             |
 | `unwrap(value)`         | Extracts the underlying value from the opaque type               |
+| `apply(value)`          | Direct construction; override for compile-time literal checks    |
 | `validate(value)`       | Returns `None` on success or `Some(error)` on failure            |
 | `from(value)`           | Validated construction returning `Either[Error, A]`              |
 | `fromUnsafe(value)`     | Throws `Error` on validation failure                             |
 | `value.as[A]`           | Extension syntax for `from`: `"x".as[UserId]`                    |
 | `value.asUnsafe[A]`     | Extension syntax for `fromUnsafe`: `"x".asUnsafe[UserId]`        |
+| `value.const[A]`        | Extension syntax for `apply`: `"x".const[UserId]`                |
 | `value.unwrap`          | Extension syntax for `unwrap`: `userId.unwrap`                   |
 
 #### nullable
@@ -117,6 +146,42 @@ opt.flattenNull           // Option[String] — Some(null) becomes None
 val result: Either[String, String | Null] = Right(javaMethod())
 result.flattenNull("null value")  // Either[String, String]
 ```
+
+---
+
+### boilerplate-codecs
+
+Cross-platform encoding and decoding utilities.
+
+```scala
+libraryDependencies += "io.github.arashi01" %% "boilerplate-codecs" % "<version>"
+```
+
+#### Base64
+
+Standard Base64 encoding and decoding per [RFC 4648 §4](https://www.rfc-editor.org/rfc/rfc4648#section-4). Uses the
+standard alphabet (`A`–`Z`, `a`–`z`, `0`–`9`, `+`, `/`) with `=` padding. Decoding is strict: invalid characters and
+malformed padding are rejected.
+
+```scala
+import boilerplate.codec.Base64
+
+// Encode
+val encoded: String = Base64.encode("foobar".getBytes("UTF-8"))  // "Zm9vYmFy"
+
+// Decode
+val decoded: Either[Base64.Error, Array[Byte]] = Base64.decode("Zm9vYmFy")
+
+// Round-trip
+Base64.decode(Base64.encode(bytes))  // Right(bytes)
+```
+
+| Method   | Signature                                       | Description                                       |
+|----------|-------------------------------------------------|---------------------------------------------------|
+| `encode` | `Array[Byte] => String`                         | Encodes binary data to a standard Base64 string   |
+| `decode` | `String => Either[Base64.Error, Array[Byte]]`   | Decodes a Base64 string; rejects invalid input    |
+
+Platform implementations: JVM and Native use `java.util.Base64`; JS uses `globalThis.atob`/`globalThis.btoa`.
 
 ---
 
