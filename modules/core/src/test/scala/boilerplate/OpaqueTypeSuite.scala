@@ -35,6 +35,7 @@ object NonEmptyString extends OpaqueType[NonEmptyString]:
 
   inline def wrap(s: String): NonEmptyString = s
   inline def unwrap(s: NonEmptyString): String = s
+  inline def apply(inline value: String): NonEmptyString = fromUnsafe(value)
 
   protected inline def validate(s: String): Option[Error] =
     if s.nonEmpty then None
@@ -49,6 +50,7 @@ object PositiveInt extends OpaqueType[PositiveInt]:
 
   inline def wrap(n: Int): PositiveInt = n
   inline def unwrap(n: PositiveInt): Int = n
+  inline def apply(inline value: Int): PositiveInt = fromUnsafe(value)
 
   protected inline def validate(n: Int): Option[Error] =
     if n > 0 then None
@@ -69,6 +71,7 @@ object Email extends OpaqueType[Email]:
 
   inline def wrap(s: String): Email = s
   inline def unwrap(e: Email): String = e
+  inline def apply(inline value: String): Email = fromUnsafe(value)
 
   protected inline def validate(s: String): Option[Error] =
     if s.contains("@") then None
@@ -93,6 +96,7 @@ object Distance:
 
     inline def wrap(d: Double): Distance[boilerplate.Metres] = d
     inline def unwrap(d: Distance[boilerplate.Metres]): Double = d
+    inline def apply(inline value: Double): Distance[boilerplate.Metres] = fromUnsafe(value)
 
     protected inline def validate(d: Double): Option[Error] =
       if d >= 0.0 then None
@@ -105,11 +109,35 @@ object Distance:
 
     inline def wrap(d: Double): Distance[boilerplate.Feet] = d
     inline def unwrap(d: Distance[boilerplate.Feet]): Double = d
+    inline def apply(inline value: Double): Distance[boilerplate.Feet] = fromUnsafe(value)
 
     protected inline def validate(d: Double): Option[Error] =
       if d >= 0.0 then None
       else Some(new IllegalArgumentException(s"Distance cannot be negative: $d"))
 end Distance
+
+// ============================================================================
+// Compile-Time Validated Fixture - Overrides apply with inline if + error
+// ============================================================================
+
+/** Positive integer with compile-time validation for literals. */
+opaque type CheckedPositive = Int
+
+object CheckedPositive extends OpaqueType[CheckedPositive]:
+  type Type = Int
+  type Error = IllegalArgumentException
+
+  inline def wrap(n: Int): CheckedPositive = n
+  inline def unwrap(n: CheckedPositive): Int = n
+
+  protected inline def validate(n: Int): Option[Error] =
+    if n > 0 then None
+    else Some(new IllegalArgumentException(s"$n must be positive"))
+
+  inline def apply(inline value: Int): CheckedPositive =
+    inline if value <= 0 then compiletime.error("value must be positive")
+    else wrap(value)
+end CheckedPositive
 
 class OpaqueTypeSuite extends FunSuite:
 
@@ -414,5 +442,60 @@ class OpaqueTypeSuite extends FunSuite:
 
     assert(result.isLeft)
     assert(!evaluatedEmail, "Email validation should not have been evaluated")
+
+  // -------------------------------------------------------------------------
+  // apply: Direct Construction (Default Delegates to fromUnsafe)
+  // -------------------------------------------------------------------------
+
+  test("apply succeeds for valid input"):
+    assertEquals(NonEmptyString.unwrap(NonEmptyString("hello")), "hello")
+    assertEquals(PositiveInt.unwrap(PositiveInt(42)), 42)
+
+  test("apply throws for invalid input"):
+    intercept[IllegalArgumentException]:
+      NonEmptyString("")
+
+  test("apply throws custom error type"):
+    intercept[EmailError]:
+      Email("not-an-email")
+
+  // -------------------------------------------------------------------------
+  // apply: Compile-Time Validated Override (CheckedPositive)
+  // -------------------------------------------------------------------------
+
+  test("apply with compile-time validated override succeeds for valid literal"):
+    val p = CheckedPositive(42)
+    assertEquals(CheckedPositive.unwrap(p), 42)
+
+  test("apply compile-time error for invalid literal"):
+    val errors = scala.compiletime.testing.typeCheckErrors("boilerplate.CheckedPositive(0)")
+    assert(errors.nonEmpty, "Expected compile-time error for CheckedPositive(0)")
+    assert(errors.exists(_.message.contains("value must be positive")))
+
+  test("apply compile-time error for negative literal"):
+    val errors = scala.compiletime.testing.typeCheckErrors("boilerplate.CheckedPositive(-1)")
+    assert(errors.nonEmpty, "Expected compile-time error for CheckedPositive(-1)")
+
+  // -------------------------------------------------------------------------
+  // const: Extension Method for Compile-Time Construction
+  // -------------------------------------------------------------------------
+
+  test("const extension succeeds for valid input"):
+    import NonEmptyString.given
+    assertEquals(NonEmptyString.unwrap("hello".const[NonEmptyString]), "hello")
+
+  test("const extension throws for invalid input (default apply)"):
+    import NonEmptyString.given
+    intercept[IllegalArgumentException]:
+      "".const[NonEmptyString]
+
+  test("const extension works with Int underlying type"):
+    import PositiveInt.given
+    assertEquals(PositiveInt.unwrap(42.const[PositiveInt]), 42)
+
+  test("const extension preserves custom error type"):
+    import Email.given
+    intercept[EmailError]:
+      "invalid".const[Email]
 
 end OpaqueTypeSuite
