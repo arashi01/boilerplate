@@ -1,10 +1,11 @@
 # Boilerplate
 
-Foundational Scala 3 utilities: opaque type construction, null-safe handling, and zero-cost typed-error effects.
+Foundational Scala 3 utilities: opaque type construction, null-safe handling, cross-platform codecs, and zero-cost typed-error effects.
 
 ## Modules
 
 - **`boilerplate`** — Core utilities for opaque types and nullable values
+- **`boilerplate-codecs`** — Cross-platform codecs (Base64)
 - **`boilerplate-effect`** — Optional typed-error effects atop cats-effect
 
 ---
@@ -117,6 +118,42 @@ opt.flattenNull           // Option[String] — Some(null) becomes None
 val result: Either[String, String | Null] = Right(javaMethod())
 result.flattenNull("null value")  // Either[String, String]
 ```
+
+---
+
+### boilerplate-codecs
+
+Cross-platform encoding and decoding utilities.
+
+```scala
+libraryDependencies += "io.github.arashi01" %% "boilerplate-codecs" % "<version>"
+```
+
+#### Base64
+
+Standard Base64 encoding and decoding per [RFC 4648 §4](https://www.rfc-editor.org/rfc/rfc4648#section-4). Uses the
+standard alphabet (`A`–`Z`, `a`–`z`, `0`–`9`, `+`, `/`) with `=` padding. Decoding is strict: invalid characters and
+malformed padding are rejected.
+
+```scala
+import boilerplate.codec.Base64
+
+// Encode
+val encoded: String = Base64.encode("foobar".getBytes("UTF-8"))  // "Zm9vYmFy"
+
+// Decode
+val decoded: Either[Base64.Error, Array[Byte]] = Base64.decode("Zm9vYmFy")
+
+// Round-trip
+Base64.decode(Base64.encode(bytes))  // Right(bytes)
+```
+
+| Method   | Signature                                       | Description                                       |
+|----------|-------------------------------------------------|---------------------------------------------------|
+| `encode` | `Array[Byte] => String`                         | Encodes binary data to a standard Base64 string   |
+| `decode` | `String => Either[Base64.Error, Array[Byte]]`   | Decodes a Base64 string; rejects invalid input    |
+
+Platform implementations: JVM and Native use `java.util.Base64`; JS uses `globalThis.atob`/`globalThis.btoa`.
 
 ---
 
