@@ -20,23 +20,78 @@
  */
 package boilerplate.codec
 
-/** Standard Base64 encoding and decoding per RFC 4648 §4.
+/** Base64 encoding and decoding per RFC 4648.
   *
-  * Uses the standard alphabet (`A`–`Z`, `a`–`z`, `0`–`9`, `+`, `/`) with `=` padding. Decoding is
-  * strict: invalid characters and malformed padding are rejected.
+  * Supports both the standard alphabet (section 4: `+`, `/`, `=` padding) and the URL-safe alphabet
+  * (section 5: `-`, `_`, no padding).
   *
   * {{{
-  * Base64.encode("foobar".getBytes) // "Zm9vYmFy"
-  * Base64.decode("Zm9vYmFy")       // Right(Array[Byte](...))
+  * Base64.encode("foobar".getBytes)                   // "Zm9vYmFy"
+  * Base64.decode("Zm9vYmFy")                          // Right(Array[Byte](...))
+  * Base64.encode(Array(0x3b, 0xff).map(_.toByte), urlSafe = true)  // "O_8"
+  * Base64.decode("O_8", urlSafe = true)               // Right(Array[Byte](0x3b, 0xff))
   * }}}
   */
 object Base64:
 
-  /** Encodes binary data to a standard Base64 string with padding. */
-  inline def encode(data: Array[Byte]): String = PlatformBase64.encode(data)
+  /** Encodes binary data to a standard Base64 string (RFC 4648 section 4) with padding. */
+  inline def encode(data: Array[Byte]): String = encode(data, false)
 
-  /** Decodes a standard Base64 string to binary data. Returns `Left(Error)` for invalid input. */
-  inline def decode(input: String): Either[Error, Array[Byte]] = PlatformBase64.decode(input)
+  /** Encodes binary data to Base64. When `urlSafe` is `true`, uses the URL-safe alphabet (RFC 4648
+    * section 5): `+` becomes `-`, `/` becomes `_`, and padding is stripped.
+    */
+  def encode(data: Array[Byte], urlSafe: Boolean): String =
+    val standard = PlatformBase64.encode(data)
+    if urlSafe then toUrlSafe(standard) else standard
+
+  /** Decodes a standard Base64 string (RFC 4648 section 4) to binary data. Returns `Left(Error)`
+    * for invalid input.
+    */
+  inline def decode(input: String): Either[Error, Array[Byte]] = decode(input, false)
+
+  /** Decodes a Base64 string to binary data. When `urlSafe` is `true`, expects the URL-safe
+    * alphabet (RFC 4648 section 5): `-` and `_` are translated back, and padding is restored before
+    * decoding.
+    */
+  def decode(input: String, urlSafe: Boolean): Either[Error, Array[Byte]] =
+    val normalized = if urlSafe then fromUrlSafe(input) else input
+    PlatformBase64.decode(normalized)
+
+  // Hot path: single-pass character mapping with padding removal.
+  private def toUrlSafe(s: String): String =
+    val len = s.length
+    val end =
+      if len >= 2 && s.charAt(len - 1) == '=' then if s.charAt(len - 2) == '=' then len - 2 else len - 1
+      else if len >= 1 && s.charAt(len - 1) == '=' then len - 1
+      else len
+    val chars = new Array[Char](end)
+    var i = 0 // scalafix:ok DisableSyntax.var
+    while i < end do // scalafix:ok DisableSyntax.while
+      s.charAt(i) match
+        case '+' => chars(i) = '-'
+        case '/' => chars(i) = '_'
+        case c   => chars(i) = c
+      i += 1
+    new String(chars)
+  end toUrlSafe
+
+  // Hot path: single-pass character mapping with padding restoration.
+  private def fromUrlSafe(s: String): String =
+    val pad = (4 - s.length % 4) % 4
+    val chars = new Array[Char](s.length + pad)
+    var i = 0 // scalafix:ok DisableSyntax.var
+    while i < s.length do // scalafix:ok DisableSyntax.while
+      s.charAt(i) match
+        case '-' => chars(i) = '+'
+        case '_' => chars(i) = '/'
+        case c   => chars(i) = c
+      i += 1
+    var j = s.length // scalafix:ok DisableSyntax.var
+    while j < chars.length do // scalafix:ok DisableSyntax.while
+      chars(j) = '='
+      j += 1
+    new String(chars)
+  end fromUrlSafe
 
   /** Error produced when decoding invalid Base64 input. */
   final class Error(message: String) extends IllegalArgumentException(message)
