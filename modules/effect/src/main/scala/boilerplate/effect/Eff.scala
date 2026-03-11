@@ -78,7 +78,7 @@ private[effect] trait EffInstancesLowPriority5:
     *
     * ==Typed Error Semantics==
     * A fibre completing with a typed error `E` is considered a ''successful'' `Outcome` from the
-    * fibre's perspective — the typed error is carried within `Outcome.Succeeded`. Defects
+    * fibre's perspective - the typed error is carried within `Outcome.Succeeded`. Defects
     * (`Throwable`) propagate via `Outcome.Errored`.
     */
   given [F[_], E0] => (S: GenSpawn[F, Throwable]) => GenSpawn[Of[F, E0], Throwable]:
@@ -1122,7 +1122,7 @@ object Eff extends EffInstancesLowPriority0:
     /** Starts this computation as a fibre, returning immediately.
       *
       * The returned `Fiber` can be joined or cancelled. A fibre completing with a typed error `E`
-      * is considered a successful `Outcome` — the typed error is carried within
+      * is considered a successful `Outcome` - the typed error is carried within
       * `Outcome.Succeeded`.
       */
     inline def start(using S: GenSpawn[F, Throwable]): Eff[F, E, Fiber[Of[F, E], Throwable, A]] =
@@ -1337,7 +1337,7 @@ object Eff extends EffInstancesLowPriority0:
   /** Introduces a self-cancellation point into the computation.
     *
     * In the Eff context, this immediately cancels the current fibre when evaluated. The resulting
-    * computation never produces a value or error — it is cancelled.
+    * computation never produces a value or error - it is cancelled.
     */
   inline def canceled[F[_], E](using S: GenSpawn[F, Throwable]): Eff[F, E, Unit] =
     liftF(S.canceled)

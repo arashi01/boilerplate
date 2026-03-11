@@ -784,7 +784,7 @@ object EffR extends EffRInstancesLowPriority0:
   /** Introduces a self-cancellation point into the computation, ignoring the environment.
     *
     * In the EffR context, this immediately cancels the current fibre when evaluated. The resulting
-    * computation never produces a value or error — it is cancelled.
+    * computation never produces a value or error - it is cancelled.
     */
   inline def canceled[F[_], R, E](using S: GenSpawn[F, Throwable]): EffR[F, R, E, Unit] =
     (_: R) => Eff.canceled
@@ -1093,7 +1093,7 @@ object EffR extends EffRInstancesLowPriority0:
     /** Starts this computation as a fibre, returning immediately.
       *
       * The returned `Fiber` can be joined or cancelled. A fibre completing with a typed error `E`
-      * is considered a successful `Outcome` — the typed error is carried within
+      * is considered a successful `Outcome` - the typed error is carried within
       * `Outcome.Succeeded`.
       */
     inline def start(using S: GenSpawn[F, Throwable]): EffR[F, R, E, Fiber[Eff.Of[F, E], Throwable, A]] =

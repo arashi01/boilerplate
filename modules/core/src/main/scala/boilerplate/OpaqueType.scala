@@ -22,7 +22,8 @@ package boilerplate
 
 /** Base trait for opaque type companion objects providing validated construction.
   *
-  * Implementors define [[Type]], [[Error]], [[wrap]], [[unwrap]], [[apply]], and [[validate]].
+  * Define [[Type]], [[Error]], [[wrap]], [[unwrap]], [[apply]], and [[validate]]. See
+  * [[boilerplate.OpaqueType$ OpaqueType]] companion for summoning.
   *
   * {{{
   * opaque type UserId = String
@@ -30,16 +31,17 @@ package boilerplate
   *   type Type  = String
   *   type Error = IllegalArgumentException
   *
-  *   inline def wrap(s: String): UserId   = s
-  *   inline def unwrap(id: UserId): String = id
+  *   inline def wrap(s: String): UserId    = s
+  *   inline def unwrap(id: UserId): String  = id
   *   inline def apply(inline value: String): UserId = fromUnsafe(value)
   *
-  *   protected def validate(s: String): Option[Error] =
+  *   protected inline def validate(s: String): Option[Error] =
   *     if s.nonEmpty then None else Some(new IllegalArgumentException("empty"))
   *
-  * UserId("abc")       // UserId("abc") — throws on invalid input
+  * UserId("abc")       // UserId("abc") - throws on invalid input
   * UserId.from("abc")  // Right(UserId("abc"))
   * "abc".as[UserId]    // Right(UserId("abc"))
+  * "abc".unwrap        // "abc"
   * }}}
   */
 transparent trait OpaqueType[A]:
@@ -56,20 +58,10 @@ transparent trait OpaqueType[A]:
   /** Extracts the underlying value from the opaque type. */
   def unwrap(value: A): Type
 
-  /** Validates the raw value, returning `None` on success or `Some(error)` on failure.
-    *
-    * Uses `Option[Error]` rather than the more semantically natural `Error | Unit` union type due
-    * to a Scala Native codegen limitation:
-    * [[https://github.com/scala-native/scala-native/issues/4747 issue #4747]] forces
-    * `nir.Type.Unit` for the entire if-expression when one branch returns `Unit`, breaking union
-    * type discrimination at runtime. When
-    * [[https://github.com/scala-native/scala-native/pull/4748 PR #4748]] is merged, consider
-    * migrating back to `Error | Unit`.
-    */
+  /** Validates the raw value, returning `None` on success or `Some(error)` on failure. */
   protected inline def validate(value: Type): Option[Error]
 
-  // Transparent inline preserves singleton type with refinements, enabling =:= evidence at call sites.
-  /** Provides this companion as the given instance for extension method resolution. */
+  /** Provides this companion as the `given` instance for extension method resolution. */
   final transparent inline given OpaqueType[A] = this
 
   /** Provides multiversal equality for the opaque type. */
@@ -102,7 +94,7 @@ transparent trait OpaqueType[A]:
 
 end OpaqueType
 
-/** Summoning for [[OpaqueType]] instances. */
+/** Companion providing summoning for [[OpaqueType]] instances. */
 object OpaqueType:
 
   /** Summons the [[OpaqueType]] instance for `A`. */
@@ -110,25 +102,25 @@ object OpaqueType:
 
 /** Safe construction via extension syntax: `"hello@example.com".as[Email]`. */
 extension [B](b: B)
-  inline def as[A](using c: OpaqueType[A])(using ev: c.Type =:= B): Either[c.Error, A] =
+  transparent inline def as[A](using c: OpaqueType[A])(using ev: c.Type =:= B): Either[c.Error, A] =
     c.from(ev.flip(b))
 
 /** Unsafe construction via extension syntax: `"hello@example.com".asUnsafe[Email]`. */
 extension [B](b: B)
-  inline def asUnsafe[A](using c: OpaqueType[A])(using ev: c.Type =:= B): A =
+  transparent inline def asUnsafe[A](using c: OpaqueType[A])(using ev: c.Type =:= B): A =
     c.fromUnsafe(ev.flip(b))
 
 /** Direct construction via extension syntax: `42.const[PositiveInt]`.
   *
   * Delegates to [[OpaqueType.apply]]. For companions that override `apply` with `inline if` +
-  * `compiletime.error`, use the direct `Companion(literal)` syntax instead — the `=:=` evidence
+  * `compiletime.error`, use the direct `Companion(literal)` syntax instead - the `=:=` evidence
   * conversion prevents inline constant propagation through this extension.
   */
 extension [B](inline b: B)
-  inline def const[A](using c: OpaqueType[A])(using ev: c.Type =:= B): A =
+  transparent inline def const[A](using c: OpaqueType[A])(using ev: c.Type =:= B): A =
     c.apply(ev.flip(b))
 
 /** Extraction via extension syntax: `email.unwrap`. */
 extension [A](a: A)
-  inline def unwrap(using c: OpaqueType[A]): c.Type =
+  transparent inline def unwrap(using c: OpaqueType[A]): c.Type =
     c.unwrap(a)
