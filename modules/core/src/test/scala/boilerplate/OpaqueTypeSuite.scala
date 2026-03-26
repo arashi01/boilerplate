@@ -26,11 +26,10 @@ import munit.FunSuite
 // Test Fixtures - Opaque Types at Package Level for Proper Given Resolution
 // ============================================================================
 
-/** Simple string-based opaque type: must be non-empty. */
+/** Simple string-based opaque type: must be non-empty. Opts in to equality. */
 opaque type NonEmptyString = String
 
-object NonEmptyString extends OpaqueType[NonEmptyString]:
-  type Type = String
+object NonEmptyString extends OpaqueType[NonEmptyString, String], OpaqueType.Eq[NonEmptyString]:
   type Error = IllegalArgumentException
 
   inline def wrap(s: String): NonEmptyString = s
@@ -41,11 +40,10 @@ object NonEmptyString extends OpaqueType[NonEmptyString]:
     if s.nonEmpty then None
     else Some(new IllegalArgumentException("String must be non-empty"))
 
-/** Numeric opaque type: must be positive. */
+/** Numeric opaque type: must be positive. Opts in to equality. */
 opaque type PositiveInt = Int
 
-object PositiveInt extends OpaqueType[PositiveInt]:
-  type Type = Int
+object PositiveInt extends OpaqueType[PositiveInt, Int], OpaqueType.Eq[PositiveInt]:
   type Error = IllegalArgumentException
 
   inline def wrap(n: Int): PositiveInt = n
@@ -62,11 +60,10 @@ final class EmailError(message: String) extends RuntimeException(message)
 object EmailError:
   given CanEqual[EmailError, EmailError] = CanEqual.derived
 
-/** Email opaque type with custom error type. */
+/** Email opaque type with custom error type. Opts in to equality. */
 opaque type Email = String
 
-object Email extends OpaqueType[Email]:
-  type Type = String
+object Email extends OpaqueType[Email, String], OpaqueType.Eq[Email]:
   type Error = EmailError
 
   inline def wrap(s: String): Email = s
@@ -76,6 +73,24 @@ object Email extends OpaqueType[Email]:
   protected inline def validate(s: String): Option[Error] =
     if s.contains("@") then None
     else Some(new EmailError(s"Invalid email format: $s"))
+
+// ============================================================================
+// Security-Sensitive Fixture - Intentionally NO Eq mixin
+// ============================================================================
+
+/** Secret token: must be non-empty. Deliberately omits OpaqueType.Eq to forbid ==. */
+opaque type SecretToken = String
+
+object SecretToken extends OpaqueType[SecretToken, String]:
+  type Error = IllegalArgumentException
+
+  inline def wrap(s: String): SecretToken = s
+  inline def unwrap(s: SecretToken): String = s
+  inline def apply(inline value: String): SecretToken = fromUnsafe(value)
+
+  protected inline def validate(s: String): Option[Error] =
+    if s.nonEmpty then None
+    else Some(new IllegalArgumentException("Token must be non-empty"))
 
 // ============================================================================
 // Phantom Type Fixtures - Test OpaqueType with Phantom Type Parameters
@@ -90,8 +105,7 @@ opaque type Distance[U] = Double
 
 object Distance:
   /** Companion for Metres-tagged Distance. */
-  object Metres extends OpaqueType[Distance[boilerplate.Metres]]:
-    type Type = Double
+  object Metres extends OpaqueType[Distance[boilerplate.Metres], Double], OpaqueType.Eq[Distance[boilerplate.Metres]]:
     type Error = IllegalArgumentException
 
     inline def wrap(d: Double): Distance[boilerplate.Metres] = d
@@ -103,8 +117,7 @@ object Distance:
       else Some(new IllegalArgumentException(s"Distance cannot be negative: $d"))
 
   /** Companion for Feet-tagged Distance. */
-  object Feet extends OpaqueType[Distance[boilerplate.Feet]]:
-    type Type = Double
+  object Feet extends OpaqueType[Distance[boilerplate.Feet], Double], OpaqueType.Eq[Distance[boilerplate.Feet]]:
     type Error = IllegalArgumentException
 
     inline def wrap(d: Double): Distance[boilerplate.Feet] = d
@@ -123,8 +136,7 @@ end Distance
 /** Positive integer with compile-time validation for literals. */
 opaque type CheckedPositive = Int
 
-object CheckedPositive extends OpaqueType[CheckedPositive]:
-  type Type = Int
+object CheckedPositive extends OpaqueType[CheckedPositive, Int], OpaqueType.Eq[CheckedPositive]:
   type Error = IllegalArgumentException
 
   inline def wrap(n: Int): CheckedPositive = n
@@ -282,32 +294,62 @@ class OpaqueTypeSuite extends FunSuite:
 
   test("OpaqueType.apply summons instance"):
     import NonEmptyString.given
-    val instance = OpaqueType[NonEmptyString]
+    val instance = OpaqueType[NonEmptyString, String]
     // Verify summoned instance is the same singleton
     assert(instance eq NonEmptyString)
 
   test("OpaqueType.apply returns same instance"):
     import NonEmptyString.given
-    val a = OpaqueType[NonEmptyString]
-    val b = OpaqueType[NonEmptyString]
+    val a = OpaqueType[NonEmptyString, String]
+    val b = OpaqueType[NonEmptyString, String]
     assert(a eq b) // Same singleton instance
 
   // -------------------------------------------------------------------------
-  // CanEqual: Multiversal Equality
+  // CanEqual: Opt-In Multiversal Equality via OpaqueType.Eq
   // -------------------------------------------------------------------------
 
-  test("CanEqual allows same-type comparison"):
+  test("CanEqual allows same-type comparison when Eq is mixed in"):
     val a = NonEmptyString.wrap("hello")
     val b = NonEmptyString.wrap("hello")
     assertEquals(a, b)
 
-  test("CanEqual detects inequality"):
+  test("CanEqual detects inequality when Eq is mixed in"):
     val a = NonEmptyString.wrap("hello")
     val b = NonEmptyString.wrap("world")
     assertNotEquals(a, b)
 
   // Note: Cross-type comparisons (NonEmptyString vs Email) are compile errors
   // due to CanEqual - we don't test compile errors in runtime tests
+
+  test("CanEqual is absent when Eq is omitted - compile error on =="):
+    // SecretToken does NOT extend OpaqueType.Eq, so == should be a compile error
+    val errors = scala.compiletime.testing.typeCheckErrors:
+      """
+      val a: boilerplate.SecretToken = boilerplate.SecretToken.wrap("abc")
+      val b: boilerplate.SecretToken = boilerplate.SecretToken.wrap("abc")
+      a == b
+      """
+    assert(errors.nonEmpty, "Expected compile error when comparing SecretTokens with ==")
+
+  // -------------------------------------------------------------------------
+  // SecretToken: Security-Sensitive (No Eq)
+  // -------------------------------------------------------------------------
+
+  test("SecretToken from succeeds for valid input"):
+    assert(SecretToken.from("my-secret").isRight)
+
+  test("SecretToken from fails for empty input"):
+    assert(SecretToken.from("").isLeft)
+
+  test("SecretToken unwrap works"):
+    val token = SecretToken.fromUnsafe("my-secret")
+    assertEquals(SecretToken.unwrap(token), "my-secret")
+
+  test("SecretToken extension methods work"):
+    import SecretToken.given
+    assert("valid-token".as[SecretToken].isRight)
+    assert("".as[SecretToken].isLeft)
+    assertEquals("valid-token".asUnsafe[SecretToken].unwrap, "valid-token")
 
   // -------------------------------------------------------------------------
   // Type Member: Error <: Throwable Constraint

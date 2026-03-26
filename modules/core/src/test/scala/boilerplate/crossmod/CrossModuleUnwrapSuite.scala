@@ -28,7 +28,7 @@ import boilerplate.*
   *
   * The opaque types (`NonEmptyString`, `PositiveInt`, `Email`, `Distance`) are defined in `package
   * boilerplate`. This suite lives in a child package where opaque type equality does NOT hold -
-  * simulating the cross-module scenario where `Type` members would be abstract if not properly
+  * simulating the cross-module scenario where the underlying type would be abstract if not properly
   * propagated via transparent inline.
   */
 class CrossModuleUnwrapSuite extends FunSuite:
@@ -111,5 +111,15 @@ class CrossModuleUnwrapSuite extends FunSuite:
     val constructed: PositiveInt = original.asUnsafe[PositiveInt]
     val extracted: Int = constructed.unwrap
     assertEquals(extracted, original)
+
+  // -------------------------------------------------------------------------
+  // SecretToken: Security-Sensitive Across Module Boundary
+  // -------------------------------------------------------------------------
+
+  test("SecretToken extensions work across module boundary"):
+    import SecretToken.given
+    val token = "my-secret".asUnsafe[SecretToken]
+    val underlying: String = token.unwrap
+    assertEquals(underlying, "my-secret")
 
 end CrossModuleUnwrapSuite
