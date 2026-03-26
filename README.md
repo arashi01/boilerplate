@@ -29,9 +29,12 @@ import boilerplate.*
 
 ### OpaqueType
 
-`OpaqueType[A]` is a base trait for opaque type companion objects. It enforces validated construction, provides
-extension-based syntax for construction and extraction, and automatically publishes a `given` instance and
-`CanEqual` derivation.
+`OpaqueType[A, Repr]` is a base trait for opaque type companion objects. It enforces validated construction,
+provides extension-based syntax for construction and extraction, and automatically publishes a `given` instance
+for implicit resolution.
+
+**Multiversal equality is opt-in** via the `OpaqueType.Eq[A]` mixin. Security-sensitive types (tokens, keys,
+password hashes) should omit it to prevent accidental comparison.
 
 #### Defining an opaque type
 
@@ -42,8 +45,7 @@ import boilerplate.*
 
 opaque type UserId = String
 
-object UserId extends OpaqueType[UserId]:
-  type Type  = String
+object UserId extends OpaqueType[UserId, String], OpaqueType.Eq[UserId]:
   type Error = IllegalArgumentException
 
   inline def wrap(s: String): UserId     = s
@@ -53,6 +55,17 @@ object UserId extends OpaqueType[UserId]:
   protected inline def validate(s: String): Option[Error] =
     if s.nonEmpty then None
     else Some(new IllegalArgumentException("UserId cannot be empty"))
+```
+
+For types where equality comparison should be forbidden, omit the `Eq` mixin:
+
+```scala
+opaque type SecretToken = String
+
+object SecretToken extends OpaqueType[SecretToken, String]:
+  type Error = IllegalArgumentException
+  // ...
+  // SecretToken values cannot be compared with == (compile error under strictEquality)
 ```
 
 #### Construction
@@ -83,8 +96,7 @@ Companions may override `apply` with `inline if` + `compiletime.error` to reject
 ```scala
 opaque type PositiveInt = Int
 
-object PositiveInt extends OpaqueType[PositiveInt]:
-  type Type  = Int
+object PositiveInt extends OpaqueType[PositiveInt, Int], OpaqueType.Eq[PositiveInt]:
   type Error = IllegalArgumentException
 
   inline def wrap(n: Int): PositiveInt    = n
@@ -104,20 +116,21 @@ PositiveInt(-1)   // compile-time error: "value must be positive"
 
 #### API summary
 
-| Member / Extension | Description                                              |
-|--------------------|----------------------------------------------------------|
-| `type Type`        | Underlying representation type                           |
-| `type Error`       | Validation error type (must extend `Throwable`)          |
-| `wrap(value)`      | Wraps without validation                                 |
-| `unwrap(value)`    | Extracts the underlying value                            |
-| `apply(value)`     | Direct construction; override for compile-time checks    |
-| `validate(value)`  | Returns `None` on success, `Some(error)` on failure      |
-| `from(value)`      | Safe construction returning `Either[Error, A]`           |
-| `fromUnsafe(value)`| Throws `Error` on validation failure                     |
-| `value.as[A]`      | Extension for `from`                                     |
-| `value.asUnsafe[A]`| Extension for `fromUnsafe`                               |
-| `value.const[A]`   | Extension for `apply`                                    |
-| `value.unwrap`     | Extension for `unwrap`                                   |
+| Member / Extension  | Description                                              |
+|---------------------|----------------------------------------------------------|
+| `Repr` (type param) | Underlying representation type                           |
+| `type Error`        | Validation error type (must extend `Throwable`)          |
+| `wrap(value)`       | Wraps without validation                                 |
+| `unwrap(value)`     | Extracts the underlying value                            |
+| `apply(value)`      | Direct construction; override for compile-time checks    |
+| `validate(value)`   | Returns `None` on success, `Some(error)` on failure      |
+| `from(value)`       | Safe construction returning `Either[Error, A]`           |
+| `fromUnsafe(value)` | Throws `Error` on validation failure                     |
+| `value.as[A]`       | Extension for `from`                                     |
+| `value.asUnsafe[A]` | Extension for `fromUnsafe`                               |
+| `value.const[A]`    | Extension for `apply`                                    |
+| `value.unwrap`      | Extension for `unwrap`                                   |
+| `OpaqueType.Eq[A]`  | Mixin providing `CanEqual[A, A]` (opt-in equality)       |
 
 ---
 

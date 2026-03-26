@@ -22,13 +22,12 @@ package boilerplate
 
 /** Base trait for opaque type companion objects providing validated construction.
   *
-  * Define [[Type]], [[Error]], [[wrap]], [[unwrap]], [[apply]], and [[validate]]. See
-  * [[boilerplate.OpaqueType$ OpaqueType]] companion for summoning.
+  * Define [[Error]], [[wrap]], [[unwrap]], [[apply]], and [[validate]]. CanEqual is opt-in via the
+  * [[OpaqueType$.Eq Eq]] mixin — security-sensitive types (tokens, keys, etc.) should omit it.
   *
   * {{{
   * opaque type UserId = String
-  * object UserId extends OpaqueType[UserId]:
-  *   type Type  = String
+  * object UserId extends OpaqueType[UserId, String], OpaqueType.Eq[UserId]:
   *   type Error = IllegalArgumentException
   *
   *   inline def wrap(s: String): UserId    = s
@@ -43,38 +42,44 @@ package boilerplate
   * "abc".as[UserId]    // Right(UserId("abc"))
   * "abc".unwrap        // "abc"
   * }}}
+  *
+  * For types where equality comparison should be forbidden (e.g. secret tokens, password hashes),
+  * simply omit the [[OpaqueType$.Eq Eq]] mixin:
+  *
+  * {{{
+  * opaque type SecretToken = String
+  * object SecretToken extends OpaqueType[SecretToken, String]:
+  *   // No OpaqueType.Eq — comparing tokens with == is a compile error
+  * }}}
+  *
+  * @tparam A The opaque type.
+  * @tparam Repr The underlying representation type.
   */
-transparent trait OpaqueType[A]:
-
-  /** The underlying representation type. */
-  type Type
+transparent trait OpaqueType[A, Repr]:
 
   /** The typed error produced on validation failure. Must extend `Throwable`. */
   type Error <: Throwable
 
   /** Wraps a raw value as the opaque type. No validation is performed. */
-  def wrap(value: Type): A
+  def wrap(value: Repr): A
 
   /** Extracts the underlying value from the opaque type. */
-  def unwrap(value: A): Type
+  def unwrap(value: A): Repr
 
   /** Validates the raw value, returning `None` on success or `Some(error)` on failure. */
-  protected inline def validate(value: Type): Option[Error]
+  protected inline def validate(value: Repr): Option[Error]
 
   /** Provides this companion as the `given` instance for extension method resolution. */
-  final transparent inline given OpaqueType[A] = this
-
-  /** Provides multiversal equality for the opaque type. */
-  given CanEqual[A, A] = CanEqual.derived
+  final transparent inline given OpaqueType[A, Repr] = this
 
   /** Safe construction returning `Right(wrapped)` if valid, `Left(error)` otherwise. */
-  final inline def from(value: Type): Either[Error, A] =
+  final inline def from(value: Repr): Either[Error, A] =
     validate(value) match
       case None    => Right(wrap(value))
       case Some(e) => Left(e)
 
   /** Unsafe construction that throws [[Error]] on validation failure. */
-  final inline def fromUnsafe(value: Type): A =
+  final inline def fromUnsafe(value: Repr): A =
     validate(value) match
       case None    => wrap(value)
       case Some(e) => throw e // scalafix:ok
@@ -90,37 +95,51 @@ transparent trait OpaqueType[A]:
     *   else wrap(value)
     * }}}
     */
-  inline def apply(inline value: Type): A
+  inline def apply(inline value: Repr): A
 
 end OpaqueType
 
-/** Companion providing summoning for [[OpaqueType]] instances. */
+/** Companion providing summoning and the opt-in [[Eq]] mixin for multiversal equality. */
 object OpaqueType:
 
   /** Summons the [[OpaqueType]] instance for `A`. */
-  inline def apply[A](using ot: OpaqueType[A]): OpaqueType[A] = ot
+  inline def apply[A, Repr](using ot: OpaqueType[A, Repr]): OpaqueType[A, Repr] = ot
+
+  /** Opt-in mixin that provides `CanEqual[A, A]` for multiversal equality.
+    *
+    * Mix this into opaque type companions that should support `==` and `!=`:
+    * {{{
+    * object UserId extends OpaqueType[UserId, String], OpaqueType.Eq[UserId]:
+    * }}}
+    *
+    * Omit for security-sensitive types where comparison should be forbidden.
+    */
+  transparent trait Eq[A]:
+    given CanEqual[A, A] = CanEqual.derived
+
+end OpaqueType
 
 /** Safe construction via extension syntax: `"hello@example.com".as[Email]`. */
 extension [B](b: B)
-  transparent inline def as[A](using c: OpaqueType[A])(using ev: c.Type =:= B): Either[c.Error, A] =
-    c.from(ev.flip(b))
+  transparent inline def as[A](using c: OpaqueType[A, B]): Either[c.Error, A] =
+    c.from(b)
 
 /** Unsafe construction via extension syntax: `"hello@example.com".asUnsafe[Email]`. */
 extension [B](b: B)
-  transparent inline def asUnsafe[A](using c: OpaqueType[A])(using ev: c.Type =:= B): A =
-    c.fromUnsafe(ev.flip(b))
+  transparent inline def asUnsafe[A](using c: OpaqueType[A, B]): A =
+    c.fromUnsafe(b)
 
 /** Direct construction via extension syntax: `42.const[PositiveInt]`.
   *
   * Delegates to [[OpaqueType.apply]]. For companions that override `apply` with `inline if` +
-  * `compiletime.error`, use the direct `Companion(literal)` syntax instead - the `=:=` evidence
-  * conversion prevents inline constant propagation through this extension.
+  * `compiletime.error`, use the direct `Companion(literal)` syntax instead — the extension
+  * indirection may prevent inline constant propagation.
   */
 extension [B](inline b: B)
-  transparent inline def const[A](using c: OpaqueType[A])(using ev: c.Type =:= B): A =
-    c.apply(ev.flip(b))
+  transparent inline def const[A](using c: OpaqueType[A, B]): A =
+    c.apply(b)
 
 /** Extraction via extension syntax: `email.unwrap`. */
 extension [A](a: A)
-  transparent inline def unwrap(using c: OpaqueType[A]): c.Type =
+  transparent inline def unwrap[Repr](using c: OpaqueType[A, Repr]): Repr =
     c.unwrap(a)
