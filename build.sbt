@@ -40,6 +40,10 @@ val `boilerplate` =
     .settings(unitTestSettings)
     .settings(fileHeaderSettings)
     .settings(publishSettings)
+    .nativeSettings(osSourceSettings)
+    .nativeSettings(
+      Test / unmanagedSourceDirectories += crossProjectBaseDirectory.value / "src" / "test" / "scala-native"
+    )
     .nativeSettings(nativeSettings)
 
 val `boilerplate-codecs` =
@@ -126,6 +130,17 @@ val `boilerplate-root` =
       `boilerplate-native`
     )
 
+def osSourceSettings: Setting[Seq[File]] = {
+  val osName: String =
+    System.getProperty("os.name").toLowerCase match {
+      case os if os.contains("lin")                          => "linux"
+      case os if os.contains("mac") || os.contains("darwin") => "macos"
+      case os if os.contains("win")                          => "windows"
+      case os                                                => throw new RuntimeException(s"Unsupported OS: $os")
+    }
+  Compile / unmanagedSourceDirectories += crossProjectBaseDirectory.value / "src" / "main" / s"scala-$osName"
+}
+
 def nativeSettings = List(
   dependencyOverrides += "org.scala-native" %%% "test-interface" % buildinfo.BuildInfo.scalaNativeVersion % Test
 )
@@ -167,8 +182,6 @@ def compilerOptions = baseCompilerOptions ++ List(
   "-Yexplicit-nulls",
   "-Xcheck-macros",
   "-Werror"
-  // Suppress warning for intentional inline class instantiation in codec derivation
-//  "-Wconf:msg=New anonymous class definition will be duplicated at each inline site:s"
 )
 
 def compilerSettings = List(
@@ -210,8 +223,6 @@ def pgpSettings: List[Setting[?]] = List(
   PgpKeys.pgpSelectPassphrase := None,
   usePgpKeyHex(System.getenv("SIGNING_KEY_ID"))
 )
-
-def platformSourceDirectory(platform: String): Setting[Seq[File]] = sourceDirectories += (sourceDirectory.value / platform)
 
 def versionSetting: Def.Initialize[String] = Def.setting(
   dynverGitDescribeOutput.value.mkVersion(

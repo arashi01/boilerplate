@@ -23,7 +23,7 @@ package boilerplate
 /** Base trait for opaque type companion objects providing validated construction.
   *
   * Define [[Error]], [[wrap]], [[unwrap]], [[apply]], and [[validate]]. CanEqual is opt-in via the
-  * [[OpaqueType$.Eq Eq]] mixin — security-sensitive types (tokens, keys, etc.) should omit it.
+  * [[OpaqueType$.Eq Eq]] mixin - security-sensitive types (tokens, keys, etc.) should omit it.
   *
   * {{{
   * opaque type UserId = String
@@ -49,7 +49,7 @@ package boilerplate
   * {{{
   * opaque type SecretToken = String
   * object SecretToken extends OpaqueType[SecretToken, String]:
-  *   // No OpaqueType.Eq — comparing tokens with == is a compile error
+  *   // No OpaqueType.Eq - comparing tokens with == is a compile error
   * }}}
   *
   * @tparam A The opaque type.
@@ -132,8 +132,7 @@ extension [B](b: B)
 /** Direct construction via extension syntax: `42.const[PositiveInt]`.
   *
   * Delegates to [[OpaqueType.apply]]. For companions that override `apply` with `inline if` +
-  * `compiletime.error`, use the direct `Companion(literal)` syntax instead — the extension
-  * indirection may prevent inline constant propagation.
+  * `compiletime.error`, constant propagation works through the `inline` parameter chain.
   */
 extension [B](inline b: B)
   transparent inline def const[A](using c: OpaqueType[A, B]): A =

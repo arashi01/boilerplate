@@ -550,11 +550,15 @@ class EffSuite extends CatsEffectSuite:
     }
 
   test("retryWithBackoff respects maxDelay cap"):
+    // Cap at 1ms with a 10ms initial delay - if the cap is ignored, delays would be
+    // 10ms, 20ms, 40ms = 70ms. With cap: 1ms, 1ms, 1ms = 3ms. We verify the cap
+    // works by asserting the total elapsed time stays well under the uncapped budget.
+    var attempts = 0 // scalafix:ok DisableSyntax.var
     val eff = Eff.retryWithBackoff(
-      Eff.liftF[IO, String, Unit](IO.unit) *> Eff.fail("fail"),
+      Eff.liftF[IO, String, Unit](IO(attempts += 1)) *> Eff.fail("fail"),
       maxRetries = 3,
-      initialDelay = 100.millis,
-      maxDelay = Some(50.millis) // Cap should prevent 200ms, 400ms delays
+      initialDelay = 10.millis,
+      maxDelay = Some(1.millis)
     )
     for
       start <- IO.monotonic
@@ -563,8 +567,10 @@ class EffSuite extends CatsEffectSuite:
       elapsed = end - start
     yield
       assertEquals(result, Left("fail"))
-      // With 50ms cap: delays are 50ms, 50ms, 50ms = 150ms total, not 100+200+400=700ms
-      assert(clue(elapsed) < 300.millis)
+      assertEquals(attempts, 4) // 1 initial + 3 retries
+      // Without cap: 10+20+40 = 70ms minimum. With cap: 1+1+1 = 3ms.
+      // Allow generous CI headroom but ensure cap is clearly working.
+      assert(clue(elapsed) < 60.millis)
 
   // ===========================================================================
   // Primitive Lifts
