@@ -1,13 +1,13 @@
 # Boilerplate
 
-Foundational Scala 3 utilities for opaque type construction, null-safe handling, cross-platform codecs, and zero-cost typed-error effects - targeting JVM, JS, and Native.
+Foundational Scala 3 utilities for opaque type construction, null-safe handling, native platform detection, cross-platform codecs, and zero-cost typed-error effects - targeting JVM, JS, and Native.
 
 ## Installation
 
 Each module is published independently. Add the ones you need:
 
 ```scala
-// Core: opaque types + nullable extensions
+// Core: opaque types, nullable extensions, platform detection (Native)
 libraryDependencies += "io.github.arashi01" %% "boilerplate" % "<version>"
 
 // Codecs: Base64 (JVM, JS, Native)
@@ -29,16 +29,12 @@ import boilerplate.*
 
 ### OpaqueType
 
-`OpaqueType[A, Repr]` is a base trait for opaque type companion objects. It enforces validated construction,
-provides extension-based syntax for construction and extraction, and automatically publishes a `given` instance
-for implicit resolution.
+`OpaqueType[A, Repr]` is a base trait for opaque type companion objects providing validated construction and extension-based syntax.
 
-**Multiversal equality is opt-in** via the `OpaqueType.Eq[A]` mixin. Security-sensitive types (tokens, keys,
+**Multiversal equality is opt-in** via `OpaqueType.Eq[A]`. Security-sensitive types (tokens, keys,
 password hashes) should omit it to prevent accidental comparison.
 
 #### Defining an opaque type
-
-All behaviour lives in the companion. The type itself is pure data.
 
 ```scala
 import boilerplate.*
@@ -72,11 +68,11 @@ object SecretToken extends OpaqueType[SecretToken, String]:
 
 ```scala
 // Via companion
-val direct: UserId                              = UserId("user-123")
+val direct: UserId                                 = UserId("user-123")
 val safe: Either[IllegalArgumentException, UserId] = UserId.from("user-123")
 
 // Via extension syntax
-val ext1: Either[IllegalArgumentException, UserId] = "user-123".as[UserId]
+val ext1: Either[IllegalArgumentException, UserId]  = "user-123".as[UserId]
 val ext2: UserId                                    = "user-123".asUnsafe[UserId]
 val ext3: UserId                                    = "user-123".const[UserId]
 ```
@@ -87,7 +83,7 @@ val ext3: UserId                                    = "user-123".const[UserId]
 val underlying: String = direct.unwrap
 ```
 
-The `unwrap` extension resolves the concrete underlying type across module boundaries via `transparent inline`.
+The `unwrap` extension resolves the concrete underlying type across module boundaries.
 
 #### Compile-time validation
 
@@ -136,8 +132,7 @@ PositiveInt(-1)   // compile-time error: "value must be positive"
 
 ### nullable
 
-Inline extensions for Scala 3 explicit nulls (`-Yexplicit-nulls`). Provides concise, type-safe null elimination
-without requiring a `CanEqual` instance.
+Type-safe null elimination for Scala 3 explicit nulls (`-Yexplicit-nulls`).
 
 ```scala
 import boilerplate.nullable.*
@@ -182,6 +177,36 @@ result.flatMapNull("null value")(s => Right(s.trim))  // Either[String, String]
 
 ---
 
+### Platform (Scala Native only)
+
+Compile-time operating system detection for Scala Native targets.
+
+```scala
+import boilerplate.Platform
+
+// Compile-time branching - unreachable branches are eliminated
+inline if Platform.linux then linuxImpl()
+else inline if Platform.mac then macImpl()
+else windowsImpl()
+
+// Enum value for runtime dispatch
+Platform.current match
+  case Platform.Linux   => // ...
+  case Platform.Mac     => // ...
+  case Platform.Windows => // ...
+```
+
+| Member    | Type       | Description                                      |
+|-----------|------------|--------------------------------------------------|
+| `linux`   | `Boolean`  | `true` when building on Linux                    |
+| `mac`     | `Boolean`  | `true` when building on macOS                    |
+| `windows` | `Boolean`  | `true` when building on Windows                  |
+| `current` | `Platform` | Enum value for the build-host OS                 |
+
+`inline if` branches on these constants produce zero-overhead platform-specific code.
+
+---
+
 ## Codecs
 
 ```scala
@@ -212,17 +237,12 @@ val urlDecoded: Either[Base64.Error, Array[Byte]] = Base64.decode(urlEncoded, ur
 | `decode` | `(String): Either[Error, Array[Byte]]`                      | Standard decoding                  |
 | `decode` | `(String, urlSafe: Boolean): Either[Error, Array[Byte]]`    | Standard or URL-safe decoding      |
 
-Platform backends: JVM and Native use `java.util.Base64`; JS uses `globalThis.atob`/`globalThis.btoa`.
-
 ---
 
 ## Effect
 
-Zero-cost typed-error effects layered atop cats-effect.
-
-`MonadError[F, Throwable]` conflates recoverable domain errors with fatal defects. `Eff` and `EffR` add an explicit,
-compile-time-tracked error channel `E` separate from `Throwable`, enabling exhaustive error handling whilst preserving
-full cats-effect integration.
+Zero-cost typed-error effects atop cats-effect. `Eff` and `EffR` add a compile-time-tracked error channel `E`
+separate from `Throwable`, enabling exhaustive error handling with full cats-effect integration.
 
 ```scala
 import boilerplate.effect.*
@@ -326,12 +346,6 @@ Eff[IO].suspend(sideEffect()) // UEff[IO, A]
 | Temporal     | `delayBy(duration)`, `andWait(duration)`, `timed`, `timeoutTo(dur, fallback)` |
 | Cancellation | `onCancel(fin)`, `guarantee(fin)`, `guaranteeCase(fin)`                      |
 | Parallel     | `&>`, `<&`                                                                   |
-
-**Naming conventions:**
-
-- `valueOr(f: E => A)` - total recovery; named to avoid collision with cats' partial `recover`
-- `catchAll(f: E => Eff)` - total effectful recovery
-- `redeemAll(fe, fa)` - effectful fold allowing error type change; named to distinguish from cats' `redeemWith`
 
 ### cats interop
 
