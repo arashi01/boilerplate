@@ -540,4 +540,18 @@ class OpaqueTypeSuite extends FunSuite:
     intercept[EmailError]:
       "invalid".const[Email]
 
+  test("const extension propagates constants for compile-time validation"):
+    import CheckedPositive.given
+    assertEquals(CheckedPositive.unwrap(42.const[CheckedPositive]), 42)
+
+  test("const extension compile-time error for invalid literal"):
+    val errors = scala.compiletime.testing.typeCheckErrors:
+      """
+      import boilerplate.CheckedPositive
+      import CheckedPositive.given
+      import boilerplate.const
+      0.const[CheckedPositive]
+      """
+    assert(errors.nonEmpty, "Expected compile-time error for 0.const[CheckedPositive]")
+
 end OpaqueTypeSuite
