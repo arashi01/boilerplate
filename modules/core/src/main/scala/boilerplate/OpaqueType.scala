@@ -22,6 +22,30 @@ package boilerplate
 
 /** Base trait for opaque type companion objects providing validated construction.
   *
+  * ==Scope==
+  *
+  * This trait is designed for '''value-like''' opaque types - those whose construction semantics
+  * reduce to `Repr => A` validation. It is not intended for:
+  *
+  *   - '''Resource or handle types''' with complex lifecycles (e.g. types constructed via FFI calls
+  *     or requiring effectful initialisation).
+  *   - '''Parameterised opaque types''' such as `Eff[F[_], E, A]`, where the companion object
+  *     cannot serve as a singleton `given` instance for all type parameter combinations.
+  *
+  * For opaque types parameterised by a '''phantom type''', provide a nested companion per
+  * instantiation:
+  *
+  * {{{
+  * opaque type Distance[U] = Double
+  * object Distance:
+  *   object Metres extends OpaqueType[Distance[Metres], Double], OpaqueType.Eq[Distance[Metres]]:
+  *     // ...
+  *   object Feet extends OpaqueType[Distance[Feet], Double], OpaqueType.Eq[Distance[Feet]]:
+  *     // ...
+  * }}}
+  *
+  * ==Usage==
+  *
   * Define [[Error]], [[wrap]], [[unwrap]], [[apply]], and [[validate]]. CanEqual is opt-in via the
   * [[OpaqueType$.Eq Eq]] mixin - security-sensitive types (tokens, keys, etc.) should omit it.
   *
@@ -41,6 +65,16 @@ package boilerplate
   * UserId.from("abc")  // Right(UserId("abc"))
   * "abc".as[UserId]    // Right(UserId("abc"))
   * "abc".unwrap        // "abc"
+  * }}}
+  *
+  * For types where validation always succeeds, set `Error` to `Nothing` and return `None`:
+  *
+  * {{{
+  * opaque type Timestamp = Long
+  * object Timestamp extends OpaqueType[Timestamp, Long], OpaqueType.Eq[Timestamp]:
+  *   type Error = Nothing
+  *   protected inline def validate(value: Long): Option[Nothing] = None
+  *   // ...
   * }}}
   *
   * For types where equality comparison should be forbidden (e.g. secret tokens, password hashes),
@@ -99,7 +133,9 @@ transparent trait OpaqueType[A, Repr]:
 
 end OpaqueType
 
-/** Companion providing summoning and the opt-in [[Eq]] mixin for multiversal equality. */
+/** Companion providing summoning and the opt-in [[OpaqueType$.Eq Eq]] mixin for multiversal
+  * equality. See [[OpaqueType]] for scope and usage guidance.
+  */
 object OpaqueType:
 
   /** Summons the [[OpaqueType]] instance for `A`. */

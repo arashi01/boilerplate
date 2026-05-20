@@ -24,32 +24,32 @@ import cats.effect.*
 import org.scalacheck.Arbitrary
 import org.scalacheck.Gen
 
-import boilerplate.effect.Eff
-import boilerplate.effect.EffR
+import boilerplate.effect.EffIO
 
-/** Generators for [[boilerplate.effect.EffR EffR]] types used in law testing. */
-trait EffRGenerators:
+/** Generators for [[boilerplate.effect.EffIO EffIO]] types used in law testing. */
+trait EffIOGenerators:
 
-  /** Generates arbitrary `EffR[IO, R, E, A]` values by generating `Eff[IO, E, A]` and lifting.
+  /** Generates arbitrary `EffIO[E, A]` values from arbitrary `IO[Either[E, A]]` values.
     *
-    * The environment `R` is ignored since law tests run computations with a fixed environment.
+    * This generator produces effects by lifting `IO[Either[E, A]]` which covers pure success
+    * values, pure failure values, delayed computations, and async operations.
     */
-  implicit def arbitraryEffR[R, E, A](using
-    arbEff: Arbitrary[Eff[IO, E, A]]
-  ): Arbitrary[EffR[IO, R, E, A]] =
-    Arbitrary(arbEff.arbitrary.map(eff => EffR.lift[IO, R, E, A](eff)))
+  implicit def arbitraryEffIO[E, A](using
+    arbIO: Arbitrary[IO[Either[E, A]]]
+  ): Arbitrary[EffIO[E, A]] =
+    Arbitrary(arbIO.arbitrary.map(EffIO.lift(_)))
 
-  /** Generates success-only `EffR` values for testing operations that expect success. */
-  def genSuccessEffR[R, E, A: Arbitrary]: Gen[EffR[IO, R, E, A]] =
-    Arbitrary.arbitrary[A].map(a => EffR.succeed[IO, R, E, A](a))
+  /** Generates success-only `EffIO` values for testing operations that expect success. */
+  def genSuccessEffIO[E, A: Arbitrary]: Gen[EffIO[E, A]] =
+    Arbitrary.arbitrary[A].map(a => EffIO.succeed(a))
 
-  /** Generates failure-only `EffR` values for testing error handling. */
-  def genFailEffR[R, E: Arbitrary, A]: Gen[EffR[IO, R, E, A]] =
-    Arbitrary.arbitrary[E].map(e => EffR.fail[IO, R, E, A](e))
+  /** Generates failure-only `EffIO` values for testing error handling. */
+  def genFailEffIO[E: Arbitrary, A]: Gen[EffIO[E, A]] =
+    Arbitrary.arbitrary[E].map(e => EffIO.fail(e))
 
-  /** Generates `EffR[IO, R, E, A]` from `Either[E, A]`. */
-  def genFromEitherEffR[R, E: Arbitrary, A: Arbitrary]: Gen[EffR[IO, R, E, A]] =
-    Arbitrary.arbitrary[Either[E, A]].map(ea => EffR.from[IO, R, E, A](ea))
-end EffRGenerators
+  /** Generates `EffIO[E, A]` from `Either[E, A]`. */
+  def genFromEitherEffIO[E: Arbitrary, A: Arbitrary]: Gen[EffIO[E, A]] =
+    Arbitrary.arbitrary[Either[E, A]].map(ea => EffIO.from(ea))
+end EffIOGenerators
 
-object EffRGenerators extends EffRGenerators
+object EffIOGenerators extends EffIOGenerators
