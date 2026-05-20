@@ -241,8 +241,9 @@ val urlDecoded: Either[Base64.Error, Array[Byte]] = Base64.decode(urlEncoded, ur
 
 ## Effect
 
-Zero-cost typed-error effects atop cats-effect. `Eff` and `EffR` add a compile-time-tracked error channel `E`
-separate from `Throwable`, enabling exhaustive error handling with full cats-effect integration.
+Zero-cost typed-error effects atop cats-effect. `Eff` and `EffIO` add a compile-time-tracked error
+channel `E` separate from `Throwable`, enabling exhaustive error handling with full cats-effect
+integration.
 
 ```scala
 import boilerplate.effect.*
@@ -252,14 +253,14 @@ import cats.syntax.all.*
 
 ### Core types
 
-| Type                | Representation          | Purpose                              |
-|---------------------|-------------------------|--------------------------------------|
-| `Eff[F, E, A]`     | `F[Either[E, A]]`      | Typed-error effect                   |
-| `EffR[F, R, E, A]` | `R => Eff[F, E, A]`    | Reader-style typed-error effect      |
-| `UEff[F, A]`       | `Eff[F, Nothing, A]`   | Infallible effect                    |
-| `TEff[F, A]`       | `Eff[F, Throwable, A]` | Throwable-errored effect             |
-| `UEffR[F, R, A]`   | `EffR[F, R, Nothing, A]`   | Infallible reader effect         |
-| `TEffR[F, R, A]`   | `EffR[F, R, Throwable, A]` | Throwable-errored reader effect  |
+| Type           | Representation         | Purpose                                   |
+|----------------|------------------------|-------------------------------------------|
+| `Eff[F, E, A]` | `F[Either[E, A]]`      | Typed-error effect                        |
+| `EffIO[E, A]`  | `IO[Either[E, A]]`     | Covariant, `IO`-specialised typed effect  |
+| `UEff[F, A]`   | `Eff[F, Nothing, A]`   | Infallible effect                         |
+| `TEff[F, A]`   | `Eff[F, Throwable, A]` | Throwable-errored effect                  |
+| `UEffIO[A]`    | `EffIO[Nothing, A]`    | Infallible `IO`-specialised effect        |
+| `TEffIO[A]`    | `EffIO[Throwable, A]`  | Throwable-errored `IO`-specialised effect |
 
 All opaque types erase at runtime. No wrapper allocation occurs.
 
@@ -335,6 +336,7 @@ Eff[IO].suspend(sideEffect()) // UEff[IO, A]
 | Mapping      | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `transform`                   |
 | Composition  | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`       |
 | Recovery     | `valueOr`, `catchAll`                                                        |
+| Error mapping| `mapError`, `mapErrorPartial`                                                |
 | Alternative  | `alt`, `orElseSucceed`, `orElseFail`                                         |
 | Folding      | `fold`, `foldF`, `redeemAll`                                                 |
 | Observation  | `tap`, `tapError`, `flatTapError`, `attemptTap`                              |
@@ -400,25 +402,87 @@ With `cats.syntax.all.*` in scope, standard cats syntax is available:
 | `ApplicativeError` | `recover`, `recoverWith`, `onError`, `adaptError`      |
 | `MonadError`       | `ensure`, `ensureOr`, `rethrow`, `redeem`, `redeemWith`|
 
-### EffR
+### EffIO
 
-`EffR[F, R, E, A]` adds an immutable environment channel. It mirrors `Eff` combinators with additional
-environment-specific operations.
+`EffIO[E, A]` is a covariant, `cats.effect.IO`-specialised sibling of `Eff`, represented as
+`IO[Either[E, A]]`. `IO` and `Either` are both covariant, so `EffIO` is **covariant in `E` and
+`A`**: a value of `EffIO[Narrow, A]` is usable wherever `EffIO[Wide, A]` is expected, with no
+call-site method.
 
 ```scala
-type Config = String
+def findUser(id: String): EffIO[NotFound, User] =
+  if id == "1" then EffIO.succeed(User("1", "Alice"))
+  else EffIO.fail(NotFound(id))
 
-EffR[IO, Config].succeed(42)   // UEffR[IO, Config, Int]
-EffR[IO, Config].fail("err")   // EffR[IO, Config, String, Nothing]
-EffR[IO, Config].ask           // EffR[IO, Config, Nothing, Config]
+def validateUser(user: User): EffIO[InvalidInput, User] =
+  if user.name.nonEmpty then EffIO.succeed(user)
+  else EffIO.fail(InvalidInput("name required"))
+
+// Distinct error types unify automatically - no widenError
+val workflow: EffIO[AppError, User] = for
+  user      <- findUser("1")
+  validated <- validateUser(user)
+yield validated
 ```
 
-**Additional constructors:** `ask`, `wrap(R => Eff)`, `fromContext(R ?=> Eff)`, `from(Kleisli)`
+`Eff` is invariant in `E` - it stays `F`-polymorphic, so `F[Either[E, A]]` cannot be proven
+covariant - and needs an explicit `widenError[AppError]` on each step (compare the quick start
+above). Fixing `F = IO` removes that obstacle.
 
-**Additional combinators:** `provide`, `run`, `contramap`, `andThen`, `widenEnv`, `assumeEnv`, `kleisli`
+`EffIO` mirrors `Eff`'s constructor and combinator surface with `F` fixed to `IO`, so call sites
+need neither `using` clauses nor an `[IO]` type argument:
 
-`EffR.Of[F, R, E]` mirrors effect typeclass instances, threading the environment through all operations. Data
-typeclasses (`Show`, `Eq`, `Foldable`, etc.) are not available for `EffR` as it is representationally a function type.
+```scala
+EffIO.succeed(42)               // UEffIO[Int]
+EffIO.fail("boom")              // EffIO[String, Nothing]
+EffIO.liftF(IO.pure(42))        // UEffIO[Int]
+
+workflow.map(user => user.name) // EffIO[AppError, String]
+workflow.mapError(translate)    // EffIO[E2, User]
+workflow.either                 // IO[Either[AppError, User]]
+```
+
+Covariance subsumes error widening, so `EffIO` has no `widen`/`widenError`; the trusted narrowing
+casts `assume`/`assumeError` remain.
+
+**Conversion to and from `Eff`.** `EffIO[E, A]` and `Eff[IO, E, A]` share the runtime
+representation `IO[Either[E, A]]`, so conversion is a zero-cost identity:
+
+```scala
+val asEff: Eff[IO, AppError, User] = workflow.toEff
+val asEffIO: EffIO[AppError, User] = EffIO.fromEff(asEff)
+```
+
+`EffIO.Of[E]` (the type lambda `[A] =>> EffIO[E, A]`) carries the same cats and cats-effect type
+class instances as `Eff.Of[IO, E]`. Natural transformations bridge invariant positions such as
+`Resource`:
+
+```scala
+val widen: EffIO.Of[NotFound] ~> EffIO.Of[AppError] = EffIO.widenK[NotFound, AppError]
+val liftK: IO ~> EffIO.Of[Nothing]                  = EffIO.liftK
+```
+
+`.effIO` lifting extensions mirror `.eff`, specialised to `IO`:
+
+| Extension                     | Result Type                |
+|-------------------------------|----------------------------|
+| `IO[A].effIO(ifFailure)`      | `EffIO[E, A]`              |
+| `IO[A].effIO`                 | `UEffIO[A]`                |
+| `IO[Either[E, A]].effIO`      | `EffIO[E, A]`              |
+| `Either[E, A].effIO`          | `EffIO[E, A]`              |
+| `Option[A].effIO(ifNone)`     | `EffIO[E, A]`              |
+| `IO[Option[A]].effIO(ifNone)` | `EffIO[E, A]`              |
+| `Try[A].effIO(ifFailure)`     | `EffIO[E, A]`              |
+| `Resource[IO, A].effIO[E]`    | `Resource[EffIO.Of[E], A]` |
+| `Ref[IO, A].effIO[E]`         | `Ref[EffIO.Of[E], A]`      |
+
+`Deferred`, `Queue`, `Semaphore`, `CountDownLatch`, `CyclicBarrier`, `AtomicCell`, and `Supervisor`
+lift the same way.
+
+> **Known limitation.** Observing the outcome or fibre of an *infallible* `EffIO` (error type
+> `Nothing`) via `start`, `guaranteeCase`, `background`, or `bracketCase` triggers a Scala 3.8
+> pickler bug. Ascribe a concrete error type at the call site - `(eff: EffIO[MyError, A]).start` -
+> as a workaround.
 
 ### Cats-effect primitive interop
 
@@ -470,30 +534,28 @@ deferred.eff[MyError]
 queue.eff[MyError]
 semaphore.eff[MyError]
 
-// Natural transformation for mapK
-val fk: IO ~> Eff.Of[IO, MyError] = Eff.functionK[IO, MyError]
+// Natural transformations for mapK
+val fk: IO ~> Eff.Of[IO, MyError]                      = Eff.functionK[IO, MyError]
+val widen: Eff.Of[IO, MyError] ~> Eff.Of[IO, AppError] = Eff.widenK[IO, MyError, AppError]
 ```
 
 ### Syntax extensions
 
 Importing `boilerplate.effect.*` provides lifting extensions:
 
-| Extension                    | Result Type            |
-|------------------------------|------------------------|
-| `Either[E, A].eff[F]`       | `Eff[F, E, A]`        |
-| `Either[E, A].effR[F, R]`   | `EffR[F, R, E, A]`    |
-| `F[Either[E, A]].eff`       | `Eff[F, E, A]`        |
-| `F[Either[E, A]].effR[R]`   | `EffR[F, R, E, A]`    |
-| `Option[A].eff[F, E](err)`  | `Eff[F, E, A]`        |
-| `F[Option[A]].eff[E](err)`  | `Eff[F, E, A]`        |
-| `Try[A].eff[F, E](f)`       | `Eff[F, E, A]`        |
-| `F[A].eff[E](f)`            | `Eff[F, E, A]`        |
-| `Kleisli[Of[F,E],R,A].effR` | `EffR[F, R, E, A]`    |
-| `Resource[F, A].eff[E]`     | `Resource[Of[F,E],A]` |
-| `Ref[F, A].eff[E]`          | `Ref[Of[F, E], A]`    |
-| `Deferred[F, A].eff[E]`     | `Deferred[Of[F,E],A]` |
-| `Queue[F, A].eff[E]`        | `Queue[Of[F, E], A]`  |
-| `Semaphore[F].eff[E]`       | `Semaphore[Of[F,E]]`  |
+| Extension                   | Result Type           |
+|------------------------------|-----------------------|
+| `Either[E, A].eff[F]`        | `Eff[F, E, A]`        |
+| `F[Either[E, A]].eff`        | `Eff[F, E, A]`        |
+| `Option[A].eff[F, E](err)`   | `Eff[F, E, A]`        |
+| `F[Option[A]].eff[E](err)`   | `Eff[F, E, A]`        |
+| `Try[A].eff[F, E](f)`        | `Eff[F, E, A]`        |
+| `F[A].eff[E](f)`             | `Eff[F, E, A]`        |
+| `Resource[F, A].eff[E]`      | `Resource[Of[F,E],A]` |
+| `Ref[F, A].eff[E]`           | `Ref[Of[F, E], A]`    |
+| `Deferred[F, A].eff[E]`      | `Deferred[Of[F,E],A]` |
+| `Queue[F, A].eff[E]`         | `Queue[Of[F, E], A]`  |
+| `Semaphore[F].eff[E]`        | `Semaphore[Of[F,E]]`  |
 
 ### Fibre join extensions
 

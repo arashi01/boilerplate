@@ -1131,4 +1131,30 @@ class EffSuite extends CatsEffectSuite:
   test("attemptTap propagates side effect error"):
     val eff = Eff.succeed[IO, String, Int](42).attemptTap(_ => Eff.fail("side-effect"))
     runEff(eff).map(r => assertEquals(r, Left("side-effect")))
+
+  // ===========================================================================
+  // Error-Channel Transformations - mapError, mapErrorPartial, widenK
+  // ===========================================================================
+
+  test("mapError transforms the error channel"):
+    val eff = Eff.fail[IO, String, Int]("boom").mapError(_.toUpperCase)
+    runEff(eff).map(r => assertEquals(r, Left("BOOM")))
+
+  test("mapError leaves the success channel untouched"):
+    val eff = Eff.succeed[IO, String, Int](7).mapError(_.toUpperCase)
+    runEff(eff).map(r => assertEquals(r, Right(7)))
+
+  test("mapErrorPartial transforms matched errors"):
+    val eff = Eff.fail[IO, String, Int]("known").mapErrorPartial { case "known" => "KNOWN" }
+    runEff(eff).map(r => assertEquals(r, Left("KNOWN")))
+
+  test("mapErrorPartial passes unmatched errors through unchanged"):
+    val eff = Eff.fail[IO, String, Int]("other").mapErrorPartial { case "known" => "KNOWN" }
+    runEff(eff).map(r => assertEquals(r, Left("other")))
+
+  test("widenK widens the error type through a natural transformation"):
+    val boom = new RuntimeException("boom")
+    val k = Eff.widenK[IO, RuntimeException, Throwable]
+    val widened: Eff[IO, Throwable, Int] = k(Eff.fail[IO, RuntimeException, Int](boom))
+    runEff(widened).map(r => assertEquals(r, Left(boom)))
 end EffSuite

@@ -20,6 +20,7 @@
  */
 package boilerplate.effect
 
+import scala.util.Failure
 import scala.util.Try
 
 import cats.*
@@ -31,19 +32,10 @@ class SyntaxSuite extends CatsEffectSuite:
   import boilerplate.effect.*
 
   private def runEff[E, A](eff: Eff[IO, E, A]): IO[Either[E, A]] = eff.either
-  private def runEffR[R, E, A](eff: EffR[IO, R, E, A], env: R): IO[Either[E, A]] = eff.run(env).either
 
   test("Either.eff mirrors Eff.from"):
     val either: Either[String, Int] = Right(42)
     runEff(either.eff[IO]).map(result => assertEquals(result, Right(42)))
-
-  test("Either.effR mirrors EffR.from"):
-    val either: Either[String, Int] = Left("boom")
-    runEffR(either.effR[IO, Unit], ()).map(result => assertEquals(result, Left("boom")))
-
-  test("Option.effR injects custom error"):
-    val none: Option[Int] = None
-    runEffR(none.effR[IO, Unit, String]("missing"), ()).map(result => assertEquals(result, Left("missing")))
 
   test("F[Either].eff preserves structure"):
     val fea = IO.pure[Either[String, Int]](Right(7))
@@ -63,10 +55,6 @@ class SyntaxSuite extends CatsEffectSuite:
     assertEquals(missing.either, Left("missing"))
     assertEquals(present.either, Right(3))
 
-  test("F[Option].effR lifts missing values"):
-    val fo = IO.pure(Option.empty[Int])
-    runEffR(fo.effR[Unit, String]("missing"), ()).map(result => assertEquals(result, Left("missing")))
-
   test("Try.eff translates failure"):
     val boom = new RuntimeException("boom")
     runEff(Try(throw boom).eff[IO, String](_.getMessage)).map(result => assertEquals(result, Left("boom"))) // scalafix:ok DisableSyntax.throw
@@ -82,17 +70,9 @@ class SyntaxSuite extends CatsEffectSuite:
     val success = IO.pure(42)
     runEff(success.eff[String](_.getMessage)).map(result => assertEquals(result, Right(42)))
 
-  test("F[A].effR captures throwable failures with environment"):
-    val failing = IO.raiseError[Int](new RuntimeException("boom"))
-    runEffR(failing.effR[Unit, String](_.getMessage), ()).map(result => assertEquals(result, Left("boom")))
-
   test("Option.eff converts present values"):
     val some: Option[Int] = Some(42)
     runEff(some.eff[IO, String]("missing")).map(result => assertEquals(result, Right(42)))
-
-  test("F[Either].effR preserves structure"):
-    val fea = IO.pure[Either[String, Int]](Left("boom"))
-    runEffR(fea.effR[Unit], ()).map(result => assertEquals(result, Left("boom")))
 
   test("F[Option].eff converts present values"):
     val fo = IO.pure(Some(42))
@@ -101,13 +81,6 @@ class SyntaxSuite extends CatsEffectSuite:
   test("F[Option].eff converts missing values to error"):
     val fo = IO.pure(Option.empty[Int])
     runEff(fo.eff[String]("missing")).map(result => assertEquals(result, Left("missing")))
-
-  test("Try.effR translates failure with environment"):
-    val boom = new RuntimeException("boom")
-    runEffR(Try(throw boom).effR[IO, Unit, String](_.getMessage), ()).map(result => assertEquals(result, Left("boom"))) // scalafix:ok DisableSyntax.throw
-
-  test("Try.effR converts success with environment"):
-    runEffR(Try(42).effR[IO, Unit, String](_.getMessage), ()).map(result => assertEquals(result, Right(42)))
 
   // ===========================================================================
   // Fiber Join Extensions
@@ -154,4 +127,98 @@ class SyntaxSuite extends CatsEffectSuite:
       _ <- fiber.cancel
       result <- liftedFiber.joinOrFail("was canceled").either
     yield assertEquals(result, Left("was canceled"))
+
+  // ===========================================================================
+  // EffIO lifting syntax
+  // ===========================================================================
+
+  test("IO.effIO captures throwable failures into the typed error channel"):
+    for
+      ok <- IO.pure(1).effIO(_.getMessage).either
+      ko <- IO.raiseError[Int](RuntimeException("boom")).effIO(_.getMessage).either
+    yield
+      assertEquals(ok, Right(1))
+      assertEquals(ko, Left("boom"))
+
+  test("IO.effIO lifts an infallible IO"):
+    IO.pure(42).effIO.either.map(result => assertEquals(result, Right(42)))
+
+  test("IO[Either].effIO mirrors EffIO.lift"):
+    IO.pure(Right(7): Either[String, Int])
+      .effIO
+      .either
+      .map(result => assertEquals(result, Right(7)))
+
+  test("Either.effIO mirrors EffIO.from"):
+    (Left("boom"): Either[String, Int]).effIO.either
+      .map(result => assertEquals(result, Left("boom")))
+
+  test("Option.effIO injects the supplied error when empty"):
+    for
+      some <- Some(1).effIO("none").either
+      none <- (None: Option[Int]).effIO("none").either
+    yield
+      assertEquals(some, Right(1))
+      assertEquals(none, Left("none"))
+
+  test("IO[Option].effIO injects the supplied error when empty"):
+    IO.pure(None: Option[Int])
+      .effIO("none")
+      .either
+      .map(result => assertEquals(result, Left("none")))
+
+  test("Try.effIO translates failures into the typed error channel"):
+    Failure[Int](RuntimeException("boom"))
+      .effIO(_.getMessage)
+      .either
+      .map(result => assertEquals(result, Left("boom")))
+
+  test("Resource.effIO operates the resource in the EffIO context"):
+    Resource
+      .pure[IO, Int](5)
+      .effIO[String]
+      .use(n => EffIO.succeed(n))
+      .either
+      .map(result => assertEquals(result, Right(5)))
+
+  test("Ref, Deferred, and Queue effIO extensions operate in the EffIO context"):
+    for
+      ref <- IO.ref(0)
+      _ <- ref.effIO[String].set(9).either
+      refValue <- ref.get
+      deferred <- Deferred[IO, Int]
+      _ <- deferred.effIO[String].complete(1).either
+      deferredValue <- deferred.get
+      queue <- cats.effect.std.Queue.unbounded[IO, Int]
+      _ <- queue.effIO[String].offer(2).either
+      queueValue <- queue.take
+    yield
+      assertEquals(refValue, 9)
+      assertEquals(deferredValue, 1)
+      assertEquals(queueValue, 2)
+
+  test("Semaphore and AtomicCell effIO extensions operate in the EffIO context"):
+    for
+      semaphore <- cats.effect.std.Semaphore[IO](1)
+      available <- semaphore.effIO[String].available.either
+      cell <- cats.effect.std.AtomicCell[IO].of(3)
+      cellValue <- cell.effIO[String].get.either
+    yield
+      assertEquals(available, Right(1L))
+      assertEquals(cellValue, Right(3))
+
+  test("CountDownLatch, CyclicBarrier, and Supervisor effIO extensions operate in the EffIO context"):
+    cats.effect.std.Supervisor[IO](await = true).use { supervisor =>
+      for
+        latch <- cats.effect.std.CountDownLatch[IO](1)
+        _ <- latch.effIO[String].release.either
+        latchAwait <- latch.effIO[String].await.either
+        barrier <- cats.effect.std.CyclicBarrier[IO](1)
+        barrierAwait <- barrier.effIO[String].await.either
+        supervised <- supervisor.effIO[String].supervise(EffIO.succeed(7)).either
+      yield
+        assertEquals(latchAwait, Right(()))
+        assertEquals(barrierAwait, Right(()))
+        assert(supervised.isRight)
+    }
 end SyntaxSuite

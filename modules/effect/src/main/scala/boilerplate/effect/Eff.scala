@@ -978,6 +978,24 @@ object Eff extends EffInstancesLowPriority0:
         case Right(a) => Right(a)
       }
 
+    /** Transforms the error channel, preserving the success value. */
+    inline def mapError[E2](f: E => E2)(using Functor[F]): Eff[F, E2, A] =
+      Functor[F].map(self) {
+        case Left(e)  => Left(f(e))
+        case Right(a) => Right(a)
+      }
+
+    /** Transforms matched errors, passing unmatched errors through unchanged.
+      *
+      * The error type `E2` must be a supertype of `E` so that errors outside the partial function's
+      * domain remain well-typed in the result.
+      */
+    inline def mapErrorPartial[E2 >: E](pf: PartialFunction[E, E2])(using Functor[F]): Eff[F, E2, A] =
+      Functor[F].map(self) {
+        case Left(e)  => Left[E2, A](pf.applyOrElse(e, (x: E) => x))
+        case Right(a) => Right[E2, A](a)
+      }
+
     /** Maps the success value through an effectful function. */
     inline def semiflatMap[B](f: A => F[B])(using Monad[F]): Eff[F, E, B] =
       Monad[F].flatMap(self) {
@@ -1466,6 +1484,19 @@ object Eff extends EffInstancesLowPriority0:
     F: Functor[F]
   ) extends FunctionK[F, Of[F, E]]:
     def apply[A](fa: F[A]): Eff[F, E, A] = liftF(fa)(using F)
+
+  /** Creates an error-widening `FunctionK` from `Eff.Of[F, E1]` to `Eff.Of[F, E2]`.
+    *
+    * `Eff` is invariant in its error type, so widening cannot occur by subtyping. This natural
+    * transformation performs the widening - an identity cast at runtime. It is required wherever a
+    * value-level `~>` is needed, such as widening the error type inside an invariant position like
+    * `Resource`, `Stream`, or `Pipe`.
+    */
+  inline def widenK[F[_], E1, E2 >: E1]: Of[F, E1] ~> Of[F, E2] =
+    WidenKImpl[F, E1, E2]()
+
+  private[effect] class WidenKImpl[F[_], E1, E2 >: E1] @publicInBinary private[Eff] () extends FunctionK[Of[F, E1], Of[F, E2]]:
+    def apply[A](fa: Eff[F, E1, A]): Eff[F, E2, A] = fa.widenError[E2]
 
   // --- Cats-Effect Primitive Lifts -----------------------------------------
 
