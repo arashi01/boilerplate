@@ -124,15 +124,24 @@ object EffIO extends EffIOInstances:
   inline def attempt[E, A](io: IO[A], ifFailure: Throwable => E): EffIO[E, A] =
     io.attempt.map(_.fold(th => Left(ifFailure(th)), Right(_)))
 
+  /** Captures matching throwables as typed errors; unmatched throwables propagate as defects in
+    * `IO`'s error channel.
+    */
+  inline def attempt[E, A](io: IO[A])(pf: PartialFunction[Throwable, E]): EffIO[E, A] =
+    io.redeemWith(
+      t => if pf.isDefinedAt(t) then IO.pure(Left(pf(t))) else IO.raiseError(t),
+      a => IO.pure(Right(a))
+    )
+
   // --- Suspended constructors ---
 
   /** Suspends evaluation until demanded. */
   inline def defer[E, A](thunk: => EffIO[E, A]): EffIO[E, A] = IO.defer(thunk)
 
-  /** Suspends a side effect that produces an `Either[E, A]`.
+  /** Suspends a side-effecting computation that yields an `Either[E, A]`.
     *
-    * Use this for synchronous side-effecting code that returns typed errors. For side effects that
-    * produce a plain value, use [[suspend]].
+    * For an already-evaluated `Either`, use [[from]]. For an infallible side effect, use
+    * [[suspend]]. For unconditional success or failure, use [[succeed]] / [[fail]].
     */
   inline def delay[E, A](ea: => Either[E, A]): EffIO[E, A] = IO.delay(ea)
 
@@ -168,8 +177,10 @@ object EffIO extends EffIOInstances:
   /** Introduces a cooperative yielding point. */
   val cede: UEffIO[Unit] = liftF(IO.cede)
 
-  /** A computation that never completes. */
-  inline def never[A]: UEffIO[A] = liftF(IO.never[A])
+  /** A computation that never completes. Useful for representing timeouts or blocking operations
+    * that should never produce a value on their own.
+    */
+  val never: UEffIO[Nothing] = IO.never
 
   // --- Future interop ---
 
@@ -179,6 +190,12 @@ object EffIO extends EffIOInstances:
     */
   inline def fromFuture[E, A](future: IO[Future[A]], ifFailure: Throwable => E): EffIO[E, A] =
     fromEff(Eff.fromFuture[IO, E, A](future, ifFailure))
+
+  /** Converts a `Future` into an `EffIO`, catching matching throwables as typed errors; unmatched
+    * throwables propagate as defects in `IO`'s error channel.
+    */
+  inline def fromFuture[E, A](future: IO[Future[A]])(pf: PartialFunction[Throwable, E]): EffIO[E, A] =
+    fromEff(Eff.fromFuture[IO, E, A](future)(pf))
 
   // --- Conditional execution ---
 
@@ -197,6 +214,12 @@ object EffIO extends EffIOInstances:
   /** Raises an error when `cond` is false, otherwise succeeds with `Unit`. */
   inline def raiseUnless[E](cond: Boolean)(e: => E): EffIO[E, Unit] =
     if cond then unit else fail(e)
+
+  /** Lifts a Boolean predicate into a typed-error effect. Both branches are evaluated lazily; the
+    * unselected branch is never run.
+    */
+  inline def cond[E, A](pred: Boolean, ifTrue: => A, ifFalse: => E): EffIO[E, A] =
+    if pred then succeed(ifTrue) else fail(ifFalse)
 
   // --- Collection operations ---
 
