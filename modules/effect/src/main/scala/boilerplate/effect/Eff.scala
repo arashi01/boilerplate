@@ -1300,6 +1300,17 @@ object Eff extends EffInstancesLowPriority0:
   inline def attempt[F[_], E, A](fa: F[A], ifFailure: Throwable => E)(using ME: MonadError[F, Throwable]): Eff[F, E, A] =
     lift(ME.map(ME.attempt(fa))(_.leftMap(ifFailure)))
 
+  /** Captures matching throwables as typed errors; unmatched throwables propagate as defects in
+    * `F`'s error channel.
+    */
+  inline def attempt[F[_], E, A](fa: F[A])(pf: PartialFunction[Throwable, E])(using ME: MonadError[F, Throwable]): Eff[F, E, A] =
+    lift(
+      ME.redeemWith(fa)(
+        t => if pf.isDefinedAt(t) then ME.pure(Left(pf(t))) else ME.raiseError(t),
+        a => ME.pure(Right(a))
+      )
+    )
+
   /** Suspends evaluation until demanded. */
   inline def defer[F[_]: Defer, E, A](thunk: => Eff[F, E, A]): Eff[F, E, A] =
     Defer[F].defer(thunk)
@@ -1387,6 +1398,17 @@ object Eff extends EffInstancesLowPriority0:
   inline def fromFuture[F[_], E, A](future: F[Future[A]], ifFailure: Throwable => E)(using A: Async[F]): Eff[F, E, A] =
     lift(A.map(A.attempt(A.fromFuture(future)))(_.leftMap(ifFailure)))
 
+  /** Converts a `Future` into an `Eff`, catching matching throwables as typed errors; unmatched
+    * throwables propagate as defects in `F`'s error channel.
+    */
+  inline def fromFuture[F[_], E, A](future: F[Future[A]])(pf: PartialFunction[Throwable, E])(using A: Async[F]): Eff[F, E, A] =
+    lift(
+      A.redeemWith(A.fromFuture(future))(
+        t => if pf.isDefinedAt(t) then A.pure(Left(pf(t))) else A.raiseError(t),
+        a => A.pure(Right(a))
+      )
+    )
+
   // --- Conditional Execution ---
 
   /** Executes `eff` only when `cond` is true, otherwise succeeds with `Unit`. */
@@ -1404,6 +1426,12 @@ object Eff extends EffInstancesLowPriority0:
   /** Raises an error when `cond` is false, otherwise succeeds with `Unit`. */
   inline def raiseUnless[F[_]: Applicative, E](cond: Boolean)(e: => E): Eff[F, E, Unit] =
     if cond then unit[F, E] else fail(e)
+
+  /** Lifts a Boolean predicate into a typed-error effect. Both branches are evaluated lazily; the
+    * unselected branch is never run.
+    */
+  inline def cond[F[_]: Applicative, E, A](pred: Boolean, ifTrue: => A, ifFalse: => E): Eff[F, E, A] =
+    if pred then succeed(ifTrue) else fail(ifFalse)
 
   // --- Collection Operations ---
 

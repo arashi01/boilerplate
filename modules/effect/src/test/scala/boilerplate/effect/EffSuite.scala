@@ -117,6 +117,18 @@ class EffSuite extends CatsEffectSuite:
   test("Eff.attempt passes through success"):
     runEff(Eff.attempt(IO.pure(42), _.getMessage)).map(r => assertEquals(r, Right(42)))
 
+  test("Eff.attempt with PartialFunction catches matching, lets unmatched propagate"):
+    val matched: Eff[IO, String, Int] = Eff.attempt(IO.raiseError[Int](IllegalArgumentException("bad"))):
+      case _: IllegalArgumentException => "invalid"
+    val unmatched: Eff[IO, String, Int] = Eff.attempt(IO.raiseError[Int](RuntimeException("untouched"))):
+      case _: IllegalArgumentException => "invalid"
+    for
+      m <- runEff(matched)
+      u <- runEff(unmatched).attempt
+    yield
+      assertEquals(m, Left("invalid"))
+      assert(u.left.exists(_.getMessage == "untouched"))
+
   test("Eff.defer delays evaluation until run"):
     var evaluated = false // scalafix:ok DisableSyntax.var
     val eff = Eff.defer[IO, String, Int] { evaluated = true; Eff.succeed(42) }
@@ -935,6 +947,20 @@ class EffSuite extends CatsEffectSuite:
 
   test("Eff.raiseUnless succeeds on true"):
     runEff(Eff.raiseUnless[IO, String](true)("boom")).map(r => assertEquals(r, Right(())))
+
+  test("Eff.cond lifts a predicate, evaluating only the selected branch"):
+    var trueSide = 0 // scalafix:ok DisableSyntax.var
+    var falseSide = 0 // scalafix:ok DisableSyntax.var
+    val ok = Eff.cond[IO, String, Int](true, { trueSide += 1; 42 }, { falseSide += 1; "no" })
+    val ko = Eff.cond[IO, String, Int](false, { trueSide += 1; 42 }, { falseSide += 1; "no" })
+    for
+      okR <- runEff(ok)
+      koR <- runEff(ko)
+    yield
+      assertEquals(okR, Right(42))
+      assertEquals(koR, Left("no"))
+      assertEquals(trueSide, 1)
+      assertEquals(falseSide, 1)
 
   // ===========================================================================
   // Concurrency Extension Tests

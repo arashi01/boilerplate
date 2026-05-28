@@ -25,10 +25,14 @@ package boilerplate
   * ==Scope==
   *
   * This trait is designed for '''value-like''' opaque types - those whose construction semantics
-  * reduce to `Repr => A` validation. It is not intended for:
+  * reduce to `Repr => A` validation (`UserId`, `Email`, `Timestamp`, `Distance`). It is not
+  * intended for:
   *
-  *   - '''Resource or handle types''' with complex lifecycles (e.g. types constructed via FFI calls
-  *     or requiring effectful initialisation).
+  *   - '''Resource or handle types''' with complex lifecycles (file descriptors, database
+  *     connections, native pointer wrappers, types constructed via FFI calls or requiring effectful
+  *     initialisation). Exposing `unwrap` would let consumers retain references whose lifecycle
+  *     they do not control. Declare such opaque types and their smart constructors directly,
+  *     without this mixin.
   *   - '''Parameterised opaque types''' such as `Eff[F[_], E, A]`, where the companion object
   *     cannot serve as a singleton `given` instance for all type parameter combinations.
   *
@@ -141,19 +145,11 @@ object OpaqueType:
   /** Summons the [[OpaqueType]] instance for `A`. */
   inline def apply[A, Repr](using ot: OpaqueType[A, Repr]): OpaqueType[A, Repr] = ot
 
-  /** Opt-in mixin that provides `CanEqual[A, A]` for multiversal equality.
-    *
-    * Mix this into opaque type companions that should support `==` and `!=`:
-    * {{{
-    * object UserId extends OpaqueType[UserId, String], OpaqueType.Eq[UserId]:
-    * }}}
-    *
-    * Omit for security-sensitive types where comparison should be forbidden.
+  /** Provides `CanEqual[A, A]` for `==` and `!=`. Omit to forbid value-level equality (e.g. for
+    * secret material).
     */
   transparent trait Eq[A]:
     given CanEqual[A, A] = CanEqual.derived
-
-end OpaqueType
 
 /** Safe construction via extension syntax: `"hello@example.com".as[Email]`. */
 extension [B](b: B)

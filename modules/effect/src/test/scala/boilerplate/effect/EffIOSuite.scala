@@ -152,6 +152,18 @@ class EffIOSuite extends CatsEffectSuite:
       assertEquals(ok, Right(1))
       assertEquals(ko, Left("x"))
 
+  test("attempt with PartialFunction catches matching, lets unmatched propagate"):
+    val matched = EffIO.attempt(IO.raiseError[Int](IllegalArgumentException("bad"))):
+      case _: IllegalArgumentException => "invalid"
+    val unmatched = EffIO.attempt(IO.raiseError[Int](RuntimeException("untouched"))):
+      case _: IllegalArgumentException => "invalid"
+    for
+      m <- run(matched)
+      u <- run(unmatched).attempt
+    yield
+      assertEquals(m, Left("invalid"))
+      assert(u.left.exists(_.getMessage == "untouched"))
+
   test("suspend defers evaluation of a side effect"):
     var count = 0 // scalafix:ok DisableSyntax.var
     val eff = EffIO.suspend(count += 1)
@@ -182,6 +194,20 @@ class EffIOSuite extends CatsEffectSuite:
       assertEquals(u, Right(()))
       assertEquals(rw, Left("raised"))
       assertEquals(ru, Left("raised"))
+
+  test("cond lifts a predicate, evaluating only the selected branch"):
+    var trueSide = 0 // scalafix:ok DisableSyntax.var
+    var falseSide = 0 // scalafix:ok DisableSyntax.var
+    val ok = EffIO.cond(true, { trueSide += 1; 42 }, { falseSide += 1; "no" })
+    val ko = EffIO.cond(false, { trueSide += 1; 42 }, { falseSide += 1; "no" })
+    for
+      okR <- run(ok)
+      koR <- run(ko)
+    yield
+      assertEquals(okR, Right(42))
+      assertEquals(koR, Left("no"))
+      assertEquals(trueSide, 1)
+      assertEquals(falseSide, 1)
 
   test("traverse short-circuits on the first error"):
     for
@@ -333,14 +359,14 @@ class EffIOSuite extends CatsEffectSuite:
 
   test("race returns the winner; both returns the pair"):
     for
-      raced <- run(EffIO.succeed(1).race(EffIO.never[Int]))
+      raced <- run(EffIO.succeed(1).race(EffIO.never))
       paired <- run(EffIO.succeed(1).both(EffIO.succeed(2)))
     yield
       assertEquals(raced, Right(Left(1)))
       assertEquals(paired, Right((1, 2)))
 
   test("timeout fails with the supplied error when the effect is too slow"):
-    run(EffIO.never[Int].timeout(50.millis, "timed out"))
+    run(EffIO.never.timeout(50.millis, "timed out"))
       .map(r => assertEquals(r, Left("timed out")))
 
   test("guaranteeCase observes the completion outcome"):

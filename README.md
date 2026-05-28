@@ -320,12 +320,12 @@ Eff[IO].suspend(sideEffect()) // UEff[IO, A]
 | Pure         | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)` |
 | Effectful    | `lift(F[Either])`, `lift(F[Option], ifNone)`, `liftF(F[A])`                     |
 | Suspended    | `delay(=> Either)`, `defer(=> Eff)`, `suspend(=> A)`                            |
-| Values       | `succeed`, `fail`, `unit`, `attempt`                                            |
+| Values       | `succeed`, `fail`, `unit`, `attempt`, `attempt(pf)`                             |
 | Temporal     | `sleep(duration)`, `monotonic`, `realTime`                                      |
 | Primitives   | `ref(initial)`, `deferred`                                                      |
 | Cancellation | `canceled`, `cede`, `never`                                                     |
-| Async        | `fromFuture(F[Future], ifFailure)`                                              |
-| Conditional  | `when(cond)(eff)`, `unless(cond)(eff)`, `raiseWhen(cond)(err)`, `raiseUnless`   |
+| Async        | `fromFuture(F[Future], ifFailure)`, `fromFuture(pf)`                            |
+| Conditional  | `when`, `unless`, `raiseWhen`, `raiseUnless`, `cond(pred, ifTrue, ifFalse)`     |
 | Collection   | `traverse`, `sequence`, `parTraverse`, `parSequence`                            |
 | Retry        | `retry(eff, maxRetries)`, `retryWithBackoff(eff, maxRetries, delay, maxDelay)`  |
 
