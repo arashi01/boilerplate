@@ -17,3 +17,7 @@ addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % "0.14.6")
 addSbtPlugin("com.github.sbt" % "sbt-header" % "5.11.0")
 
 addSbtPlugin("com.github.sbt" % "sbt-pgp" % "2.3.1")
+addSbtPlugin("no.arktekk.sbt" % "aether-deploy-signed" % "0.30.0")
+// maven-resolver-supplier 1.9.23 (via aether-deploy) needs plexus-utils at runtime but doesn't declare it
+// https://github.com/arktekk/sbt-aether-deploy/issues/43
+dependencyOverrides += "org.codehaus.plexus" % "plexus-utils" % "3.6.0"

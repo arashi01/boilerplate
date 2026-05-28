@@ -246,7 +246,19 @@ def versionSetting: Def.Initialize[String] = Def.setting(
   )
 )
 
-def publishSettings: List[Setting[?]] = pgpSettings ++: List(
+// Maven-native snapshot deployment via sbt-aether-deploy (timestamped SNAPSHOTs with maven-metadata.xml)
+def aetherSettings: List[Setting[?]] = List(
+  credentials ++= {
+    val user = sys.env.get("SONATYPE_USERNAME")
+    val pass = sys.env.get("SONATYPE_PASSWORD")
+    (user, pass) match {
+      case (Some(u), Some(p)) => List(Credentials("central-snapshots", "central.sonatype.com", u, p))
+      case _                  => Nil
+    }
+  }
+)
+
+def publishSettings: List[Setting[?]] = pgpSettings ++: aetherSettings ++: List(
   packageOptions += Package.ManifestAttributes(
     "Build-Jdk" -> System.getProperty("java.version"),
     "Specification-Title" -> name.value,
