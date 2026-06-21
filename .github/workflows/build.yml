@@ -184,12 +184,20 @@ jobs:
         shell: bash
         run: sbt "boilerplate-aggregateNative/test"
 
-      # Stage native artefacts UNSIGNED on a release tag; the release job signs the merged tree
-      # centrally on Linux (the Windows VS2026 images have no gpg).
+      # Stage native artefacts UNSIGNED on a release tag; the release job signs the merged tree centrally
+      # on Linux (the Windows VS2026 images have no gpg). Each artefact is published from exactly one
+      # place: every native job emits its own classified boilerplate-native jar (a unique OS/arch
+      # coordinate), while the platform-independent UNCLASSIFIED native libs (core/codecs/effect) are
+      # published once, from linux-x86_64 only.
       - name: Stage Native Artefacts
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
-        run: sbt "boilerplate-aggregateNative/publish"
+        run: |
+          if [ "${{ matrix.target }}" = "linux-x86_64" ]; then
+            sbt "boilerplate-aggregateNative/publish"   # unclassified native libs + linux-x86_64 classifier
+          else
+            sbt "boilerplate-native/publish"            # this platform's classifier only
+          fi
 
       - name: Upload Staging Tree
         if: startsWith(github.ref, 'refs/tags/v')
