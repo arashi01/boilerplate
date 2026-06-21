@@ -22,17 +22,7 @@ package boilerplate
 
 import munit.FunSuite
 
-/** Verifies compile-time [[Platform]] constants against Scala Native runtime detection.
-  *
-  * This suite lives in a Native-specific test directory because both [[Platform]] (OS-specific
-  * source) and `scala.scalanative.runtime.Platform` (Native runtime) are only available when
-  * compiling for Scala Native.
-  */
 class PlatformSuite extends FunSuite:
-
-  // -------------------------------------------------------------------------
-  // Compile-time constants match runtime detection
-  // -------------------------------------------------------------------------
 
   test("Platform.linux matches runtime detection"):
     assertEquals(Platform.linux, scala.scalanative.runtime.Platform.isLinux())
@@ -43,23 +33,21 @@ class PlatformSuite extends FunSuite:
   test("Platform.windows matches runtime detection"):
     assertEquals(Platform.windows, scala.scalanative.runtime.Platform.isWindows())
 
-  // -------------------------------------------------------------------------
-  // Exactly one platform is active
-  // -------------------------------------------------------------------------
+  test("exactly one operating-system constant is true"):
+    assertEquals(List(Platform.linux, Platform.mac, Platform.windows).count(identity), 1)
 
-  test("exactly one platform constant is true"):
-    val active = List(Platform.linux, Platform.mac, Platform.windows).count(identity)
-    assertEquals(active, 1)
-
-  // -------------------------------------------------------------------------
-  // Platform.current agrees with runtime
-  // -------------------------------------------------------------------------
-
-  test("Platform.current matches runtime platform"):
+  test("Platform.os matches runtime platform"):
     val expected =
-      if scala.scalanative.runtime.Platform.isLinux() then Platform.Linux
-      else if scala.scalanative.runtime.Platform.isMac() then Platform.Mac
-      else Platform.Windows
-    assertEquals(Platform.current, expected)
+      if scala.scalanative.runtime.Platform.isLinux() then Os.Linux
+      else if scala.scalanative.runtime.Platform.isMac() then Os.Mac
+      else Os.Windows
+    assertEquals(Platform.os, expected)
+
+  test("exactly one architecture constant is true"):
+    assertEquals(List(Platform.x86_64, Platform.aarch64).count(identity), 1)
+
+  test("Platform.arch agrees with the architecture constants"):
+    val expected = if Platform.x86_64 then Arch.X86_64 else Arch.Aarch64
+    assertEquals(Platform.arch, expected)
 
 end PlatformSuite

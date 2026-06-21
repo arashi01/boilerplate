@@ -7,7 +7,7 @@ Foundational Scala 3 utilities for opaque type construction, null-safe handling,
 Each module is published independently. Add the ones you need:
 
 ```scala
-// Core: opaque types, nullable extensions, platform detection (Native)
+// Core: opaque types, nullable extensions
 libraryDependencies += "io.github.arashi01" %% "boilerplate" % "<version>"
 
 // Codecs: Base64 (JVM, JS, Native)
@@ -17,7 +17,13 @@ libraryDependencies += "io.github.arashi01" %% "boilerplate-codecs" % "<version>
 libraryDependencies += "io.github.arashi01" %% "boilerplate-effect" % "<version>"
 ```
 
-Use `%%%` for Scala.js or Scala Native cross-builds.
+On Scala.js and Scala Native, `%%` resolves the platform-specific artefact (the sbt 2.x replacement for `%%%`).
+
+`boilerplate-native` (compile-time OS/architecture detection) is Native-only and published as a per-OS/arch classified NIR library. Consume it through [sbt-snx](https://github.com/shuwariafrica/sbt-snx) so the classifier for your build target resolves automatically:
+
+```scala
+SNX.dependencies += "io.github.arashi01" %% "boilerplate-native" % "<version>" % NativeClassifier
+```
 
 ---
 
@@ -177,31 +183,40 @@ result.flatMapNull("null value")(s => Right(s.trim))  // Either[String, String]
 
 ---
 
-### Platform (Scala Native only)
+### Platform (`boilerplate-native`, Scala Native only)
 
-Compile-time operating system detection for Scala Native targets.
+Compile-time operating-system and architecture detection for Scala Native targets. Each OS/arch target is
+published as its own classified NIR jar, so the constants reflect the actual build target rather than
+whichever host happened to build the artefact.
 
 ```scala
-import boilerplate.Platform
+import boilerplate.{Platform, Os, Arch}
 
 // Compile-time branching - unreachable branches are eliminated
 inline if Platform.linux then linuxImpl()
 else inline if Platform.mac then macImpl()
 else windowsImpl()
 
-// Enum value for runtime dispatch
-Platform.current match
-  case Platform.Linux   => // ...
-  case Platform.Mac     => // ...
-  case Platform.Windows => // ...
+// Enum values for runtime dispatch
+Platform.os match
+  case Os.Linux   => // ...
+  case Os.Mac     => // ...
+  case Os.Windows => // ...
+
+Platform.arch match
+  case Arch.X86_64  => // ...
+  case Arch.Aarch64 => // ...
 ```
 
-| Member    | Type       | Description                                      |
-|-----------|------------|--------------------------------------------------|
-| `linux`   | `Boolean`  | `true` when building on Linux                    |
-| `mac`     | `Boolean`  | `true` when building on macOS                    |
-| `windows` | `Boolean`  | `true` when building on Windows                  |
-| `current` | `Platform` | Enum value for the build-host OS                 |
+| Member    | Type      | Description                                    |
+|-----------|-----------|------------------------------------------------|
+| `linux`   | `Boolean` | `true` when the target OS is Linux             |
+| `mac`     | `Boolean` | `true` when the target OS is macOS             |
+| `windows` | `Boolean` | `true` when the target OS is Windows           |
+| `x86_64`  | `Boolean` | `true` when the target architecture is x86-64  |
+| `aarch64` | `Boolean` | `true` when the target architecture is AArch64 |
+| `os`      | `Os`      | Enum value for the build-target OS             |
+| `arch`    | `Arch`    | Enum value for the build-target architecture   |
 
 `inline if` branches on these constants produce zero-overhead platform-specific code.
 
