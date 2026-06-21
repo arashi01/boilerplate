@@ -20,18 +20,10 @@
  */
 package boilerplate
 
-/** Build-host operating system, resolved at compile time for Scala Native targets.
+/** Compile-time platform constants for the Scala Native build target.
   *
-  * See [[Platform$ Platform]] companion for compile-time constants.
-  */
-enum Platform:
-  case Linux, Mac, Windows
-
-/** Compile-time operating system constants for Scala Native targets.
-  *
-  * Exactly one of [[linux]], [[mac]], or [[windows]] is `true` per build, determined by the
-  * OS-specific source directory selected at compile time. Branches on these constants are
-  * eliminated by the compiler, producing zero-overhead platform-conditional code.
+  * Exactly one of [[linux]]/[[mac]]/[[windows]] and one of [[x86_64]]/[[aarch64]] is `true` per
+  * build, determined by the OS/arch-specific source directory selected at compile time.
   *
   * {{{
   * import boilerplate.Platform
@@ -43,23 +35,29 @@ enum Platform:
   */
 object Platform:
 
-  given CanEqual[Platform, Platform] = CanEqual.derived
+  /** `true` when the build-target operating system is Linux. */
+  inline val linux = false
 
-  /** `true` when the build-host operating system is Linux. */
-  inline val linux = true
+  /** `true` when the build-target operating system is macOS. */
+  inline val mac = true
 
-  /** `true` when the build-host operating system is macOS. */
-  inline val mac = false
-
-  /** `true` when the build-host operating system is Windows. */
+  /** `true` when the build-target operating system is Windows. */
   inline val windows = false
 
-  /** The [[Platform]] value for the current build-host operating system.
-    *
-    * Reduced to a single constant at compile time via `inline if`.
-    */
-  inline def current: Platform =
-    inline if linux then Platform.Linux
-    else inline if mac then Platform.Mac
-    else Platform.Windows
+  /** `true` when the build-target architecture is x86-64. */
+  inline val x86_64 = true
+
+  /** `true` when the build-target architecture is AArch64. */
+  inline val aarch64 = false
+
+  /** The [[Os]] for the current build target. Reduced to a single constant at compile time. */
+  inline def os: Os =
+    inline if linux then Os.Linux
+    else inline if mac then Os.Mac
+    else Os.Windows
+
+  /** The [[Arch]] for the current build target. Reduced to a single constant at compile time. */
+  inline def arch: Arch =
+    inline if x86_64 then Arch.X86_64
+    else Arch.Aarch64
 end Platform

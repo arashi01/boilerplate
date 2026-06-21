@@ -1,149 +1,105 @@
-inThisBuild(
-  List(
-    scalaVersion := "3.8.3",
-    organization := "io.github.arashi01",
-    description := "Collection of utilities and common patterns useful across Scala 3 projects.",
-    startYear := Some(2025),
-    homepage := Some(url("https://github.com/arashi01/boilerplate")),
-    semanticdbEnabled := true,
-    version := versionSetting.value,
-    dynver := versionSetting.toTaskable.toTask.value,
-    versionScheme := Some("semver-spec"),
-    licenses := List("MIT" -> url("https://opensource.org/licenses/MIT")),
-    scmInfo := Some(
-      ScmInfo(
-        url("https://github.com/arashi01/boilerplate"),
-        "scm:git:https://github.com/arashi01/boilerplate.git",
-        Some("scm:git:git@github.com:arashi01/boilerplate.git")
-      )
-    )
-  ) ++ formattingSettings
+scalaVersion := scala3
+organization := "io.github.arashi01"
+description := "Collection of utilities and common patterns useful across Scala 3 projects."
+startYear := Some(2025)
+homepage := Some(url("https://github.com/arashi01/boilerplate"))
+semanticdbEnabled := true
+versionScheme := Some("semver-spec")
+licenses := List("MIT" -> url("https://opensource.org/licenses/MIT"))
+scmInfo := Some(
+  ScmInfo(
+    url("https://github.com/arashi01/boilerplate"),
+    "scm:git:https://github.com/arashi01/boilerplate.git",
+    Some("scm:git:git@github.com:arashi01/boilerplate.git")
+  )
 )
 
-val libraries = new {
-  val `cats-effect` = Def.setting("org.typelevel" %%% "cats-effect" % "3.7.0")
-  val `cats-effect-laws` = Def.setting("org.typelevel" %%% "cats-effect-laws" % "3.7.0")
-  val `cats-effect-testkit` = Def.setting("org.typelevel" %%% "cats-effect-testkit" % "3.7.0")
-  val `discipline-munit` = Def.setting("org.typelevel" %%% "discipline-munit" % "2.0.0")
-  val munit = Def.setting("org.scalameta" %%% "munit" % "1.3.0")
-  val `munit-cats-effect` = Def.setting("org.typelevel" %%% "munit-cats-effect" % "2.2.0")
-  val `munit-scalacheck` = Def.setting("org.scalameta" %%% "munit-scalacheck" % "1.3.0")
-  val `scala-java-time` = Def.setting("io.github.cquiroz" %%% "scala-java-time" % "2.6.0")
-}
+formattingSettings
+nativeSettings
 
-val `boilerplate` =
-  crossProject(JVMPlatform, JSPlatform, NativePlatform)
-    .withoutSuffixFor(JVMPlatform)
-    .crossType(CrossType.Pure)
+def scala3 = "3.8.4"
+val `cats-effect` = Def.setting("org.typelevel" %% "cats-effect" % "3.7.0")
+val `cats-effect-laws` = Def.setting("org.typelevel" %% "cats-effect-laws" % "3.7.0")
+val `cats-effect-testkit` = Def.setting("org.typelevel" %% "cats-effect-testkit" % "3.7.0")
+val `discipline-munit` = Def.setting("org.typelevel" %% "discipline-munit" % "2.0.0")
+val munit = Def.setting("org.scalameta" %% "munit" % "1.3.3")
+val `munit-cats-effect` = Def.setting("org.typelevel" %% "munit-cats-effect" % "2.2.0")
+val `munit-scalacheck` = Def.setting("org.scalameta" %% "munit-scalacheck" % "1.3.0")
+val `scala-java-time` = Def.setting("io.github.cquiroz" %% "scala-java-time" % "2.6.0")
+
+val boilerplate =
+  projectMatrix
     .in(file("modules/core"))
     .settings(compilerSettings)
     .settings(unitTestSettings)
     .settings(fileHeaderSettings)
     .settings(publishSettings)
-    .nativeSettings(osSourceSettings)
-    .nativeSettings(
-      Test / unmanagedSourceDirectories += crossProjectBaseDirectory.value / "src" / "test" / "scala-native"
-    )
-    .nativeSettings(nativeSettings)
+    .jvmPlatform(Seq(scala3))
+    .jsPlatform(Seq(scala3))
+    .snxPlatform(Seq(scala3))
 
 val `boilerplate-codecs` =
-  crossProject(JVMPlatform, JSPlatform, NativePlatform)
-    .withoutSuffixFor(JVMPlatform)
-    .crossType(CrossType.Full)
+  projectMatrix
     .in(file("modules/codecs"))
-    .dependsOn(`boilerplate`)
+    .dependsOn(boilerplate)
     .settings(compilerSettings)
     .settings(unitTestSettings)
     .settings(fileHeaderSettings)
     .settings(publishSettings)
-    .nativeSettings(nativeSettings)
+    .jvmPlatform(Seq(scala3))
+    .jsPlatform(Seq(scala3))
+    .snxPlatform(Seq(scala3))
 
 val `boilerplate-effect` =
-  crossProject(JVMPlatform, JSPlatform, NativePlatform)
-    .withoutSuffixFor(JVMPlatform)
-    .crossType(CrossType.Pure)
+  projectMatrix
     .in(file("modules/effect"))
     .settings(compilerSettings)
     .settings(unitTestSettings)
     .settings(fileHeaderSettings)
     .settings(publishSettings)
-    .settings(libraryDependencies += libraries.`cats-effect`.value)
-    .settings(libraryDependencies += libraries.`munit-cats-effect`.value % Test)
-    .nativeSettings(nativeSettings)
+    .settings(libraryDependencies += `cats-effect`.value)
+    .settings(libraryDependencies += `munit-cats-effect`.value % Test)
+    .jvmPlatform(Seq(scala3))
+    .jsPlatform(Seq(scala3))
+    .snxPlatform(Seq(scala3))
 
 val `boilerplate-effect-laws` =
-  crossProject(JVMPlatform, JSPlatform, NativePlatform)
-    .withoutSuffixFor(JVMPlatform)
-    .crossType(CrossType.Pure)
+  projectMatrix
     .in(file("modules/effect-laws"))
     .dependsOn(`boilerplate-effect`)
     .settings(compilerSettings)
     .settings(fileHeaderSettings)
     .settings(publish / skip := true)
-    .settings(libraryDependencies += libraries.`cats-effect`.value)
-    .settings(libraryDependencies += libraries.`cats-effect-laws`.value)
-    .settings(libraryDependencies += libraries.`cats-effect-testkit`.value)
-    .settings(libraryDependencies += libraries.`discipline-munit`.value % Test)
-    .settings(libraryDependencies += libraries.`munit-cats-effect`.value % Test)
-    .nativeSettings(nativeSettings)
-
-val `boilerplate-jvm` =
-  project
-    .in(file(".jvm"))
-    .settings(publish / skip := true)
-    .aggregate(
-      `boilerplate`.jvm,
-      `boilerplate-codecs`.jvm,
-      `boilerplate-effect`.jvm,
-      `boilerplate-effect-laws`.jvm
-    )
-
-val `boilerplate-js` =
-  project
-    .in(file(".js"))
-    .settings(publish / skip := true)
-    .aggregate(
-      `boilerplate`.js,
-      `boilerplate-codecs`.js,
-      `boilerplate-effect`.js,
-      `boilerplate-effect-laws`.js
-    )
+    .settings(libraryDependencies += `cats-effect`.value)
+    .settings(libraryDependencies += `cats-effect-laws`.value)
+    .settings(libraryDependencies += `cats-effect-testkit`.value)
+    .settings(libraryDependencies += `discipline-munit`.value % Test)
+    .settings(libraryDependencies += `munit-cats-effect`.value % Test)
+    .jvmPlatform(Seq(scala3))
+    .jsPlatform(Seq(scala3))
+    .snxPlatform(Seq(scala3))
 
 val `boilerplate-native` =
   project
-    .in(file(".native"))
-    .settings(publish / skip := true)
-    .aggregate(
-      `boilerplate`.native,
-      `boilerplate-codecs`.native,
-      `boilerplate-effect`.native,
-      `boilerplate-effect-laws`.native
-    )
+    .in(file("modules/native"))
+    .enablePlugins(SNXPlugin)
+    .settings(compilerSettings)
+    .settings(unitTestSettings)
+    .settings(fileHeaderSettings)
+    .settings(publishSettings)
+    .settings(SNX.classified := true)
 
-val `boilerplate-root` =
-  project
+val `boilerplate-aggregate` =
+  projectMatrix
     .in(file("."))
     .settings(publish / skip := true)
-    .aggregate(
-      `boilerplate-jvm`,
-      `boilerplate-js`,
-      `boilerplate-native`
-    )
-
-def osSourceSettings: Setting[Seq[File]] = {
-  val osName: String =
-    System.getProperty("os.name").toLowerCase match {
-      case os if os.contains("lin")                          => "linux"
-      case os if os.contains("mac") || os.contains("darwin") => "macos"
-      case os if os.contains("win")                          => "windows"
-      case os                                                => throw new RuntimeException(s"Unsupported OS: $os")
-    }
-  Compile / unmanagedSourceDirectories += crossProjectBaseDirectory.value / "src" / "main" / s"scala-$osName"
-}
-
-def nativeSettings = List(
-  dependencyOverrides += "org.scala-native" %%% "test-interface" % buildinfo.BuildInfo.scalaNativeVersion % Test
-)
+    .jvmPlatform(Seq(scala3))
+    .jsPlatform(Seq(scala3))
+    .snxPlatform(Seq(scala3), Seq.empty, _.aggregate(`boilerplate-native`))
+    .aggregate(boilerplate)
+    .aggregate(`boilerplate-codecs`)
+    .aggregate(`boilerplate-effect`)
+    .aggregate(`boilerplate-effect-laws`)
 
 def baseCompilerOptions = List(
   // Language features
@@ -156,13 +112,11 @@ def baseCompilerOptions = List(
   "-Xkind-projector",
   "-Xmax-inlines:64",
 
-  // Core checks
+  // Conformance flags
   "-unchecked",
   "-deprecation",
   "-feature",
   "-explain",
-
-  // Warning flags
   "-Wvalue-discard",
   "-Wnonunit-statement",
   "-Wunused:implicits",
@@ -171,11 +125,12 @@ def baseCompilerOptions = List(
   "-Wunused:locals",
   "-Wunused:params",
   "-Wunused:privates",
-
-  // Scala 3-specific checks
+  "-Yexplicit-nulls",
+  "-Xcheck-macros",
   "-Yrequire-targetName",
   "-Ycheck-reentrant",
-  "-Ycheck-mods"
+  "-Ycheck-mods",
+  "-Werror"
 )
 
 def compilerOptions = baseCompilerOptions ++ List(
@@ -191,6 +146,10 @@ def compilerSettings = List(
   Test / doc / scalacOptions := Nil
 )
 
+def nativeSettings = List(
+  libraryDependencySchemes += "org.scala-native" % "test-interface_native0.5_3" % "always"
+)
+
 def formattingSettings = List(
   scalafmtDetailedError := true,
   scalafmtPrintDiff := true
@@ -198,9 +157,9 @@ def formattingSettings = List(
 
 def unitTestSettings: List[Setting[?]] = List(
   libraryDependencies ++= List(
-    libraries.munit.value % Test,
-    libraries.`munit-scalacheck`.value % Test,
-    libraries.`scala-java-time`.value % Test
+    munit.value % Test,
+    `munit-scalacheck`.value % Test,
+    `scala-java-time`.value % Test
   ),
   testFrameworks += new TestFramework("munit.Framework")
 )
@@ -219,34 +178,7 @@ def fileHeaderSettings: List[Setting[?]] =
     headerEmptyLine := false
   )
 
-def pgpSettings: List[Setting[?]] = List(
-  PgpKeys.pgpSelectPassphrase := None,
-  usePgpKeyHex(System.getenv("SIGNING_KEY_ID"))
-)
-
-def versionSetting: Def.Initialize[String] = Def.setting(
-  dynverGitDescribeOutput.value.mkVersion(
-    (in: sbtdynver.GitDescribeOutput) =>
-      if (!in.isSnapshot()) in.ref.dropPrefix
-      else {
-        val ref = in.ref.dropPrefix
-        // Strip pre-release or build metadata (e.g., "-m.1" or "+build.5")
-        val base = ref.takeWhile(c => c != '-' && c != '+')
-        val numericParts =
-          base.split("\\.").toList.map(_.trim).flatMap(s => scala.util.Try(s.toInt).toOption)
-
-        if (numericParts.nonEmpty) {
-          val incremented = numericParts.updated(numericParts.length - 1, numericParts.last + 1)
-          s"${incremented.mkString(".")}-SNAPSHOT"
-        } else {
-          s"$base-SNAPSHOT"
-        }
-      },
-    "SNAPSHOT"
-  )
-)
-
-def publishSettings: List[Setting[?]] = pgpSettings ++: List(
+def publishSettings: List[Setting[?]] = List(
   packageOptions += Package.ManifestAttributes(
     "Build-Jdk" -> System.getProperty("java.version"),
     "Specification-Title" -> name.value,
