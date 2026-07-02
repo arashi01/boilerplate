@@ -41,41 +41,24 @@ import org.scalacheck.Prop
 
 import boilerplate.effect.EffIO
 
-/** Law tests for [[boilerplate.effect.EffIO EffIO]] typeclass instances.
+/** Law tests for [[boilerplate.effect.EffIO EffIO]] typeclass instances via cats-effect-laws. The
+  * `IO`-specialised instances delegate to the corresponding `Eff[IO, *, *]` instances.
   *
-  * Uses cats-effect-laws to verify that the `IO`-specialised instances - which delegate to the
-  * corresponding `Eff[IO, *, *]` instances - conform to the expected laws.
-  *
-  * ==Test Coverage==
-  *   - `GenSpawnTests` verifies Monad, MonadCancel, and fiber/race laws
-  *   - `MonadErrorTests[E]` verifies typed error channel laws (raiseError, handleError, etc.)
-  *   - `SemigroupKTests` verifies `combineK`/`alt` associativity
-  *   - `ClockTests` verifies monotonic/realTime laws
-  *   - `DeferTests` verifies deferred evaluation laws
-  *   - `UniqueTests` verifies unique token generation laws
-  *   - `BifunctorTests` verifies `bimap`/`leftMap` laws over both channels
-  *   - `EqTests` verifies equality reflexivity, symmetry, transitivity
-  *
-  * `GenConcurrent`, `GenTemporal`, `Sync`, and `Async` are all resolved from the single `Async`
-  * instance by subtyping; `GenSpawnTests` exercises the shared structure. `Foldable`/`Traverse` do
-  * not apply - `IO` is an effect, not a data container. Behavioural tests are in `EffIOSuite`.
+  * `GenConcurrent`, `GenTemporal`, `Sync`, and `Async` all resolve from the single `Async` instance
+  * by subtyping, so `GenSpawnTests` exercises the shared structure. `Foldable`/`Traverse` do not
+  * apply - `IO` is an effect, not a data container. Behavioural tests are in `EffIOSuite`.
   */
 class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
 
-  // Use Int as both error type E and value types A, B, C for simplicity
   type E = Int
   type TestEffIO[A] = EffIO[E, A]
 
   implicit val ticker: Ticker = Ticker(TestContext())
 
-  // --- Arbitrary instances for IO[Either[E, A]] (required for arbitraryEffIO) ---
-
   implicit def arbIOEither[A: Arbitrary]: Arbitrary[IO[Either[E, A]]] =
     Arbitrary(
       Arbitrary.arbitrary[Either[E, A]].map(IO.pure(_))
     )
-
-  // --- Required Eq instances ---
 
   implicit def eqTestEffIO[A: Eq]: Eq[TestEffIO[A]] = eqEffIO[E, A]
 
@@ -91,8 +74,6 @@ class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
   implicit def eqOutcome: Eq[TestEffIO[Outcome[TestEffIO, Throwable, Int]]] =
     eqEffIO[E, Outcome[TestEffIO, Throwable, Int]]
 
-  // --- Arbitrary instances for EffIO ---
-
   implicit def arbTestEffIO[A: Arbitrary]: Arbitrary[TestEffIO[A]] =
     arbitraryEffIO[E, A]
 
@@ -105,22 +86,14 @@ class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
       Arbitrary.arbFunction1[A, B].arbitrary.map(f => EffIO.succeed(f))
     )
 
-  // --- Cogen instances ---
-
   implicit def cogenTestEffIO[A: Cogen]: Cogen[TestEffIO[A]] =
     cogenEffIO[E, A]
-
-  // --- Prop conversion ---
 
   implicit def testEffIOBoolToProp(eff: TestEffIO[Boolean]): Prop =
     effIOBooleanToProp(eff)
 
-  // --- Pretty instances ---
-
   implicit def prettyTestEffIO[A]: TestEffIO[A] => org.scalacheck.util.Pretty =
     prettyEffIO[E, A]
-
-  // --- The actual law tests ---
 
   // GenSpawn tests include MonadCancel and Monad laws
   checkAll(
@@ -143,8 +116,6 @@ class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
     UniqueTests[TestEffIO].unique
   )
 
-  // --- MonadError[E] laws for the typed error channel ---
-
   implicit def eqEitherEU: Eq[TestEffIO[Either[E, Unit]]] = eqEffIO[E, Either[E, Unit]]
   implicit def eqEitherEA: Eq[TestEffIO[Either[E, Int]]] = eqEffIO[E, Either[E, Int]]
   implicit def eqEitherTEffIO: Eq[EitherT[TestEffIO, E, Int]] =
@@ -155,14 +126,10 @@ class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
     MonadErrorTests[TestEffIO, E].monadError[Int, Int, Int]
   )
 
-  // --- SemigroupK laws for alt semantics ---
-
   checkAll(
     "EffIO[Int, *].SemigroupK",
     SemigroupKTests[TestEffIO].semigroupK[Int]
   )
-
-  // --- Bifunctor laws ---
 
   // For Bifunctor tests, we need to vary both type parameters
   type TestEffIOBi[E, A] = EffIO[E, A]
@@ -179,8 +146,6 @@ class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
     "EffIO[*, *].Bifunctor",
     BifunctorTests[TestEffIOBi].bifunctor[Int, Int, Int, String, String, String]
   )
-
-  // --- Data typeclass laws - Eq ---
 
   checkAll(
     "EffIO[Int, Int].Eq",

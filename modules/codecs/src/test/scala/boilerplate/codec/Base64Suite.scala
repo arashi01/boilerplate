@@ -28,10 +28,6 @@ import org.scalacheck.Prop.forAll
 
 class Base64Suite extends ScalaCheckSuite:
 
-  // ---------------------------------------------------------------------------
-  // RFC 4648 section 10 Test Vectors
-  // ---------------------------------------------------------------------------
-
   test("encode empty"):
     assertEquals(Base64.encode(Array.empty[Byte]), "")
 
@@ -74,10 +70,6 @@ class Base64Suite extends ScalaCheckSuite:
   test("decode 'Zm9vYmFy'"):
     assertDecoded("Zm9vYmFy", "foobar".getBytes("UTF-8").nn)
 
-  // ---------------------------------------------------------------------------
-  // Edge Cases
-  // ---------------------------------------------------------------------------
-
   test("encode single zero byte"):
     assertEquals(Base64.encode(Array[Byte](0)), "AA==")
 
@@ -91,10 +83,6 @@ class Base64Suite extends ScalaCheckSuite:
     val encoded = Base64.encode(large)
     assertDecoded(encoded, large)
 
-  // ---------------------------------------------------------------------------
-  // Decode Errors
-  // ---------------------------------------------------------------------------
-
   test("decode rejects invalid characters"):
     assert(Base64.decode("Zm9v!!!").isLeft)
 
@@ -105,10 +93,6 @@ class Base64Suite extends ScalaCheckSuite:
     Base64.decode("!!!") match
       case Left(e: Base64.Error) => assert(e.getMessage.nn.nonEmpty)
       case other                 => fail(s"Expected Left(Base64.Error), got: $other")
-
-  // ---------------------------------------------------------------------------
-  // Property-Based Tests
-  // ---------------------------------------------------------------------------
 
   given Arbitrary[Array[Byte]] = Arbitrary(
     Gen.choose(0, 1024).flatMap(n => Gen.listOfN(n, Arbitrary.arbitrary[Byte]).map(_.toArray))
@@ -137,10 +121,6 @@ class Base64Suite extends ScalaCheckSuite:
       assert(encoded.length % 4 == 0, s"Length ${encoded.length} is not a multiple of 4")
     }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
-
   private def assertDecoded(input: String, expected: Array[Byte]): Unit =
     Base64.decode(input) match
       case Right(decoded) => assertEquals(decoded.toSeq, expected.toSeq)
@@ -150,10 +130,6 @@ class Base64Suite extends ScalaCheckSuite:
     Base64.decode(input, urlSafe = true) match
       case Right(decoded) => assertEquals(decoded.toSeq, expected.toSeq)
       case Left(e)        => fail(s"URL-safe decode failed: ${e.getMessage}")
-
-  // ---------------------------------------------------------------------------
-  // URL-Safe Encode: RFC 4648 section 5
-  // ---------------------------------------------------------------------------
 
   test("url-safe encode empty"):
     assertEquals(Base64.encode(Array.empty[Byte], urlSafe = true), "")
@@ -205,10 +181,6 @@ class Base64Suite extends ScalaCheckSuite:
     val urlSafe = Base64.encode(data, urlSafe = true)
     assert(!urlSafe.contains('='), s"URL-safe must not have padding: $urlSafe")
 
-  // ---------------------------------------------------------------------------
-  // URL-Safe Decode: RFC 4648 section 5
-  // ---------------------------------------------------------------------------
-
   test("url-safe decode empty"):
     assertUrlDecoded("", Array.empty[Byte])
 
@@ -236,10 +208,6 @@ class Base64Suite extends ScalaCheckSuite:
   test("url-safe decode rejects standard + character"):
     assert(Base64.decode("++8=", urlSafe = true).isLeft || true)
 
-  // ---------------------------------------------------------------------------
-  // URL-Safe Round-Trip Properties
-  // ---------------------------------------------------------------------------
-
   property("url-safe round-trip: decode(encode(bytes, true), true) == Right(bytes)"):
     forAll { (bytes: Array[Byte]) =>
       val encoded = Base64.encode(bytes, urlSafe = true)
@@ -262,10 +230,6 @@ class Base64Suite extends ScalaCheckSuite:
       val encoded = Base64.encode(bytes, urlSafe = true)
       assert(!encoded.contains('='), s"URL-safe output must not contain padding: $encoded")
     }
-
-  // ---------------------------------------------------------------------------
-  // Standard-overload delegation
-  // ---------------------------------------------------------------------------
 
   test("no-arg encode delegates to standard"):
     val data = "foobar".getBytes("UTF-8").nn

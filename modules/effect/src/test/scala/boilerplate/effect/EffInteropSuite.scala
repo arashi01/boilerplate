@@ -26,18 +26,11 @@ import cats.effect.std.*
 import cats.syntax.all.*
 import munit.CatsEffectSuite
 
-/** Tests for cats-effect primitive interop utilities.
-  *
-  * These tests verify our transformation logic produces correctly-typed results that compose with
-  * Eff operations. We test that lifted primitives:
-  *   1. Preserve the original primitive's semantics
-  *   2. Operate in the Eff context with proper error channel typing
-  *   3. Compose correctly with other Eff operations
+/** Tests that lifted cats-effect primitives preserve their semantics and compose in the `Eff`
+  * context with correct error-channel typing.
   */
 class EffInteropSuite extends CatsEffectSuite:
   private def runEff[E, A](eff: Eff[IO, E, A]): IO[Either[E, A]] = eff.either
-
-  // --- Eff.functionK tests ---
 
   test("functionK creates valid natural transformation"):
     val fk = Eff.functionK[IO, String]
@@ -58,8 +51,6 @@ class EffInteropSuite extends CatsEffectSuite:
         assert(after, "effect should have executed after run")
         assertEquals(result, Right(42))
     }
-
-  // --- Eff.liftResource tests ---
 
   test("Eff.liftResource produces Resource in Eff context"):
     (Ref.of[IO, Boolean](false), Ref.of[IO, Boolean](false)).tupled.flatMap { (acquired, released) =>
@@ -105,8 +96,6 @@ class EffInteropSuite extends CatsEffectSuite:
         assertEquals(result, Right(42))
     }
 
-  // --- Eff.liftRef tests ---
-
   test("Eff.liftRef preserves get/set semantics in Eff context"):
     Ref.of[IO, Int](0).flatMap { ref =>
       val liftedRef = Eff.liftRef[IO, String, Int](ref)
@@ -133,8 +122,6 @@ class EffInteropSuite extends CatsEffectSuite:
       val liftedRef: Ref[Eff.Of[IO, String], Int] = ref.eff[String]
       runEff(liftedRef.get).map(r => assertEquals(r, Right(100)))
     }
-
-  // --- Eff.liftDeferred tests ---
 
   test("Eff.liftDeferred preserves complete/get semantics"):
     Deferred[IO, Int].flatMap { deferred =>
@@ -167,8 +154,6 @@ class EffInteropSuite extends CatsEffectSuite:
       yield result
       runEff(eff).map(r => assertEquals(r, Right("hello")))
     }
-
-  // --- Eff.liftQueue tests ---
 
   test("Eff.liftQueue preserves offer/take semantics"):
     Queue.unbounded[IO, Int].flatMap { queue =>
@@ -203,8 +188,6 @@ class EffInteropSuite extends CatsEffectSuite:
       yield result
       runEff(eff).map(r => assertEquals(r, Right("test")))
     }
-
-  // --- Eff.liftSemaphore tests ---
 
   test("Eff.liftSemaphore preserves permit semantics"):
     Semaphore[IO](1).flatMap { sem =>
@@ -246,8 +229,6 @@ class EffInteropSuite extends CatsEffectSuite:
       runEff(liftedSem.available).map(r => assertEquals(r, Right(2L)))
     }
 
-  // --- Composition tests: verifying lifted primitives work together ---
-
   test("lifted primitives compose in complex Eff workflows"):
     (Ref.of[IO, List[String]](Nil), Queue.unbounded[IO, Int]).tupled.flatMap { (ref, queue) =>
       val liftedRef = Eff.liftRef[IO, String, List[String]](ref)
@@ -281,8 +262,6 @@ class EffInteropSuite extends CatsEffectSuite:
         assertEquals(finalValue, 11) // 1 + 10 from release
     }
 
-  // --- Error channel preservation tests ---
-
   test("lifted primitives preserve typed error channel in failure scenarios"):
     Ref.of[IO, Int](0).flatMap { ref =>
       val liftedRef = Eff.liftRef[IO, String, Int](ref)
@@ -300,8 +279,6 @@ class EffInteropSuite extends CatsEffectSuite:
         assertEquals(result, Left("intentional failure"))
         assertEquals(finalValue, 42) // Set before failure, not 99
     }
-
-  // --- CountDownLatch, CyclicBarrier, AtomicCell, Supervisor extensions ---
 
   test("CountDownLatch.eff[E] extension delegates to Eff.liftLatch"):
     cats.effect.std.CountDownLatch[IO](1).flatMap { latch =>
@@ -330,14 +307,10 @@ class EffInteropSuite extends CatsEffectSuite:
   test("Supervisor.eff[E] extension delegates to Eff.liftSupervisor"):
     cats.effect.std.Supervisor[IO](await = true).use { sup =>
       val liftedSup: cats.effect.std.Supervisor[Eff.Of[IO, String]] = sup.eff[String]
-      // Verify the extension produces the correct type
       val supervised: Eff[IO, String, cats.effect.kernel.Fiber[Eff.Of[IO, String], Throwable, Int]] =
         liftedSup.supervise(Eff.succeed[IO, String, Int](42))
-      // Just verify it compiles and runs without error
       runEff(supervised).map(r => assert(r.isRight))
     }
-
-  // --- Fiber join extension tests ---
 
   test("Fiber.joinNever returns value from successful fiber"):
     cats.effect.std.Supervisor[IO](await = true).use { sup =>
@@ -397,8 +370,6 @@ class EffInteropSuite extends CatsEffectSuite:
                     case Left(e) => IO.pure(Left(e))
       yield assertEquals(result, Left("was cancelled"))
     }
-
-  // --- EffIO Fiber join extensions (mirror the Eff-context joins for EffIO.Of fibres) ---
 
   test("EffIO Fiber.joinNever returns value from successful fibre"):
     Supervisor[IO](await = true).use { sup =>

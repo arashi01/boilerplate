@@ -86,10 +86,6 @@ class SyntaxSuite extends CatsEffectSuite:
     val fo = IO.pure(Option.empty[Int])
     runEff(fo.eff[String]("missing")).map(result => assertEquals(result, Left("missing")))
 
-  // ===========================================================================
-  // Fiber Join Extensions
-  // ===========================================================================
-
   test("Fiber.joinNever returns value on success"):
     val eff: Eff[IO, String, Int] = Eff.succeed(42)
     for
@@ -131,10 +127,6 @@ class SyntaxSuite extends CatsEffectSuite:
       _ <- fiber.cancel
       result <- liftedFiber.joinOrFail("was canceled").either
     yield assertEquals(result, Left("was canceled"))
-
-  // ===========================================================================
-  // EffIO lifting syntax
-  // ===========================================================================
 
   test("IO.effIO captures throwable failures into the typed error channel"):
     for

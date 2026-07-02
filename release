@@ -1,43 +1,28 @@
 #!/bin/bash
 
-# Exit immediately if a command exits with a non-zero status.
-# Treat unset variables as an error when substituting.
-# Exit with a non-zero status if any command in a pipeline fails.
 set -euo pipefail
 
-# --- Configuration ---
-# Define the main/parent GitHub repository
 : "${MAIN_REPO_OWNER:=arashi01}"
 : "${MAIN_REPO_NAME:=boilerplate}"
 
-# Define colors for output for better readability
 readonly C_RESET='\033[0m'
 readonly C_RED='\033[0;31m'
 readonly C_GREEN='\033[0;32m'
 readonly C_YELLOW='\033[0;33m'
 
-# --- Helper Functions ---
-
-# Print an error message and exit.
-# Usage: error "Your error message"
 error() {
   echo -e "${C_RED}Error: $1${C_RESET}" >&2
   exit 1
 }
 
-# Print a success message.
-# Usage: success "Your success message"
 success() {
   echo -e "${C_GREEN}Success: $1${C_RESET}"
 }
 
-# Print an informational message.
-# Usage: info "Your info message"
 info() {
   echo -e "${C_YELLOW}$1${C_RESET}"
 }
 
-# Function to display help message
 show_help() {
   echo "Usage: $(basename "$0") <version>"
   echo
@@ -65,9 +50,6 @@ show_help() {
   echo "  -h, --help    Show this help message and exit"
 }
 
-# --- Main Script Logic ---
-
-# Check for help flag
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   show_help
   exit 0

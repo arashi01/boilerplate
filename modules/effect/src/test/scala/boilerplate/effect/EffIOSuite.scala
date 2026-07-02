@@ -46,10 +46,6 @@ class EffIOSuite extends CatsEffectSuite:
   // A library-style error on a distinct branch, for the union-error narrowing tests.
   final case class IoErr(code: Int) derives CanEqual
 
-  // ===========================================================================
-  // Type aliases
-  // ===========================================================================
-
   test("UEffIO is the infallible effect"):
     val eff: UEffIO[Int] = EffIO.succeed(42)
     run(eff).map(r => assertEquals(r, Right(42)))
@@ -58,10 +54,6 @@ class EffIOSuite extends CatsEffectSuite:
     val boom = RuntimeException("boom")
     val eff: TEffIO[Int] = EffIO.fail(boom)
     run(eff).map(r => assertEquals(r, Left(boom)))
-
-  // ===========================================================================
-  // Covariance - the defining feature
-  // ===========================================================================
 
   test("a narrow error widens to a broad error with no call-site method"):
     val narrow: EffIO[NotFound, Int] = EffIO.fail(NotFound("u1"))
@@ -96,10 +88,6 @@ class EffIOSuite extends CatsEffectSuite:
       yield base + found
     run(workflow).map(r => assertEquals(r, Right(101)))
 
-  // ===========================================================================
-  // Conversions to and from Eff
-  // ===========================================================================
-
   test("toEff then fromEff round-trips to an equal value"):
     val eff = EffIO.succeed(42)
     run(EffIO.fromEff(eff.toEff)).map(r => assertEquals(r, Right(42)))
@@ -107,10 +95,6 @@ class EffIOSuite extends CatsEffectSuite:
   test("fromEff reinterprets an Eff[IO, E, A] without recomputation"):
     val source: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](7)
     run(EffIO.fromEff(source)).map(r => assertEquals(r, Right(7)))
-
-  // ===========================================================================
-  // Constructors
-  // ===========================================================================
 
   test("succeed and fail"):
     for
@@ -238,10 +222,6 @@ class EffIOSuite extends CatsEffectSuite:
     yield
       assertEquals(r, Right(3))
       assertEquals(count, 3)
-
-  // ===========================================================================
-  // Combinators
-  // ===========================================================================
 
   test("map and flatMap operate on the success channel"):
     for
@@ -426,17 +406,9 @@ class EffIOSuite extends CatsEffectSuite:
       yield value
     run(eff).map(r => assertEquals(r, Right(99)))
 
-  // ===========================================================================
-  // Variance escape hatches
-  // ===========================================================================
-
   test("assumeError narrows the error type for trusted casts"):
     val wide: EffIO[AppError, Int] = EffIO.succeed(1)
     run(wide.assumeError[NotFound]).map(r => assertEquals(r, Right(1)))
-
-  // ===========================================================================
-  // Natural transformations
-  // ===========================================================================
 
   test("liftK lifts plain IO into the infallible EffIO context"):
     run(EffIO.liftK(IO.pure(7))).map(r => assertEquals(r, Right(7)))
@@ -444,10 +416,6 @@ class EffIOSuite extends CatsEffectSuite:
   test("widenK is the identity error-widening transformation"):
     val k = EffIO.widenK[NotFound, AppError]
     run(k(EffIO.fail(NotFound("u1")))).map(r => assertEquals(r, Left(NotFound("u1"))))
-
-  // ===========================================================================
-  // Cats-effect primitive lifts
-  // ===========================================================================
 
   test("liftRef operates a Ref in the EffIO context"):
     val eff =
@@ -504,10 +472,6 @@ class EffIOSuite extends CatsEffectSuite:
       yield v
     run(eff).map(r => assertEquals(r, Right(8)))
 
-  // ===========================================================================
-  // Typeclass instances - behavioural smoke tests (lawfulness covered separately)
-  // ===========================================================================
-
   test("the Async instance is summonable and runs a concurrent program"):
     val F = summon[cats.effect.kernel.GenConcurrent[EffIO.Of[String], Throwable]]
     val program =
@@ -522,10 +486,6 @@ class EffIOSuite extends CatsEffectSuite:
     val F = summon[cats.MonadError[EffIO.Of[String], String]]
     run(F.handleError(F.raiseError[Int]("boom"))(_.length))
       .map(r => assertEquals(r, Right(4)))
-
-  // ===========================================================================
-  // Async constructors - typed value-channel callbacks
-  // ===========================================================================
 
   test("async completes with a typed success or failure via the callback"):
     val ok = EffIO.async[AppError, Int] { cb =>

@@ -41,40 +41,23 @@ import cats.effect.std.Queue
 import cats.effect.std.Semaphore
 import cats.effect.std.Supervisor
 
-// ============================================================================
-// Cats-Effect Primitive Interop (delegates to Eff companion)
-// ============================================================================
-
 extension [F[_], A](resource: Resource[F, A])
-  /** Transforms this `Resource[F, A]` to `Resource[Eff.Of[F, E], A]`.
-    *
-    * The resulting resource operates in the `Eff` context, treating all values from `F` as
-    * successes in the typed error channel.
-    */
+  /** Transforms this `Resource[F, A]` to `Resource[Eff.Of[F, E], A]`. */
   inline def eff[E](using MonadCancel[F, Throwable]): Resource[Eff.Of[F, E], A] =
     Eff.liftResource(resource)
 
 extension [F[_], A](ref: Ref[F, A])
-  /** Returns a `Ref` operating in the `Eff` context.
-    *
-    * The transformation is pure; no effects are executed.
-    */
+  /** Returns a `Ref` operating in the `Eff` context. */
   inline def eff[E](using Functor[F]): Ref[Eff.Of[F, E], A] =
     Eff.liftRef(ref)
 
 extension [F[_], A](deferred: Deferred[F, A])
-  /** Returns a `Deferred` operating in the `Eff` context.
-    *
-    * The transformation is pure; no effects are executed.
-    */
+  /** Returns a `Deferred` operating in the `Eff` context. */
   inline def eff[E](using Functor[F]): Deferred[Eff.Of[F, E], A] =
     Eff.liftDeferred(deferred)
 
 extension [F[_], A](queue: Queue[F, A])
-  /** Returns a `Queue` operating in the `Eff` context.
-    *
-    * The transformation is pure; no effects are executed.
-    */
+  /** Returns a `Queue` operating in the `Eff` context. */
   inline def eff[E](using Functor[F]): Queue[Eff.Of[F, E], A] =
     Eff.liftQueue(queue)
 
@@ -84,34 +67,22 @@ extension [F[_]](semaphore: Semaphore[F])
     Eff.liftSemaphore(semaphore)
 
 extension [F[_]](latch: CountDownLatch[F])
-  /** Returns a `CountDownLatch` operating in the `Eff` context.
-    *
-    * The transformation is pure; no effects are executed.
-    */
+  /** Returns a `CountDownLatch` operating in the `Eff` context. */
   inline def eff[E](using Functor[F]): CountDownLatch[Eff.Of[F, E]] =
     Eff.liftLatch(latch)
 
 extension [F[_]](barrier: CyclicBarrier[F])
-  /** Returns a `CyclicBarrier` operating in the `Eff` context.
-    *
-    * The transformation is pure; no effects are executed.
-    */
+  /** Returns a `CyclicBarrier` operating in the `Eff` context. */
   inline def eff[E](using Functor[F]): CyclicBarrier[Eff.Of[F, E]] =
     Eff.liftBarrier(barrier)
 
 extension [F[_], A](cell: AtomicCell[F, A])
-  /** Returns an `AtomicCell` operating in the `Eff` context.
-    *
-    * The transformation is pure; no effects are executed.
-    */
+  /** Returns an `AtomicCell` operating in the `Eff` context. */
   inline def eff[E](using Monad[F]): AtomicCell[Eff.Of[F, E], A] =
     Eff.liftCell(cell)
 
 extension [F[_]](supervisor: Supervisor[F])
-  /** Returns a `Supervisor` operating in the `Eff` context.
-    *
-    * The transformation is pure; no effects are executed.
-    */
+  /** Returns a `Supervisor` operating in the `Eff` context. */
   inline def eff[E](using Functor[F]): Supervisor[Eff.Of[F, E]] =
     Eff.liftSupervisor(supervisor)
 
@@ -149,19 +120,10 @@ extension [F[_], A](fa: F[A])
   inline def eff(using Functor[F]): UEff[F, A] =
     Eff.liftF(fa)
 
-// ============================================================================
-// Fiber Join Extensions
-// ============================================================================
-
 extension [F[_], E, A](fiber: Fiber[Eff.Of[F, E], Throwable, A])
 
-  /** Joins the fibre and returns its result, never completing if the fibre was cancelled.
-    *
-    * If the fibre completes with a success, returns the value. If it completes with an error in the
-    * typed channel `E`, that error propagates. If the fibre was cancelled, this never completes.
-    *
-    * This differs from cats-effect's `joinWithNever` in that it requires only
-    * `GenSpawn[F, Throwable]` rather than `GenSpawn[Eff.Of[F, E], Throwable]`.
+  /** Joins the fibre: a success returns its value, a typed error `E` propagates, cancellation never
+    * completes. Unlike cats-effect's `joinWithNever`, this needs only `GenSpawn[F, Throwable]`.
     */
   inline def joinNever(using F: GenSpawn[F, Throwable]): Eff[F, E, A] =
     fiber.join.flatMap {
@@ -170,10 +132,8 @@ extension [F[_], E, A](fiber: Fiber[Eff.Of[F, E], Throwable, A])
       case Outcome.Canceled()    => Eff.lift(F.never[Either[E, A]])
     }(using F)
 
-  /** Joins the fibre and returns its result, failing with a typed error if cancelled.
-    *
-    * If the fibre completes with a success, returns the value. If it completes with an error in the
-    * typed channel `E`, that error propagates. If the fibre was cancelled, fails with `onCanceled`.
+  /** Joins the fibre: a success returns its value, a typed error `E` propagates, cancellation fails
+    * with `onCanceled`.
     */
   inline def joinOrFail(onCanceled: => E)(using F: MonadCancel[F, Throwable]): Eff[F, E, A] =
     fiber.join.flatMap {
@@ -183,17 +143,10 @@ extension [F[_], E, A](fiber: Fiber[Eff.Of[F, E], Throwable, A])
     }(using F)
 end extension
 
-// ============================================================================
-// EffIO Fiber Join Extensions
-// ============================================================================
-
 extension [E, A](fiber: Fiber[EffIO.Of[E], Throwable, A])
 
-  /** Joins the fibre and returns its result, never completing if the fibre was cancelled.
-    *
-    * If the fibre succeeds, returns the value; if it fails in the typed channel `E`, that error
-    * propagates; if it was cancelled, this never completes. The `EffIO` sibling of the
-    * `Eff`-context `joinNever`.
+  /** Joins the fibre: a success returns its value, a typed error `E` propagates, cancellation never
+    * completes. The `EffIO` sibling of the `Eff`-context `joinNever`.
     */
   inline def joinNever: EffIO[E, A] =
     fiber.join.flatMap {
@@ -202,10 +155,8 @@ extension [E, A](fiber: Fiber[EffIO.Of[E], Throwable, A])
       case Outcome.Canceled()    => EffIO.lift(IO.never[Either[E, A]])
     }
 
-  /** Joins the fibre and returns its result, failing with a typed error if cancelled.
-    *
-    * If the fibre succeeds, returns the value; if it fails in the typed channel `E`, that error
-    * propagates; if it was cancelled, fails with `onCanceled`.
+  /** Joins the fibre: a success returns its value, a typed error `E` propagates, cancellation fails
+    * with `onCanceled`.
     */
   inline def joinOrFail(onCanceled: => E): EffIO[E, A] =
     fiber.join.flatMap {
@@ -214,10 +165,6 @@ extension [E, A](fiber: Fiber[EffIO.Of[E], Throwable, A])
       case Outcome.Canceled()    => EffIO.fail(onCanceled)
     }
 end extension
-
-// ============================================================================
-// EffIO Lifting Syntax (delegates to the EffIO companion)
-// ============================================================================
 
 extension [A](io: IO[A])
   /** Captures throwable failures in `IO` into [[boilerplate.effect.EffIO EffIO]]. */

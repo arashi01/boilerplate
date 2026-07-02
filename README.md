@@ -635,11 +635,7 @@ val concurrent: Eff[IO, AppError, User] = for
   ref    <- C.ref(0)
   _      <- ref.update(_ + 1)
   fiber  <- workflow.start
-  result <- fiber.join.flatMap {
-              case Outcome.Succeeded(fa) => fa
-              case Outcome.Errored(e)    => Eff.liftF(IO.raiseError(e))
-              case Outcome.Canceled()    => Eff.fail(Cancelled)
-            }
+  result <- fiber.joinOrFail(Cancelled)
 yield result
 
 // Racing, parallel composition, and timeout

@@ -33,10 +33,6 @@ import boilerplate.*
   */
 class CrossModuleUnwrapSuite extends FunSuite:
 
-  // -------------------------------------------------------------------------
-  // unwrap: Extension Method Extraction Across Module Boundary
-  // -------------------------------------------------------------------------
-
   test("unwrap extension resolves concrete type for String-based opaque"):
     import NonEmptyString.given
     val wrapped = NonEmptyString.fromUnsafe("hello")
@@ -61,10 +57,6 @@ class CrossModuleUnwrapSuite extends FunSuite:
     val result: Double = wrapped.unwrap
     assertEquals(result, 100.0)
 
-  // -------------------------------------------------------------------------
-  // as: Extension Method Safe Construction Across Module Boundary
-  // -------------------------------------------------------------------------
-
   test("as extension works across module boundary"):
     import NonEmptyString.given
     val result: Either[IllegalArgumentException, NonEmptyString] = "hello".as[NonEmptyString]
@@ -80,10 +72,6 @@ class CrossModuleUnwrapSuite extends FunSuite:
     val result: Either[IllegalArgumentException, PositiveInt] = 42.as[PositiveInt]
     assert(result.isRight)
 
-  // -------------------------------------------------------------------------
-  // asUnsafe: Extension Method Throwing Construction Across Module Boundary
-  // -------------------------------------------------------------------------
-
   test("asUnsafe extension works across module boundary"):
     import NonEmptyString.given
     val result: NonEmptyString = "hello".asUnsafe[NonEmptyString]
@@ -94,10 +82,6 @@ class CrossModuleUnwrapSuite extends FunSuite:
     import NonEmptyString.given
     intercept[IllegalArgumentException]:
       "".asUnsafe[NonEmptyString]
-
-  // -------------------------------------------------------------------------
-  // Round-trip: construct + unwrap Across Module Boundary
-  // -------------------------------------------------------------------------
 
   test("from + unwrap round-trips across module boundary"):
     import Email.given
@@ -111,10 +95,6 @@ class CrossModuleUnwrapSuite extends FunSuite:
     val constructed: PositiveInt = original.asUnsafe[PositiveInt]
     val extracted: Int = constructed.unwrap
     assertEquals(extracted, original)
-
-  // -------------------------------------------------------------------------
-  // SecretToken: Security-Sensitive Across Module Boundary
-  // -------------------------------------------------------------------------
 
   test("SecretToken extensions work across module boundary"):
     import SecretToken.given

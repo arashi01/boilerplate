@@ -78,14 +78,8 @@ object EffIO extends EffIOInstances:
   /** Partially applied alias enabling higher-kinded usage of [[boilerplate.effect.EffIO EffIO]]. */
   type Of[E] = [A] =>> EffIO[E, A]
 
-  // ===========================================================================
-  // Conversions to and from Eff
-  // ===========================================================================
-
   /** Views an `Eff[IO, E, A]` as an `EffIO[E, A]`. Identity at runtime; O(0). */
   inline def fromEff[E, A](eff: Eff[IO, E, A]): EffIO[E, A] = Eff.unwrapUnsafe(eff)
-
-  // --- Pure constructors ---
 
   /** Creates a successful computation. */
   inline def succeed[A](a: A): UEffIO[A] = IO.pure(Right(a))
@@ -108,8 +102,6 @@ object EffIO extends EffIOInstances:
 
   /** Canonical successful unit value, interned and shared across call sites. */
   val unit: UEffIO[Unit] = IO.pure(Right(()))
-
-  // --- Effectful constructors ---
 
   /** Wraps an existing `IO[Either[E, A]]` without recomputation. */
   inline def lift[E, A](io: IO[Either[E, A]]): EffIO[E, A] = io
@@ -134,8 +126,6 @@ object EffIO extends EffIOInstances:
       a => IO.pure(Right(a))
     )
 
-  // --- Suspended constructors ---
-
   /** Suspends evaluation until demanded. */
   inline def defer[E, A](thunk: => EffIO[E, A]): EffIO[E, A] = IO.defer(thunk)
 
@@ -152,8 +142,6 @@ object EffIO extends EffIOInstances:
     */
   inline def suspend[A](thunk: => A): UEffIO[A] = IO.delay(thunk).map(Right(_))
 
-  // --- Temporal constructors ---
-
   /** Suspends execution for the specified duration. */
   inline def sleep(duration: FiniteDuration): UEffIO[Unit] = liftF(IO.sleep(duration))
 
@@ -163,8 +151,6 @@ object EffIO extends EffIOInstances:
   /** Returns the current wall-clock time as a `FiniteDuration` since the epoch. */
   inline def realTime: UEffIO[FiniteDuration] = liftF(IO.realTime)
 
-  // --- Primitive constructors ---
-
   /** Creates a new `Ref` initialised with `a`, operating in the `EffIO` context. */
   inline def ref[E, A](a: A): EffIO[E, Ref[Of[E], A]] =
     liftF(IO.ref(a).map(_.mapK(new LiftK[E])))
@@ -172,8 +158,6 @@ object EffIO extends EffIOInstances:
   /** Creates an empty `Deferred` operating in the `EffIO` context. */
   inline def deferred[E, A]: EffIO[E, Deferred[Of[E], A]] =
     liftF(IO.deferred[A].map(_.mapK(new LiftK[E])))
-
-  // --- Cancellation constructors ---
 
   /** Introduces a self-cancellation point, immediately cancelling the current fibre. */
   val canceled: UEffIO[Unit] = liftF(IO.canceled)
@@ -185,8 +169,6 @@ object EffIO extends EffIOInstances:
     * that should never produce a value on their own.
     */
   val never: UEffIO[Nothing] = IO.never
-
-  // --- Future interop ---
 
   /** Converts a `Future` into an `EffIO`, translating failures via `ifFailure`.
     *
@@ -200,8 +182,6 @@ object EffIO extends EffIOInstances:
     */
   inline def fromFuture[E, A](future: IO[Future[A]])(pf: PartialFunction[Throwable, E]): EffIO[E, A] =
     fromEff(Eff.fromFuture[IO, E, A](future)(pf))
-
-  // --- Async interop ---
 
   /** Suspends an asynchronous callback-driven computation completing with a typed `Either[E, A]`.
     *
@@ -218,8 +198,6 @@ object EffIO extends EffIOInstances:
     */
   inline def asyncAttempt[E, A](ifDefect: Throwable => E)(k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]): EffIO[E, A] =
     fromEff(Eff.asyncAttempt[IO, E, A](ifDefect)(k))
-
-  // --- Conditional execution ---
 
   /** Executes `eff` only when `cond` is true, otherwise succeeds with `Unit`. */
   inline def when[E](cond: Boolean)(eff: => EffIO[E, Unit]): EffIO[E, Unit] =
@@ -243,8 +221,6 @@ object EffIO extends EffIOInstances:
   inline def cond[E, A](pred: Boolean, ifTrue: => A, ifFalse: => E): EffIO[E, A] =
     if pred then succeed(ifTrue) else fail(ifFalse)
 
-  // --- Collection operations ---
-
   /** Traverses a collection, short-circuiting on first error. */
   inline def traverse[E, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, List[B]] =
     fromEff(Eff.traverse[IO, E, A, B](as)(a => f(a).toEff))
@@ -260,8 +236,6 @@ object EffIO extends EffIOInstances:
   /** Sequences a collection of effects in parallel. */
   inline def parSequence[E, A](effs: Iterable[EffIO[E, A]]): EffIO[E, List[A]] =
     parTraverse(effs)(identity)
-
-  // --- Retry utilities ---
 
   /** Retries the effect up to `maxRetries` times on failure. */
   inline def retry[E, A](eff: EffIO[E, A], maxRetries: Int): EffIO[E, A] =
@@ -281,10 +255,6 @@ object EffIO extends EffIOInstances:
     maxDelay: Option[FiniteDuration]
   ): EffIO[E, A] =
     fromEff(Eff.retryWithBackoff(eff.toEff, maxRetries, initialDelay, maxDelay))
-
-  // ===========================================================================
-  // Combinators
-  // ===========================================================================
 
   extension [E, A](self: EffIO[E, A])
     /** Views this effect as an invariant `Eff[IO, E, A]`. Identity at runtime; O(0). */
@@ -429,8 +399,6 @@ object EffIO extends EffIOInstances:
       self.either.asInstanceOf[IO[Either[E, B]]]
     // scalafix:on
 
-    // --- Composition operators ---
-
     /** Sequences this computation with `that`, discarding the result of `this`. */
     @targetName("productR")
     inline def *>[B](that: => EffIO[E, B]): EffIO[E, B] = fromEff(self.toEff.productR(that.toEff))
@@ -461,8 +429,6 @@ object EffIO extends EffIOInstances:
     /** Replaces the success value with `b`. */
     inline def as[B](b: B): EffIO[E, B] = fromEff(self.toEff.as(b))
 
-    // --- Resource and bracket combinators ---
-
     /** Acquires a resource, uses it, and ensures release even on failure. */
     inline def bracket[B](use: A => EffIO[E, B])(release: A => IO[Unit]): EffIO[E, B] =
       fromEff(self.toEff.bracket(a => use(a).toEff)(release))
@@ -472,8 +438,6 @@ object EffIO extends EffIOInstances:
       release: (A, Outcome[IO, Throwable, Either[E, B]]) => IO[Unit]
     ): EffIO[E, B] =
       fromEff(self.toEff.bracketCase(a => use(a).toEff)(release))
-
-    // --- Concurrency combinators ---
 
     /** Starts this computation as a fibre, returning immediately. */
     inline def start: EffIO[E, Fiber[Of[E], Throwable, A]] =
@@ -519,8 +483,6 @@ object EffIO extends EffIOInstances:
     inline def guarantee(fin: EffIO[E, Unit]): EffIO[E, A] =
       fromEff(self.toEff.guarantee(fin.toEff))
 
-    // --- Temporal combinators ---
-
     /** Delays execution of this computation by `duration`. */
     inline def delayBy(duration: FiniteDuration): EffIO[E, A] =
       fromEff(self.toEff.delayBy(duration))
@@ -540,10 +502,6 @@ object EffIO extends EffIOInstances:
     inline def timeoutTo[B >: A](duration: FiniteDuration, fallback: => EffIO[E, B]): EffIO[E, B] =
       fromEff(self.toEff.timeoutTo(duration, fallback.toEff))
   end extension
-
-  // ===========================================================================
-  // Natural transformations
-  // ===========================================================================
 
   /** Error-widening natural transformation. Identity at runtime - `EffIO` is covariant in `E`.
     *
@@ -566,10 +524,6 @@ object EffIO extends EffIOInstances:
   /** Lifts `IO` into [[boilerplate.effect.EffIO EffIO]] as an infallible computation. */
   private[effect] class LiftK[E] @publicInBinary private[EffIO] () extends FunctionK[IO, Of[E]]:
     def apply[A](io: IO[A]): EffIO[E, A] = liftF(io)
-
-  // ===========================================================================
-  // Cats-effect primitive lifts
-  // ===========================================================================
 
   /** Transforms a `Resource[IO, A]` to `Resource[EffIO.Of[E], A]`. */
   inline def liftResource[E, A](resource: Resource[IO, A]): Resource[Of[E], A] =
@@ -650,10 +604,6 @@ object EffIO extends EffIOInstances:
     def evalUpdateAndGet(f: A => EffIO[E, A]): EffIO[E, A] =
       evalModify(a => fromEff(f(a).toEff.map(updated => (updated, updated))))
   end AtomicCellImpl
-
-  // ===========================================================================
-  // Type class instances
-  // ===========================================================================
 
   // scalafix:off DisableSyntax.asInstanceOf
   /** Canonical `MonadError` for the typed error channel `E`. */

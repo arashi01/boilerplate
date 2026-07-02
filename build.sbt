@@ -102,17 +102,12 @@ val `boilerplate-aggregate` =
     .aggregate(`boilerplate-effect-laws`)
 
 def baseCompilerOptions = List(
-  // Language features
   "-language:experimental.macros",
   "-language:higherKinds",
   "-language:implicitConversions",
   "-language:strictEquality",
-
-  // Kind projector / macros
   "-Xkind-projector",
   "-Xmax-inlines:64",
-
-  // Conformance flags
   "-unchecked",
   "-deprecation",
   "-feature",

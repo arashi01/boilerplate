@@ -43,10 +43,6 @@ import munit.CatsEffectSuite
   */
 class OverloadDisambiguationSuite extends CatsEffectSuite:
 
-  // ===========================================================================
-  // FUNCTOR OPERATIONS - Eff extensions selected (no cats collision on Eff type)
-  // ===========================================================================
-
   test("map on Eff selects Eff extension over Functor syntax"):
     val eff: Eff[IO, String, Int] = Eff.succeed(21)
 
@@ -85,10 +81,6 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
     yield
       assertEquals(r, Right("done"))
       assertEquals(c, Right("done"))
-
-  // ===========================================================================
-  // FLATMAP OPERATIONS - Eff extensions selected
-  // ===========================================================================
 
   test("flatMap on Eff selects Eff extension over FlatMap syntax"):
     val eff: Eff[IO, String, Int] = Eff.succeed(21)
@@ -159,10 +151,6 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(r, Right(42))
       assertEquals(c, Right(42))
       assertEquals(observed, Some(42))
-
-  // ===========================================================================
-  // UNIQUE NAMES - No collision possible (our methods only)
-  // ===========================================================================
 
   test("valueOr on Eff is unique to boilerplate-effect (total error recovery)"):
     val eff: Eff[IO, String, Int] = Eff.fail("error")
@@ -296,10 +284,6 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(r, Left(42))
       assertEquals(c, Left(42))
 
-  // ===========================================================================
-  // EITHERT-DERIVED - Eff extensions selected (different type from EitherT)
-  // ===========================================================================
-
   test("semiflatMap on Eff selects Eff extension (not EitherT)"):
     val eff: Eff[IO, String, Int] = Eff.succeed(21)
 
@@ -352,10 +336,6 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(r, "error: boom")
       assertEquals(c, "error: boom")
 
-  // ===========================================================================
-  // MONADCANCEL - Eff extensions selected
-  // ===========================================================================
-
   test("bracket on Eff selects Eff extension (not MonadCancel)"):
     var released = false // scalafix:ok DisableSyntax.var
     val acquire: Eff[IO, String, Int] = Eff.succeed(42)
@@ -390,10 +370,6 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(84))
       assert(outcome.exists(_.isSuccess))
 
-  // ===========================================================================
-  // TEMPORAL - Eff extension selected
-  // ===========================================================================
-
   test("timeout on Eff selects Eff extension (not Temporal)"):
     val eff: Eff[IO, String, Int] = Eff.succeed(42)
 
@@ -406,10 +382,6 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
     yield
       assertEquals(r, Right(42))
       assertEquals(c, Right(42))
-
-  // ===========================================================================
-  // TRAVERSE - Eff companion methods (no extension collision)
-  // ===========================================================================
 
   test("Eff.traverse is unique to boilerplate-effect"):
     val items = List(1, 2, 3)
@@ -445,14 +417,9 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
     for r <- result.either
     yield assertEquals(r, Right(List(1, 2, 3)))
 
-  // ===========================================================================
-  // ORELSE - cats ApplicativeError wins when error types match
-  // ===========================================================================
-
-  // NOTE: orElse was intentionally NOT added to Eff API because it collides
-  // with cats ApplicativeError.orElse which requires same error type.
-  // We use `alt` instead which is unique to our API and allows error type change.
-  // See alt tests above (lines 359-370).
+  // orElse is intentionally absent from the Eff API: it would collide with cats
+  // ApplicativeError.orElse (which requires the same error type). `alt` is the unique equivalent,
+  // and allows the error type to change.
 
   test("alt is our fallback method - avoids orElse collision with cats"):
     val eff: Eff[IO, String, Int] = Eff.fail("error")
@@ -463,10 +430,6 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
 
     for r <- result.either
     yield assertEquals(r, Right(42))
-
-  // ===========================================================================
-  // CATS IO OPERATIONS - verify cats methods on IO unaffected by Eff syntax
-  // ===========================================================================
 
   test("recover on IO selects cats ApplicativeError when Eff syntax in scope"):
     val io: IO[Int] = IO.raiseError(new RuntimeException("boom"))

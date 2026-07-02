@@ -27,8 +27,6 @@ import boilerplate.nullable.*
 // scalafix:off DisableSyntax.null
 class NullableTests extends FunSuite:
 
-  // --- option ---
-
   test("option: returns Some for non-null value") {
     val value: String | Null = "hello"
     assertEquals(value.option, Some("hello"))
@@ -45,8 +43,6 @@ class NullableTests extends FunSuite:
     assertEquals(("": String | Null).option, Some(""))
   }
 
-  // --- either ---
-
   test("either: returns Right for non-null value") {
     val value: String | Null = "hello"
     assertEquals(value.either("error"), Right("hello"))
@@ -56,8 +52,6 @@ class NullableTests extends FunSuite:
     val value: String | Null = null
     assertEquals(value.either("error"), Left("error"))
   }
-
-  // --- getOrElse ---
 
   test("getOrElse: returns value for non-null") {
     val value: String | Null = "hello"
@@ -82,8 +76,6 @@ class NullableTests extends FunSuite:
     assertEquals(("": String | Null).getOrElse("default"), "")
   }
 
-  // --- unsafe ---
-
   test("unsafe: returns value for non-null") {
     val value: String | Null = "hello"
     assertEquals(value.unsafe, "hello")
@@ -99,8 +91,6 @@ class NullableTests extends FunSuite:
     assertEquals((false: Boolean | Null).unsafe, false)
     assertEquals(("": String | Null).unsafe, "")
   }
-
-  // --- unsafe(msg) ---
 
   test("unsafe(msg): returns value for non-null") {
     val value: String | Null = "hello"
@@ -118,8 +108,6 @@ class NullableTests extends FunSuite:
     assertEquals((false: Boolean | Null).unsafe("nope"), false)
     assertEquals(("": String | Null).unsafe("nope"), "")
   }
-
-  // --- fold ---
 
   test("fold: applies transform to non-null value") {
     val value: String | Null = "hello"
@@ -151,8 +139,6 @@ class NullableTests extends FunSuite:
     assertEquals(("": String | Null).fold("default")(identity), "")
   }
 
-  // --- mapOpt ---
-
   test("mapOpt: applies function to non-null value") {
     val value: String | Null = "hello"
     assertEquals(value.mapOpt(_.length), Some(5))
@@ -162,8 +148,6 @@ class NullableTests extends FunSuite:
     val value: String | Null = null
     assertEquals(value.mapOpt(_.length), None)
   }
-
-  // --- flatMapOpt ---
 
   test("flatMapOpt: applies function returning Some") {
     val value: String | Null = "hello"
@@ -179,8 +163,6 @@ class NullableTests extends FunSuite:
     val value: String | Null = null
     assertEquals(value.flatMapOpt(s => Some(s.length)), None)
   }
-
-  // --- flattenNull ---
 
   test("flattenNull: returns Some for Some(non-null)") {
     val opt: Option[String | Null] = Some("hello")
@@ -203,8 +185,6 @@ class NullableTests extends FunSuite:
     assertEquals(Some("": String | Null).flattenNull, Some(""))
   }
 
-  // --- mapNull ---
-
   test("mapNull: applies function to Some(non-null)") {
     val opt: Option[String | Null] = Some("hello")
     assertEquals(opt.mapNull(_.length), Some(5))
@@ -219,8 +199,6 @@ class NullableTests extends FunSuite:
     val opt: Option[String | Null] = None
     assertEquals(opt.mapNull(_.length), None)
   }
-
-  // --- flatMapNull ---
 
   test("flatMapNull: applies function returning Some to Some(non-null)") {
     val opt: Option[String | Null] = Some("hello")
@@ -242,8 +220,6 @@ class NullableTests extends FunSuite:
     assertEquals(opt.flatMapNull(s => Some(s.length)), None)
   }
 
-  // --- Either flattenNull ---
-
   test("Either flattenNull: returns Right for Right(non-null)") {
     val either: Either[String, String | Null] = Right("hello")
     assertEquals(either.flattenNull("error"), Right("hello"))
@@ -259,8 +235,6 @@ class NullableTests extends FunSuite:
     assertEquals(either.flattenNull("error"), Left("original"))
   }
 
-  // --- Either mapNull ---
-
   test("Either mapNull: applies function to Right(non-null)") {
     val either: Either[String, String | Null] = Right("hello")
     assertEquals(either.mapNull("error")(_.length), Right(5))
@@ -275,8 +249,6 @@ class NullableTests extends FunSuite:
     val either: Either[String, String | Null] = Left("original")
     assertEquals(either.mapNull("error")(_.length), Left("original"))
   }
-
-  // --- Either flatMapNull ---
 
   test("Either flatMapNull: applies function returning Right to Right(non-null)") {
     val either: Either[String, String | Null] = Right("hello")
