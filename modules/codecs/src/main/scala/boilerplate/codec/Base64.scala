@@ -57,7 +57,8 @@ object Base64:
     val normalized = if urlSafe then fromUrlSafe(input) else input
     PlatformBase64.decode(normalized)
 
-  // Hot path: single-pass character mapping with padding removal.
+  // Single pass over a preallocated array sized to drop padding; avoids the intermediate
+  // collection String.map/filter would allocate.
   private def toUrlSafe(s: String): String =
     val len = s.length
     val end =
@@ -75,7 +76,8 @@ object Base64:
     new String(chars)
   end toUrlSafe
 
-  // Hot path: single-pass character mapping with padding restoration.
+  // Single pass over a preallocated padded array; avoids the intermediate collection String.map
+  // would allocate.
   private def fromUrlSafe(s: String): String =
     val pad = (4 - s.length % 4) % 4
     val chars = new Array[Char](s.length + pad)

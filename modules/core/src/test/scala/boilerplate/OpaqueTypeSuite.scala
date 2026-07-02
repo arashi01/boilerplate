@@ -22,10 +22,6 @@ package boilerplate
 
 import munit.FunSuite
 
-// ============================================================================
-// Test Fixtures - Opaque Types at Package Level for Proper Given Resolution
-// ============================================================================
-
 /** Simple string-based opaque type: must be non-empty. Opts in to equality. */
 opaque type NonEmptyString = String
 
@@ -74,10 +70,6 @@ object Email extends OpaqueType[Email, String], OpaqueType.Eq[Email]:
     if s.contains("@") then None
     else Some(new EmailError(s"Invalid email format: $s"))
 
-// ============================================================================
-// Security-Sensitive Fixture - Intentionally NO Eq mixin
-// ============================================================================
-
 /** Secret token: must be non-empty. Deliberately omits OpaqueType.Eq to forbid ==. */
 opaque type SecretToken = String
 
@@ -91,10 +83,6 @@ object SecretToken extends OpaqueType[SecretToken, String]:
   protected inline def validate(s: String): Option[Error] =
     if s.nonEmpty then None
     else Some(new IllegalArgumentException("Token must be non-empty"))
-
-// ============================================================================
-// Phantom Type Fixtures - Test OpaqueType with Phantom Type Parameters
-// ============================================================================
 
 /** Marker traits for type-level unit tagging. */
 sealed trait Metres
@@ -129,10 +117,6 @@ object Distance:
       else Some(new IllegalArgumentException(s"Distance cannot be negative: $d"))
 end Distance
 
-// ============================================================================
-// Compile-Time Validated Fixture - Overrides apply with inline if + error
-// ============================================================================
-
 /** Positive integer with compile-time validation for literals. */
 opaque type CheckedPositive = Int
 
@@ -152,10 +136,6 @@ object CheckedPositive extends OpaqueType[CheckedPositive, Int], OpaqueType.Eq[C
 end CheckedPositive
 
 class OpaqueTypeSuite extends FunSuite:
-
-  // -------------------------------------------------------------------------
-  // from: Safe Construction
-  // -------------------------------------------------------------------------
 
   test("from returns Right for valid input"):
     assertEquals(NonEmptyString.from("hello"), Right(NonEmptyString.wrap("hello")))
@@ -183,10 +163,6 @@ class OpaqueTypeSuite extends FunSuite:
     val result = NonEmptyString.from("test")
     assertEquals(result.map(NonEmptyString.unwrap), Right("test"))
 
-  // -------------------------------------------------------------------------
-  // fromUnsafe: Throwing Construction
-  // -------------------------------------------------------------------------
-
   test("fromUnsafe returns value for valid input"):
     assertEquals(NonEmptyString.unwrap(NonEmptyString.fromUnsafe("hello")), "hello")
     assertEquals(PositiveInt.unwrap(PositiveInt.fromUnsafe(42)), 42)
@@ -204,10 +180,6 @@ class OpaqueTypeSuite extends FunSuite:
     val ex = intercept[EmailError]:
       Email.fromUnsafe("not-an-email")
     assert(ex.getMessage.contains("Invalid email format"))
-
-  // -------------------------------------------------------------------------
-  // as: Extension Method Safe Construction
-  // -------------------------------------------------------------------------
 
   test("as extension returns Right for valid input"):
     import NonEmptyString.given
@@ -228,10 +200,6 @@ class OpaqueTypeSuite extends FunSuite:
       case Left(_: EmailError) => () // expected
       case other               => fail(s"Expected Left(EmailError), got: $other")
 
-  // -------------------------------------------------------------------------
-  // asUnsafe: Extension Method Throwing Construction
-  // -------------------------------------------------------------------------
-
   test("asUnsafe extension returns value for valid input"):
     import NonEmptyString.given
     assertEquals(NonEmptyString.unwrap("hello".asUnsafe[NonEmptyString]), "hello")
@@ -245,10 +213,6 @@ class OpaqueTypeSuite extends FunSuite:
     import Email.given
     intercept[EmailError]:
       "invalid".asUnsafe[Email]
-
-  // -------------------------------------------------------------------------
-  // unwrap: Extension Method Extraction
-  // -------------------------------------------------------------------------
 
   test("unwrap extension extracts underlying value"):
     import NonEmptyString.given
@@ -271,10 +235,6 @@ class OpaqueTypeSuite extends FunSuite:
     val metres = Distance.Metres.wrap(100.0)
     assertEquals(metres.unwrap, 100.0)
 
-  // -------------------------------------------------------------------------
-  // wrap/unwrap: Low-Level Operations
-  // -------------------------------------------------------------------------
-
   test("wrap creates opaque type without validation"):
     // wrap bypasses validation - this is intentional for trusted contexts
     val wrapped = NonEmptyString.wrap("")
@@ -288,25 +248,16 @@ class OpaqueTypeSuite extends FunSuite:
     val original = "hello"
     assertEquals(NonEmptyString.unwrap(NonEmptyString.wrap(original)), original)
 
-  // -------------------------------------------------------------------------
-  // OpaqueType.apply: Summoning
-  // -------------------------------------------------------------------------
-
   test("OpaqueType.apply summons instance"):
     import NonEmptyString.given
     val instance = OpaqueType[NonEmptyString, String]
-    // Verify summoned instance is the same singleton
     assert(instance eq NonEmptyString)
 
   test("OpaqueType.apply returns same instance"):
     import NonEmptyString.given
     val a = OpaqueType[NonEmptyString, String]
     val b = OpaqueType[NonEmptyString, String]
-    assert(a eq b) // Same singleton instance
-
-  // -------------------------------------------------------------------------
-  // CanEqual: Opt-In Multiversal Equality via OpaqueType.Eq
-  // -------------------------------------------------------------------------
+    assert(a eq b)
 
   test("CanEqual allows same-type comparison when Eq is mixed in"):
     val a = NonEmptyString.wrap("hello")
@@ -318,11 +269,7 @@ class OpaqueTypeSuite extends FunSuite:
     val b = NonEmptyString.wrap("world")
     assertNotEquals(a, b)
 
-  // Note: Cross-type comparisons (NonEmptyString vs Email) are compile errors
-  // due to CanEqual - we don't test compile errors in runtime tests
-
   test("CanEqual is absent when Eq is omitted - compile error on =="):
-    // SecretToken does NOT extend OpaqueType.Eq, so == should be a compile error
     val errors = scala.compiletime.testing.typeCheckErrors:
       """
       val a: boilerplate.SecretToken = boilerplate.SecretToken.wrap("abc")
@@ -330,10 +277,6 @@ class OpaqueTypeSuite extends FunSuite:
       a == b
       """
     assert(errors.nonEmpty, "Expected compile error when comparing SecretTokens with ==")
-
-  // -------------------------------------------------------------------------
-  // SecretToken: Security-Sensitive (No Eq)
-  // -------------------------------------------------------------------------
 
   test("SecretToken from succeeds for valid input"):
     assert(SecretToken.from("my-secret").isRight)
@@ -351,10 +294,6 @@ class OpaqueTypeSuite extends FunSuite:
     assert("".as[SecretToken].isLeft)
     assertEquals("valid-token".asUnsafe[SecretToken].unwrap, "valid-token")
 
-  // -------------------------------------------------------------------------
-  // Type Member: Error <: Throwable Constraint
-  // -------------------------------------------------------------------------
-
   test("Error type member is accessible"):
     // This is a compile-time check - if Error wasn't properly constrained,
     // we couldn't use it with intercept or catch
@@ -370,10 +309,6 @@ class OpaqueTypeSuite extends FunSuite:
     import Email.given
     val result: Either[EmailError, Email] = "test@example.com".as[Email]
     assert(result.isRight)
-
-  // -------------------------------------------------------------------------
-  // Phantom Type: Distance[U] with Unit Tags
-  // -------------------------------------------------------------------------
 
   test("phantom type from succeeds for valid input"):
     assertEquals(Distance.Metres.from(100.0), Right(Distance.Metres.wrap(100.0)))
@@ -401,12 +336,8 @@ class OpaqueTypeSuite extends FunSuite:
     assertEquals(Distance.Feet.unwrap(d), 50.0)
 
   test("phantom types are distinct at compile time"):
-    // Metres and Feet are type-incompatible
     val metres: Distance[Metres] = Distance.Metres.wrap(100.0)
     val feet: Distance[Feet] = Distance.Feet.wrap(328.0)
-    // The following would be a compile error:
-    // assertEquals(metres, feet)
-    // We just verify they exist with correct types
     assertEquals(Distance.Metres.unwrap(metres), 100.0)
     assertEquals(Distance.Feet.unwrap(feet), 328.0)
 
@@ -415,10 +346,6 @@ class OpaqueTypeSuite extends FunSuite:
     val m2 = Distance.Metres.wrap(100.0)
     assertEquals(m1, m2)
     // Comparing Distance[Metres] to Distance[Feet] is a compile error
-
-  // -------------------------------------------------------------------------
-  // Error Messages: Content Verification
-  // -------------------------------------------------------------------------
 
   test("error message contains relevant information"):
     PositiveInt.from(-42) match
@@ -429,10 +356,6 @@ class OpaqueTypeSuite extends FunSuite:
     Email.from("notvalid") match
       case Left(e)  => assert(e.getMessage.contains("notvalid"))
       case Right(_) => fail("Expected Left")
-
-  // -------------------------------------------------------------------------
-  // Edge Cases
-  // -------------------------------------------------------------------------
 
   test("whitespace-only string is valid for NonEmptyString"):
     // Design decision: NonEmptyString checks nonEmpty, not non-blank
@@ -454,10 +377,6 @@ class OpaqueTypeSuite extends FunSuite:
   test("NaN comparison for Distance"):
     // NaN >= 0.0 is false, so NaN should be invalid
     assert(Distance.Metres.from(Double.NaN).isLeft)
-
-  // -------------------------------------------------------------------------
-  // Chained Validation Patterns
-  // -------------------------------------------------------------------------
 
   test("for-comprehension chains multiple validated types"):
     val result = for
@@ -485,10 +404,6 @@ class OpaqueTypeSuite extends FunSuite:
     assert(result.isLeft)
     assert(!evaluatedEmail, "Email validation should not have been evaluated")
 
-  // -------------------------------------------------------------------------
-  // apply: Direct Construction (Default Delegates to fromUnsafe)
-  // -------------------------------------------------------------------------
-
   test("apply succeeds for valid input"):
     assertEquals(NonEmptyString.unwrap(NonEmptyString("hello")), "hello")
     assertEquals(PositiveInt.unwrap(PositiveInt(42)), 42)
@@ -500,10 +415,6 @@ class OpaqueTypeSuite extends FunSuite:
   test("apply throws custom error type"):
     intercept[EmailError]:
       Email("not-an-email")
-
-  // -------------------------------------------------------------------------
-  // apply: Compile-Time Validated Override (CheckedPositive)
-  // -------------------------------------------------------------------------
 
   test("apply with compile-time validated override succeeds for valid literal"):
     val p = CheckedPositive(42)
@@ -517,10 +428,6 @@ class OpaqueTypeSuite extends FunSuite:
   test("apply compile-time error for negative literal"):
     val errors = scala.compiletime.testing.typeCheckErrors("boilerplate.CheckedPositive(-1)")
     assert(errors.nonEmpty, "Expected compile-time error for CheckedPositive(-1)")
-
-  // -------------------------------------------------------------------------
-  // const: Extension Method for Compile-Time Construction
-  // -------------------------------------------------------------------------
 
   test("const extension succeeds for valid input"):
     import NonEmptyString.given

@@ -43,9 +43,8 @@ class EffIOSuite extends CatsEffectSuite:
   final case class NotFound(id: String) extends AppError
   final case class Invalid(reason: String) extends AppError
 
-  // ===========================================================================
-  // Type aliases
-  // ===========================================================================
+  // A library-style error on a distinct branch, for the union-error narrowing tests.
+  final case class IoErr(code: Int) derives CanEqual
 
   test("UEffIO is the infallible effect"):
     val eff: UEffIO[Int] = EffIO.succeed(42)
@@ -55,10 +54,6 @@ class EffIOSuite extends CatsEffectSuite:
     val boom = RuntimeException("boom")
     val eff: TEffIO[Int] = EffIO.fail(boom)
     run(eff).map(r => assertEquals(r, Left(boom)))
-
-  // ===========================================================================
-  // Covariance - the defining feature
-  // ===========================================================================
 
   test("a narrow error widens to a broad error with no call-site method"):
     val narrow: EffIO[NotFound, Int] = EffIO.fail(NotFound("u1"))
@@ -93,10 +88,6 @@ class EffIOSuite extends CatsEffectSuite:
       yield base + found
     run(workflow).map(r => assertEquals(r, Right(101)))
 
-  // ===========================================================================
-  // Conversions to and from Eff
-  // ===========================================================================
-
   test("toEff then fromEff round-trips to an equal value"):
     val eff = EffIO.succeed(42)
     run(EffIO.fromEff(eff.toEff)).map(r => assertEquals(r, Right(42)))
@@ -104,10 +95,6 @@ class EffIOSuite extends CatsEffectSuite:
   test("fromEff reinterprets an Eff[IO, E, A] without recomputation"):
     val source: Eff[IO, String, Int] = Eff.succeed[IO, String, Int](7)
     run(EffIO.fromEff(source)).map(r => assertEquals(r, Right(7)))
-
-  // ===========================================================================
-  // Constructors
-  // ===========================================================================
 
   test("succeed and fail"):
     for
@@ -236,10 +223,6 @@ class EffIOSuite extends CatsEffectSuite:
       assertEquals(r, Right(3))
       assertEquals(count, 3)
 
-  // ===========================================================================
-  // Combinators
-  // ===========================================================================
-
   test("map and flatMap operate on the success channel"):
     for
       m <- run(EffIO.succeed(10).map(_ + 1))
@@ -266,6 +249,36 @@ class EffIOSuite extends CatsEffectSuite:
     yield
       assertEquals(m, Left("KNOWN"))
       assertEquals(u, Left("other"))
+
+  test("catchSome recovers matched errors, widening to E2"):
+    run(EffIO.fail[String]("known").catchSome { case "known" => EffIO.succeed(1) })
+      .map(r => assertEquals(r, Right(1)))
+
+  test("catchSome passes unmatched errors through"):
+    run(EffIO.fail[String]("other").catchSome { case "known" => EffIO.succeed(1) })
+      .map(r => assertEquals(r, Left("other")))
+
+  // catchOnly: handle one arm of a union error, keep the residual typed. The `EffIO[IoErr, Int]`
+  // ascriptions are load-bearing - they assert the residual is narrowed at compile time.
+  test("catchOnly recovers the handled arm and narrows the residual"):
+    val onApp: EffIO[IoErr | AppError, Int] = EffIO.fail(NotFound("u1"))
+    val narrowed: EffIO[IoErr, Int] = onApp.catchOnly((_: AppError) => EffIO.succeed(-1))
+    run(narrowed).map(r => assertEquals(r, Right(-1)))
+
+  test("catchOnly leaves the residual arm propagating"):
+    val onIo: EffIO[IoErr | AppError, Int] = EffIO.fail(IoErr(500))
+    val narrowed: EffIO[IoErr, Int] = onIo.catchOnly((_: AppError) => EffIO.succeed(-1))
+    run(narrowed).map(r => assertEquals(r, Left(IoErr(500))))
+
+  test("catchOnly is a no-op on success"):
+    val onOk: EffIO[IoErr | AppError, Int] = EffIO.succeed(42)
+    val narrowed: EffIO[IoErr, Int] = onOk.catchOnly((_: AppError) => EffIO.succeed(-1))
+    run(narrowed).map(r => assertEquals(r, Right(42)))
+
+  test("catchOnly lets the handler re-fail into the residual channel"):
+    val onApp: EffIO[IoErr | AppError, Int] = EffIO.fail(Invalid("bad"))
+    val narrowed: EffIO[IoErr, Int] = onApp.catchOnly((_: AppError) => EffIO.fail(IoErr(0)))
+    run(narrowed).map(r => assertEquals(r, Left(IoErr(0))))
 
   test("redeemAll handles both channels with a new error type"):
     for
@@ -393,17 +406,9 @@ class EffIOSuite extends CatsEffectSuite:
       yield value
     run(eff).map(r => assertEquals(r, Right(99)))
 
-  // ===========================================================================
-  // Variance escape hatches
-  // ===========================================================================
-
   test("assumeError narrows the error type for trusted casts"):
     val wide: EffIO[AppError, Int] = EffIO.succeed(1)
     run(wide.assumeError[NotFound]).map(r => assertEquals(r, Right(1)))
-
-  // ===========================================================================
-  // Natural transformations
-  // ===========================================================================
 
   test("liftK lifts plain IO into the infallible EffIO context"):
     run(EffIO.liftK(IO.pure(7))).map(r => assertEquals(r, Right(7)))
@@ -411,10 +416,6 @@ class EffIOSuite extends CatsEffectSuite:
   test("widenK is the identity error-widening transformation"):
     val k = EffIO.widenK[NotFound, AppError]
     run(k(EffIO.fail(NotFound("u1")))).map(r => assertEquals(r, Left(NotFound("u1"))))
-
-  // ===========================================================================
-  // Cats-effect primitive lifts
-  // ===========================================================================
 
   test("liftRef operates a Ref in the EffIO context"):
     val eff =
@@ -471,10 +472,6 @@ class EffIOSuite extends CatsEffectSuite:
       yield v
     run(eff).map(r => assertEquals(r, Right(8)))
 
-  // ===========================================================================
-  // Typeclass instances - behavioural smoke tests (lawfulness covered separately)
-  // ===========================================================================
-
   test("the Async instance is summonable and runs a concurrent program"):
     val F = summon[cats.effect.kernel.GenConcurrent[EffIO.Of[String], Throwable]]
     val program =
@@ -489,4 +486,40 @@ class EffIOSuite extends CatsEffectSuite:
     val F = summon[cats.MonadError[EffIO.Of[String], String]]
     run(F.handleError(F.raiseError[Int]("boom"))(_.length))
       .map(r => assertEquals(r, Right(4)))
+
+  test("async completes with a typed success or failure via the callback"):
+    val ok = EffIO.async[AppError, Int] { cb =>
+      cb(Right(7))
+      IO.pure(None)
+    }
+    val ko = EffIO.async[AppError, Int] { cb =>
+      cb(Left(NotFound("x")))
+      IO.pure(None)
+    }
+    for
+      o <- run(ok)
+      k <- run(ko)
+    yield
+      assertEquals(o, Right(7))
+      assertEquals(k, Left(NotFound("x")))
+
+  test("asyncAttempt folds a raised defect into a typed error"):
+    val eff = EffIO.asyncAttempt[String, Int](_ => "folded")(_ => IO.raiseError(RuntimeException("boom")))
+    run(eff).map(r => assertEquals(r, Left("folded")))
+
+  test("asyncAttempt still delivers typed failures from the callback"):
+    val eff = EffIO.asyncAttempt[AppError, Int](_ => Invalid("d")) { cb =>
+      cb(Left(NotFound("y")))
+      IO.pure(None)
+    }
+    run(eff).map(r => assertEquals(r, Left(NotFound("y"))))
+
+  test("asyncAttempt does not fold cancellation"):
+    val stuck = EffIO.asyncAttempt[String, Int](_ => "folded")(_ => IO.pure(Some(IO.unit)))
+    stuck.either.start
+      .flatMap(fib => IO.sleep(20.millis) *> fib.cancel *> fib.join)
+      .map(oc => assert(oc.isCanceled))
+
+  test("canceled introduces a self-cancellation point"):
+    EffIO.canceled.either.start.flatMap(_.join).map(oc => assert(oc.isCanceled))
 end EffIOSuite

@@ -41,6 +41,10 @@ class SyntaxSuite extends CatsEffectSuite:
     val fea = IO.pure[Either[String, Int]](Right(7))
     runEff(fea.eff).map(result => assertEquals(result, Right(7)))
 
+  test("F[A].eff lifts an infallible effect as a success"):
+    val lifted: UEff[IO, Int] = IO.pure(42).eff
+    runEff(lifted).map(result => assertEquals(result, Right(42)))
+
   test("Eff.from with Id is unambiguous"):
     val value: Eff[Id, String, Int] = Eff.from[Id, String, Int](Right(9))
     val failure: Eff[Id, String, Int] = Eff.from[Id, String, Int](Left("err"))
@@ -81,10 +85,6 @@ class SyntaxSuite extends CatsEffectSuite:
   test("F[Option].eff converts missing values to error"):
     val fo = IO.pure(Option.empty[Int])
     runEff(fo.eff[String]("missing")).map(result => assertEquals(result, Left("missing")))
-
-  // ===========================================================================
-  // Fiber Join Extensions
-  // ===========================================================================
 
   test("Fiber.joinNever returns value on success"):
     val eff: Eff[IO, String, Int] = Eff.succeed(42)
@@ -127,10 +127,6 @@ class SyntaxSuite extends CatsEffectSuite:
       _ <- fiber.cancel
       result <- liftedFiber.joinOrFail("was canceled").either
     yield assertEquals(result, Left("was canceled"))
-
-  // ===========================================================================
-  // EffIO lifting syntax
-  // ===========================================================================
 
   test("IO.effIO captures throwable failures into the typed error channel"):
     for

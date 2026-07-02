@@ -45,44 +45,23 @@ import org.scalacheck.Prop
 
 import boilerplate.effect.Eff
 
-/** Law tests for [[boilerplate.effect.Eff Eff]] typeclass instances.
+/** Law tests for [[boilerplate.effect.Eff Eff]] typeclass instances via cats-effect-laws.
   *
-  * Uses cats-effect-laws to verify that our typeclass implementations conform to the expected laws.
-  *
-  * ==Test Coverage==
-  *   - `GenSpawnTests` verifies Monad, MonadCancel, and fiber/race laws
-  *   - `MonadErrorTests[E]` verifies typed error channel laws (raiseError, handleError, etc.)
-  *   - `SemigroupKTests` verifies `combineK`/`alt` associativity
-  *   - `ClockTests` verifies monotonic/realTime laws
-  *   - `DeferTests` verifies deferred evaluation laws
-  *   - `UniqueTests` verifies unique token generation laws
-  *   - `EqTests` verifies equality reflexivity, symmetry, transitivity
-  *   - `FoldableTests` verifies left/right fold consistency (using Option as base)
-  *   - `TraverseTests` verifies traverse laws (using Option as base)
-  *   - `BifoldableTests` verifies bifold laws (using Option as base)
-  *   - `BitraverseTests` verifies bitraverse laws (using Option as base)
-  *
-  * Note: `GenConcurrent` extends `GenSpawn` with `ref`/`deferred` primitives but adds no new laws.
-  * `GenTemporal` extends `GenConcurrent` with `sleep`/`timeout` but temporal laws require
-  * specialized test infrastructure (e.g., `TimeT`). Since we delegate to `IO`, correctness follows
-  * from upstream. Behavioural tests for these primitives are in `EffSuite`.
+  * `GenConcurrent`/`GenTemporal` add no laws over `GenSpawn` (temporal laws need `TimeT`-style
+  * infrastructure); since these delegate to `IO`, correctness follows from upstream, and the
+  * primitives are exercised behaviourally in `EffSuite`.
   */
 class EffLawsSuite extends DisciplineSuite with EffTestInstances with EffOptionTestInstances:
 
-  // Use Int as both error type E and value types A, B, C for simplicity
   type E = Int
   type TestEff[A] = Eff[IO, E, A]
 
   implicit val ticker: Ticker = Ticker(TestContext())
 
-  // --- Arbitrary instances for IO[Either[E, A]] (required for arbitraryEff) ---
-
   implicit def arbIOEither[A: Arbitrary]: Arbitrary[IO[Either[E, A]]] =
     Arbitrary(
       Arbitrary.arbitrary[Either[E, A]].map(IO.pure(_))
     )
-
-  // --- Required Eq instances ---
 
   implicit def eqTestEff[A: Eq]: Eq[TestEff[A]] = eqEff[E, A]
 
@@ -98,8 +77,6 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances with EffOptionT
   implicit def eqOutcome: Eq[TestEff[Outcome[TestEff, Throwable, Int]]] =
     eqEff[E, Outcome[TestEff, Throwable, Int]]
 
-  // --- Arbitrary instances for Eff ---
-
   implicit def arbTestEff[A: Arbitrary]: Arbitrary[TestEff[A]] =
     arbitraryEff[E, A]
 
@@ -112,22 +89,14 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances with EffOptionT
       Arbitrary.arbFunction1[A, B].arbitrary.map(f => Eff.succeed[IO, E, A => B](f))
     )
 
-  // --- Cogen instances ---
-
   implicit def cogenTestEff[A: Cogen]: Cogen[TestEff[A]] =
     cogenEff[E, A]
-
-  // --- Prop conversion ---
 
   implicit def testEffBoolToProp(eff: TestEff[Boolean]): Prop =
     effBooleanToProp(eff)
 
-  // --- Pretty instances ---
-
   implicit def prettyTestEff[A]: TestEff[A] => org.scalacheck.util.Pretty =
     prettyEff[E, A]
-
-  // --- The actual law tests ---
 
   // GenSpawn tests include MonadCancel and Monad laws
   checkAll(
@@ -150,8 +119,6 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances with EffOptionT
     UniqueTests[TestEff].unique
   )
 
-  // --- MonadError[E] laws for the typed error channel ---
-
   // Additional Eq instances for MonadErrorTests
   implicit def eqEitherEU: Eq[TestEff[Either[E, Unit]]] = eqEff[E, Either[E, Unit]]
   implicit def eqEitherEA: Eq[TestEff[Either[E, Int]]] = eqEff[E, Either[E, Int]]
@@ -162,14 +129,10 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances with EffOptionT
     MonadErrorTests[TestEff, E].monadError[Int, Int, Int]
   )
 
-  // --- SemigroupK laws for alt semantics ---
-
   checkAll(
     "Eff[IO, Int, *].SemigroupK",
     SemigroupKTests[TestEff].semigroupK[Int]
   )
-
-  // --- Bifunctor laws ---
 
   // For Bifunctor tests, we need to vary both type parameters
   type TestEffBi[E, A] = Eff[IO, E, A]
@@ -187,34 +150,16 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances with EffOptionT
     BifunctorTests[TestEffBi].bifunctor[Int, Int, Int, String, String, String]
   )
 
-  // ---------------------------------------------------------------------------
-  // Data Typeclass Laws - Eq/PartialOrder with IO
-  // ---------------------------------------------------------------------------
-  // Eq and PartialOrder instances delegate to the underlying F[Either[E, A]].
-  // Since we have Eq[IO[Either[E, A]]] via cats-effect testkit, we can test these.
-
   checkAll(
     "Eff[IO, Int, Int].Eq",
     EqTests[Eff[IO, E, Int]].eqv
   )
 
-  // PartialOrder requires PartialOrder[IO[Either[E, A]]] which we derive from Eq
-  // Note: IO doesn't have a natural PartialOrder, so we define one for testing
-  // based on the Eq instance (all equal or incomparable).
-
-  // ---------------------------------------------------------------------------
-  // Data Typeclass Laws - Foldable/Traverse with Option
-  // ---------------------------------------------------------------------------
-  // Foldable and Traverse instances require Foldable[F]/Traverse[F].
-  // IO is an effect type, not a data container, so it doesn't have these instances.
-  // We use Option as the base effect to test these instances.
-  // The required Arbitrary/Eq instances come from EffOptionTestInstances trait.
-
-  // Option-based effect type for Foldable/Traverse tests
+  // Foldable/Traverse need Foldable[F]/Traverse[F]; IO has neither (it is an effect, not a data
+  // container), so these laws use Option as the base F.
   type OptEff[A] = Eff[Option, E, A]
   type OptEffBi[E, A] = Eff[Option, E, A]
 
-  // Use type aliases to match the EffOptionTestInstances implicit resolution
   implicit def arbOptEff[A: Arbitrary]: Arbitrary[OptEff[A]] = arbitraryEffOption[E, A]
   implicit def arbOptEffBi[EE: Arbitrary, A: Arbitrary]: Arbitrary[OptEffBi[EE, A]] = arbitraryEffOption[EE, A]
   implicit def eqOptEff[A: Eq]: Eq[OptEff[A]] = eqEffOption[E, A]
@@ -240,7 +185,6 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances with EffOptionT
     BitraverseTests[OptEffBi].bitraverse[Option, Int, Int, Int, String, String, String]
   )
 
-  // Note: ParallelTests requires complex type matching for Nested[IO.Par, Either[E, *], *]
-  // The Parallel instance is tested via the parMapN behavioural tests in EffSuite.
-  // Law testing for Parallel on Eff would require significant infrastructure changes.
+  // Parallel is not law-tested here (ParallelTests needs awkward Nested[IO.Par, Either[E, *], *]
+  // matching); it is covered by the parMapN behavioural tests in EffSuite.
 end EffLawsSuite

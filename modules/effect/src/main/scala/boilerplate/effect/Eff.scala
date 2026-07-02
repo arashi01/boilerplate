@@ -66,23 +66,18 @@ type UEff[F[_], A] = Eff[F, Nothing, A]
 /** Throwable-errored effect: `Eff` with `Throwable` as the error type. */
 type TEff[F[_], A] = Eff[F, Throwable, A]
 
-/** Low-priority `GenSpawn` instance for fibre spawning and racing. */
+/** Base of the effect-typeclass ladder for `Eff`. Instances are split across priority traits so
+  * that summoning `Functor`/`Monad`/`MonadError[_, E]` resolves to the dedicated typed-error
+  * instances in [[Eff$]] rather than these `Async`-derived ones (`Async` and `MonadError[_, E]` are
+  * both `<: Monad`, yet incomparable). A fibre's typed error `E` rides inside `Outcome.Succeeded`;
+  * only defects (`Throwable`) become `Outcome.Errored`.
+  */
 private[effect] trait EffInstancesLowPriority5:
   import Eff.Of
   import Eff.wrapUnsafe
   import Eff.unwrapUnsafe
 
-  /** Provides fibre spawning and racing for `Eff` computations.
-    *
-    * Enables `start`, `race`, `racePair`, `background` and related concurrent primitives.
-    *
-    * ==Typed Error Semantics==
-    * A fibre completing with a typed error `E` is considered a ''successful'' `Outcome` from the
-    * fibre's perspective - the typed error is carried within `Outcome.Succeeded`. Defects
-    * (`Throwable`) propagate via `Outcome.Errored`.
-    */
   given [F[_], E0] => (S: GenSpawn[F, Throwable]) => GenSpawn[Of[F, E0], Throwable]:
-    // --- MonadCancel delegation ---
 
     def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(S.pure(Right(a)))
 
@@ -136,13 +131,9 @@ private[effect] trait EffInstancesLowPriority5:
           S.void(unwrapUnsafe(fin(Outcome.canceled[Of[F, E0], Throwable, A])))
       })
 
-    // --- Unique delegation ---
-
     override def applicative: Applicative[Of[F, E0]] = this
 
     def unique: Eff[F, E0, Unique.Token] = Eff.liftF(S.unique)
-
-    // --- GenSpawn methods ---
 
     def start[A](fa: Eff[F, E0, A]): Eff[F, E0, Fiber[Of[F, E0], Throwable, A]] =
       Eff.liftF(S.map(S.start(unwrapUnsafe(fa)))(liftFiber))
@@ -199,18 +190,12 @@ private[effect] trait EffInstancesLowPriority5:
   end given
 end EffInstancesLowPriority5
 
-/** Low-priority `GenConcurrent` instance for concurrent primitives. */
 private[effect] trait EffInstancesLowPriority4 extends EffInstancesLowPriority5:
   import Eff.Of
   import Eff.wrapUnsafe
   import Eff.unwrapUnsafe
 
-  /** Provides concurrent primitives (`Ref`, `Deferred`, `memoize`) for `Eff` computations.
-    *
-    * Extends `GenSpawn` with the ability to create concurrent state primitives.
-    */
   given [F[_], E0] => (C: GenConcurrent[F, Throwable]) => GenConcurrent[Of[F, E0], Throwable]:
-    // --- Inherit all GenSpawn behaviour ---
 
     def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(C.pure(Right(a)))
 
@@ -268,8 +253,6 @@ private[effect] trait EffInstancesLowPriority4 extends EffInstancesLowPriority5:
 
     def unique: Eff[F, E0, Unique.Token] = Eff.liftF(C.unique)
 
-    // --- GenSpawn methods ---
-
     def start[A](fa: Eff[F, E0, A]): Eff[F, E0, Fiber[Of[F, E0], Throwable, A]] =
       Eff.liftF(C.map(C.start(unwrapUnsafe(fa)))(liftFiber))
 
@@ -314,8 +297,6 @@ private[effect] trait EffInstancesLowPriority4 extends EffInstancesLowPriority5:
     ] =
       Eff.liftF(C.map(C.bothOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
 
-    // --- GenConcurrent methods ---
-
     def ref[A](a: A): Eff[F, E0, Ref[Of[F, E0], A]] =
       Eff.liftF(C.map(C.ref(a))(_.mapK(Eff.functionK[F, E0])))
 
@@ -333,18 +314,12 @@ private[effect] trait EffInstancesLowPriority4 extends EffInstancesLowPriority5:
   end given
 end EffInstancesLowPriority4
 
-/** Low-priority `GenTemporal` instance for temporal operations. */
 private[effect] trait EffInstancesLowPriority3 extends EffInstancesLowPriority4:
   import Eff.Of
   import Eff.wrapUnsafe
   import Eff.unwrapUnsafe
 
-  /** Provides temporal primitives (`sleep`, `timeout`) for `Eff` computations.
-    *
-    * Extends `GenConcurrent` with time-based operations.
-    */
   given [F[_], E0] => (T: GenTemporal[F, Throwable]) => GenTemporal[Of[F, E0], Throwable]:
-    // --- Inherit all GenConcurrent behaviour ---
 
     def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(T.pure(Right(a)))
 
@@ -402,8 +377,6 @@ private[effect] trait EffInstancesLowPriority3 extends EffInstancesLowPriority4:
 
     def unique: Eff[F, E0, Unique.Token] = Eff.liftF(T.unique)
 
-    // --- GenSpawn methods ---
-
     def start[A](fa: Eff[F, E0, A]): Eff[F, E0, Fiber[Of[F, E0], Throwable, A]] =
       Eff.liftF(T.map(T.start(unwrapUnsafe(fa)))(liftFiber))
 
@@ -448,21 +421,15 @@ private[effect] trait EffInstancesLowPriority3 extends EffInstancesLowPriority4:
     ] =
       Eff.liftF(T.map(T.bothOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
 
-    // --- GenConcurrent methods ---
-
     def ref[A](a: A): Eff[F, E0, Ref[Of[F, E0], A]] =
       Eff.liftF(T.map(T.ref(a))(_.mapK(Eff.functionK[F, E0])))
 
     def deferred[A]: Eff[F, E0, Deferred[Of[F, E0], A]] =
       Eff.liftF(T.map(T.deferred[A])(_.mapK(Eff.functionK[F, E0])))
 
-    // --- Clock methods ---
-
     def monotonic: Eff[F, E0, FiniteDuration] = Eff.liftF(T.monotonic)
 
     def realTime: Eff[F, E0, FiniteDuration] = Eff.liftF(T.realTime)
-
-    // --- GenTemporal methods ---
 
     protected def sleep(time: FiniteDuration): Eff[F, E0, Unit] =
       Eff.liftF(T.sleep(time))
@@ -478,18 +445,12 @@ private[effect] trait EffInstancesLowPriority3 extends EffInstancesLowPriority4:
   end given
 end EffInstancesLowPriority3
 
-/** Low-priority `Sync` instance for synchronous effect suspension. */
 private[effect] trait EffInstancesLowPriority2 extends EffInstancesLowPriority3:
   import Eff.Of
   import Eff.wrapUnsafe
   import Eff.unwrapUnsafe
 
-  /** Provides synchronous effect suspension for `Eff` computations.
-    *
-    * Enables `delay`, `blocking`, `interruptible` for synchronous side effects.
-    */
   given [F[_], E0] => (S: Sync[F]) => Sync[Of[F, E0]]:
-    // --- MonadCancel delegation ---
 
     def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(S.pure(Right(a)))
 
@@ -545,35 +506,23 @@ private[effect] trait EffInstancesLowPriority2 extends EffInstancesLowPriority3:
 
     def rootCancelScope = S.rootCancelScope
 
-    // --- Clock methods ---
-
     def monotonic: Eff[F, E0, FiniteDuration] = Eff.liftF(S.monotonic)
 
     def realTime: Eff[F, E0, FiniteDuration] = Eff.liftF(S.realTime)
 
-    // --- Unique methods ---
-
     override def unique: Eff[F, E0, Unique.Token] = Eff.liftF(S.unique)
-
-    // --- Sync methods ---
 
     def suspend[A](hint: Sync.Type)(thunk: => A): Eff[F, E0, A] =
       Eff.liftF(S.suspend(hint)(thunk))
   end given
 end EffInstancesLowPriority2
 
-/** Low-priority `Async` instance for asynchronous effects. */
 private[effect] trait EffInstancesLowPriority1 extends EffInstancesLowPriority2:
   import Eff.Of
   import Eff.wrapUnsafe
   import Eff.unwrapUnsafe
 
-  /** Provides asynchronous effect capabilities for `Eff` computations.
-    *
-    * Enables `async`, `async_`, `fromFuture`, and evaluation on different execution contexts.
-    */
   given [F[_], E0] => (A: Async[F]) => Async[Of[F, E0]]:
-    // --- MonadCancel delegation ---
 
     def pure[A](a: A): Eff[F, E0, A] = wrapUnsafe(A.pure(Right(a)))
 
@@ -627,13 +576,9 @@ private[effect] trait EffInstancesLowPriority1 extends EffInstancesLowPriority2:
           A.void(unwrapUnsafe(fin(Outcome.canceled[Of[F, E0], Throwable, A])))
       })
 
-    // --- Unique methods ---
-
     override def applicative: Applicative[Of[F, E0]] = this
 
     override def unique: Eff[F, E0, Unique.Token] = Eff.liftF(A.unique)
-
-    // --- GenSpawn methods ---
 
     def start[A](fa: Eff[F, E0, A]): Eff[F, E0, Fiber[Of[F, E0], Throwable, A]] =
       Eff.liftF(A.map(A.start(unwrapUnsafe(fa)))(liftFiber))
@@ -679,31 +624,21 @@ private[effect] trait EffInstancesLowPriority1 extends EffInstancesLowPriority2:
     ] =
       Eff.liftF(A.map(A.bothOutcome(unwrapUnsafe(fa), unwrapUnsafe(fb)))(_.bimap(liftOutcome, liftOutcome)))
 
-    // --- GenConcurrent methods ---
-
     def ref[A](a: A): Eff[F, E0, Ref[Of[F, E0], A]] =
       Eff.liftF(A.map(A.ref(a))(_.mapK(Eff.functionK[F, E0])))
 
     def deferred[A]: Eff[F, E0, Deferred[Of[F, E0], A]] =
       Eff.liftF(A.map(A.deferred[A])(_.mapK(Eff.functionK[F, E0])))
 
-    // --- Clock methods ---
-
     def monotonic: Eff[F, E0, FiniteDuration] = Eff.liftF(A.monotonic)
 
     def realTime: Eff[F, E0, FiniteDuration] = Eff.liftF(A.realTime)
 
-    // --- GenTemporal methods ---
-
     def sleep(time: FiniteDuration): Eff[F, E0, Unit] =
       Eff.liftF(A.sleep(time))
 
-    // --- Sync methods ---
-
     def suspend[A](hint: Sync.Type)(thunk: => A): Eff[F, E0, A] =
       Eff.liftF(A.suspend(hint)(thunk))
-
-    // --- Async methods ---
 
     def cont[K, R](body: Cont[Of[F, E0], K, R]): Eff[F, E0, R] =
       Eff.lift(A.cont(Eff.contImpl(body)))
@@ -824,26 +759,12 @@ object Eff extends EffInstancesLowPriority0:
   /** Partially applied alias enabling higher-kinded usage of [[boilerplate.effect.Eff Eff]]. */
   type Of[F[_], E] = [A] =>> Eff[F, E, A]
 
-  // ===========================================================================
-  // Internal Unsafe Conversion Utilities
-  // ===========================================================================
-  // These provide direct access to the opaque type's underlying representation
-  // for use within boilerplate's implementation where the opaque boundary would
-  // otherwise require inefficient wrapping/unwrapping.
-  // ===========================================================================
-
-  /** Wraps an `F[Either[E, A]]` as `Eff[F, E, A]` without any transformation.
-    *
-    * This is an identity operation at runtime - the opaque type IS the underlying type. For
-    * internal use only where the opaque boundary would otherwise be problematic.
+  /** Views `F[Either[E, A]]` as `Eff` - identity at runtime, for crossing the opaque boundary
+    * within boilerplate without allocation.
     */
   private[boilerplate] inline def wrapUnsafe[F[_], E, A](fea: F[Either[E, A]]): Eff[F, E, A] = fea
 
-  /** Unwraps an `Eff[F, E, A]` to its underlying `F[Either[E, A]]` without transformation.
-    *
-    * This is an identity operation at runtime - the opaque type IS the underlying type. For
-    * internal use only where the opaque boundary would otherwise be problematic.
-    */
+  /** Inverse of [[wrapUnsafe]]. */
   private[boilerplate] inline def unwrapUnsafe[F[_], E, A](eff: Eff[F, E, A]): F[Either[E, A]] = eff
 
   /** Wraps a pre-existing `F[Either[E, A]]` without allocation. */
@@ -906,6 +827,15 @@ object Eff extends EffInstancesLowPriority0:
     inline def catchAll[E2, B >: A](f: E => Eff[F, E2, B])(using Monad[F]): Eff[F, E2, B] =
       Monad[F].flatMap(self) {
         case Left(e)  => f(e)
+        case Right(a) => Monad[F].pure(Right(a))
+      }
+
+    /** Recovers the errors `pf` handles with an effect; unmatched errors pass through, widening to
+      * `E2`. The effectful sibling of [[mapErrorPartial]], pairing with [[catchAll]].
+      */
+    inline def catchSome[E2 >: E, B >: A](pf: PartialFunction[E, Eff[F, E2, B]])(using Monad[F]): Eff[F, E2, B] =
+      Monad[F].flatMap(self) {
+        case Left(e)  => if pf.isDefinedAt(e) then pf(e) else Monad[F].pure(Left(e))
         case Right(a) => Monad[F].pure(Right(a))
       }
 
@@ -1014,8 +944,6 @@ object Eff extends EffInstancesLowPriority0:
     /** Converts to `EitherT` for ecosystem interop. */
     inline def eitherT: EitherT[F, E, A] = EitherT(self)
 
-    // --- Composition Operators ---
-
     /** Sequences this computation with `that`, discarding the result of `this`. */
     @targetName("productR")
     inline def *>[B](that: => Eff[F, E, B])(using Monad[F]): Eff[F, E, B] =
@@ -1050,8 +978,6 @@ object Eff extends EffInstancesLowPriority0:
     inline def product[B](that: Eff[F, E, B])(using Monad[F]): Eff[F, E, (A, B)] =
       self.flatMap(a => that.map(b => (a, b)))
 
-    // --- Error Recovery Operators ---
-
     /** Recovers from all errors by mapping them to a success value.
       *
       * Similar to `getOrElse` for `Option` or `Validated.valueOr`. Named `valueOr` to avoid
@@ -1062,8 +988,6 @@ object Eff extends EffInstancesLowPriority0:
         case Left(e)  => Right(f(e))
         case Right(a) => Right(a)
       }
-
-    // --- Conversion Utilities ---
 
     /** Absorbs an error into `F` when `E` matches the error type of `F`. */
     inline def absolve[EE](using ME: MonadError[F, EE], ev: E <:< EE): F[A] =
@@ -1108,8 +1032,6 @@ object Eff extends EffInstancesLowPriority0:
         case Left(e)  => Left(e)
       }
 
-    // --- Bracket Combinators ---
-
     /** Acquires a resource, uses it, and ensures release even on failure.
       *
       * The `release` function receives the acquired resource and always executes.
@@ -1134,8 +1056,6 @@ object Eff extends EffInstancesLowPriority0:
         case (Right(a), oc) => release(a, oc)
         case (Left(_), _)   => MC.unit
       }
-
-    // --- Concurrency Combinators ---
 
     /** Starts this computation as a fibre, returning immediately.
       *
@@ -1175,8 +1095,6 @@ object Eff extends EffInstancesLowPriority0:
     inline def both[B](that: Eff[F, E, B])(using S: GenSpawn[F, Throwable]): Eff[F, E, (A, B)] =
       Eff.lift(S.map(S.both(self.either, that.either))(_.tupled))
 
-    // --- Temporal Combinators ---
-
     /** Delays execution of this computation by `duration`. */
     inline def delayBy(duration: FiniteDuration)(using T: GenTemporal[F, Throwable]): Eff[F, E, A] =
       Eff.liftF[F, E, Unit](T.sleep(duration)) *> self
@@ -1199,7 +1117,6 @@ object Eff extends EffInstancesLowPriority0:
         case Some(ea) => T.pure(ea.asInstanceOf[Either[E, B]]) // scalafix:ok
         case None     => fallback.either
       })
-    // --- Cancellation Combinators ---
 
     /** Registers a finaliser to run if this computation is cancelled.
       *
@@ -1222,8 +1139,6 @@ object Eff extends EffInstancesLowPriority0:
         S.void(fin(liftedOutcome).either)
       })
 
-    // --- Parallel Combinators ---
-
     /** Runs this computation and `that` in parallel, discarding the result of `this`. */
     @targetName("parProductR")
     inline def &>[B](that: Eff[F, E, B])(using S: GenSpawn[F, Throwable]): Eff[F, E, B] =
@@ -1234,8 +1149,6 @@ object Eff extends EffInstancesLowPriority0:
     inline def <&[B](that: Eff[F, E, B])(using S: GenSpawn[F, Throwable]): Eff[F, E, A] =
       self.both(that).map(_._1)
 
-    // --- Error Observation ---
-
     /** Observes the attempt result without altering the outcome.
       *
       * The observation function receives `Right(a)` on success or `Left(e)` on typed error. Defects
@@ -1245,8 +1158,6 @@ object Eff extends EffInstancesLowPriority0:
       Monad[F].flatMap(self) { ea =>
         f(ea).flatMap(_ => Monad[F].pure(ea))
       }
-
-    // --- Timeout Combinator ---
 
     /** Fails with `onTimeout` if the computation does not complete within `duration`. */
     inline def timeout(duration: FiniteDuration, onTimeout: => E)(using T: GenTemporal[F, Throwable]): Eff[F, E, A] =
@@ -1337,8 +1248,6 @@ object Eff extends EffInstancesLowPriority0:
   inline def suspend[F[_], E, A](thunk: => A)(using F: Sync[F]): Eff[F, E, A] =
     F.map(F.delay(thunk))(Right(_))
 
-  // --- Temporal Factories ---
-
   /** Suspends execution for the specified duration. */
   inline def sleep[F[_], E](duration: FiniteDuration)(using T: GenTemporal[F, Throwable]): Eff[F, E, Unit] =
     liftF(T.sleep(duration))
@@ -1351,8 +1260,6 @@ object Eff extends EffInstancesLowPriority0:
   inline def realTime[F[_], E](using C: Clock[F], F: Functor[F]): Eff[F, E, FiniteDuration] =
     liftF(C.realTime)
 
-  // --- Primitive Factories ---
-
   /** Creates a new `Ref` initialised with `a`, operating in the `Eff` context. */
   inline def ref[F[_], E, A](a: A)(using C: GenConcurrent[F, Throwable]): Eff[F, E, Ref[Of[F, E], A]] =
     liftF(C.map(C.ref(a))(_.mapK(functionK[F, E])))
@@ -1360,8 +1267,6 @@ object Eff extends EffInstancesLowPriority0:
   /** Creates an empty `Deferred` operating in the `Eff` context. */
   inline def deferred[F[_], E, A](using C: GenConcurrent[F, Throwable]): Eff[F, E, Deferred[Of[F, E], A]] =
     liftF(C.map(C.deferred[A])(_.mapK(functionK[F, E])))
-
-  // --- Cancellation Factories ---
 
   /** Introduces a self-cancellation point into the computation.
     *
@@ -1388,8 +1293,6 @@ object Eff extends EffInstancesLowPriority0:
   inline def never[F[_], E, A](using S: GenSpawn[F, Throwable]): Eff[F, E, A] =
     liftF(S.never)
 
-  // --- Future Interop ---
-
   /** Converts a `Future` into an `Eff`, translating failures via `ifFailure`.
     *
     * The `Future` is evaluated lazily when the effect is run. Exceptions thrown by the `Future` are
@@ -1409,7 +1312,23 @@ object Eff extends EffInstancesLowPriority0:
       )
     )
 
-  // --- Conditional Execution ---
+  /** Suspends an asynchronous callback-driven computation completing with a typed `Either[E, A]`.
+    *
+    * The callback is invoked with `Left(e)` for a typed error or `Right(a)` for success - there is
+    * no defect-channel nesting. A throwable raised on `F`'s error channel surfaces as a defect; use
+    * [[asyncAttempt]] to fold it into a typed error instead. The returned `F[Option[F[Unit]]]`
+    * optionally yields a finaliser run on cancellation.
+    */
+  inline def async[F[_], E, A](k: (Either[E, A] => Unit) => F[Option[F[Unit]]])(using A: Async[F]): Eff[F, E, A] =
+    lift(A.async[Either[E, A]](cb => k(ea => cb(Right(ea)))))
+
+  /** As [[async]], additionally folding a throwable raised on `F`'s error channel into a typed
+    * error via `ifDefect`. Cancellation is never folded.
+    */
+  inline def asyncAttempt[F[_], E, A](ifDefect: Throwable => E)(k: (Either[E, A] => Unit) => F[Option[F[Unit]]])(using
+    A: Async[F]
+  ): Eff[F, E, A] =
+    lift(A.handleError(async(k).either)(t => Left(ifDefect(t))))
 
   /** Executes `eff` only when `cond` is true, otherwise succeeds with `Unit`. */
   inline def when[F[_]: Applicative, E](cond: Boolean)(eff: => Eff[F, E, Unit]): Eff[F, E, Unit] =
@@ -1432,8 +1351,6 @@ object Eff extends EffInstancesLowPriority0:
     */
   inline def cond[F[_]: Applicative, E, A](pred: Boolean, ifTrue: => A, ifFalse: => E): Eff[F, E, A] =
     if pred then succeed(ifTrue) else fail(ifFalse)
-
-  // --- Collection Operations ---
 
   /** Traverses a collection, short-circuiting on first error. */
   inline def traverse[F[_]: Monad, E, A, B](as: Iterable[A])(f: A => Eff[F, E, B]): Eff[F, E, List[B]] =
@@ -1468,8 +1385,6 @@ object Eff extends EffInstancesLowPriority0:
   inline def parSequence[F[_]: Parallel, E, A](effs: Iterable[Eff[F, E, A]]): Eff[F, E, List[A]] =
     parTraverse(effs)(identity)
 
-  // --- Retry Utilities ---
-
   /** Retries the effect up to `maxRetries` times on failure. */
   inline def retry[F[_]: Monad, E, A](eff: Eff[F, E, A], maxRetries: Int): Eff[F, E, A] =
     if maxRetries <= 0 then eff
@@ -1498,8 +1413,6 @@ object Eff extends EffInstancesLowPriority0:
     loop(maxRetries, initialDelay)
   end retryWithBackoff
 
-  // --- Natural Transformation ----------------------------------------------
-
   /** Creates a `FunctionK` that lifts `F[A]` into `Eff[F, E, A]` treating values as successes.
     *
     * This is the canonical way to transform `Resource[F, A]` and other cats-effect primitives to
@@ -1525,8 +1438,6 @@ object Eff extends EffInstancesLowPriority0:
 
   private[effect] class WidenKImpl[F[_], E1, E2 >: E1] @publicInBinary private[Eff] () extends FunctionK[Of[F, E1], Of[F, E2]]:
     def apply[A](fa: Eff[F, E1, A]): Eff[F, E2, A] = fa.widenError[E2]
-
-  // --- Cats-Effect Primitive Lifts -----------------------------------------
 
   /** Transforms a `Resource[F, A]` to `Resource[Eff.Of[F, E], A]`. */
   inline def liftResource[F[_], E, A](resource: Resource[F, A])(using
@@ -1562,10 +1473,8 @@ object Eff extends EffInstancesLowPriority0:
   inline def liftBarrier[F[_], E](barrier: CyclicBarrier[F])(using F: Functor[F]): CyclicBarrier[Of[F, E]] =
     barrier.mapK(functionK[F, E])
 
-  /** Transforms an `AtomicCell[F, A]` to `AtomicCell[Eff.Of[F, E], A]`.
-    *
-    * Note: `evalModify` operations that result in typed errors will propagate as typed errors in
-    * the result, but the cell state remains unchanged when this occurs.
+  /** Transforms an `AtomicCell[F, A]` to `AtomicCell[Eff.Of[F, E], A]`. An `evalModify` whose
+    * function yields a typed error leaves the cell state unchanged.
     */
   inline def liftCell[F[_], E, A](cell: AtomicCell[F, A])(using F: Monad[F]): AtomicCell[Of[F, E], A] =
     AtomicCellImpl(cell, F)
@@ -1578,7 +1487,6 @@ object Eff extends EffInstancesLowPriority0:
     def set(a: A): Eff[F, E, Unit] = liftF(cell.set(a))(using F)
     def modify[B](f: A => (A, B)): Eff[F, E, B] = liftF(cell.modify(f))(using F)
     def evalModify[B](f: A => Eff[F, E, (A, B)]): Eff[F, E, B] =
-      // Use get + conditional set to handle typed errors properly
       Eff.lift(
         F.flatMap(cell.get) { a =>
           F.flatMap(f(a).either) {
@@ -1666,18 +1574,11 @@ object Eff extends EffInstancesLowPriority0:
     def apply[A](eff: Eff[M, E, A]): Nested[PF, Either[E, *], A] =
       Nested(par(eff.either))
 
-  // ---------------------------------------------------------------------------
-  // Typeclass Instances
-  // ---------------------------------------------------------------------------
-
   /** Inherits `Functor` from the base effect, lifting over the error channel. */
   given [F[_]: Functor, E] => Functor[Of[F, E]]:
     def map[A, B](fa: Eff[F, E, A])(f: A => B): Eff[F, E, B] = fa.map(f)
 
-  /** `Bifunctor` instance enabling `bimap` and `leftMap` on both error and success channels.
-    *
-    * Provides the canonical bifunctor operations via cats syntax.
-    */
+  /** `Bifunctor` enabling `bimap` and `leftMap` on both channels. */
   given [F[_]: Functor] => Bifunctor[[E, A] =>> Eff[F, E, A]]:
     def bimap[A, B, C, D](fab: Eff[F, A, B])(f: A => C, g: B => D): Eff[F, C, D] =
       Functor[F].map(fab)(_.bimap(f, g))
@@ -1699,10 +1600,7 @@ object Eff extends EffInstancesLowPriority0:
       }
   end given
 
-  /** Canonical `MonadError` for the typed error channel.
-    *
-    * This instance handles the typed error channel `E`, providing `recover`, `ensure`, etc.
-    */
+  /** Canonical `MonadError` for the typed error channel `E`. */
   given [F[_]: Monad, E] => MonadError[Of[F, E], E]:
     def pure[A](a: A): Eff[F, E, A] = succeed(a)
 
@@ -1718,12 +1616,7 @@ object Eff extends EffInstancesLowPriority0:
       fa.catchAll(f)
   end given
 
-  /** `Parallel` instance enabling `parMapN`, `parTraverse`, etc.
-    *
-    * Derives parallel behaviour from `F`'s `Parallel` instance. The parallel applicative uses
-    * `Nested[P.F, Either[E, *], *]` which applies `F`'s parallelism whilst preserving short-circuit
-    * semantics on the first error encountered.
-    */
+  /** `Parallel` enabling `parMapN`/`parTraverse`, short-circuiting on the first error. */
   given [M[_], E] => (P: Parallel[M]) => Parallel[Of[M, E]]:
     type F[x] = Nested[P.F, Either[E, *], x]
 
@@ -1744,18 +1637,12 @@ object Eff extends EffInstancesLowPriority0:
       ParallelParImpl(P.parallel)
   end given
 
-  /** Defers evaluation of `Eff` computations until demanded.
-    *
-    * Enables safe recursive definitions and lazy evaluation patterns.
-    */
+  /** Defers evaluation until demanded. */
   given [F[_], E] => (D: Defer[F]) => Defer[Of[F, E]]:
     def defer[A](fa: => Eff[F, E, A]): Eff[F, E, A] =
       lift(D.defer(fa.either))
 
-  /** Provides time measurement capabilities for `Eff` computations.
-    *
-    * Delegates to the underlying `Clock[F]` instance, lifting results as successes.
-    */
+  /** `Clock` delegating to the underlying `Clock[F]`. */
   given [F[_], E] => (C: Clock[F], F: Monad[F]) => Clock[Of[F, E]]:
     val applicative: Applicative[Of[F, E]] = summon[Monad[Of[F, E]]]
 
@@ -1763,37 +1650,28 @@ object Eff extends EffInstancesLowPriority0:
 
     def realTime: Eff[F, E, FiniteDuration] = liftF(C.realTime)
 
-  /** Provides unique token generation for `Eff` computations.
-    *
-    * Useful for fibre identification and other concurrency primitives.
-    */
+  /** `Unique` delegating to the underlying `Unique[F]`. */
   given [F[_], E] => (U: Unique[F], F: Monad[F]) => Unique[Of[F, E]]:
     val applicative: Applicative[Of[F, E]] = summon[Monad[Of[F, E]]]
 
     def unique: Eff[F, E, Unique.Token] = liftF(U.unique)
 
-  /** Provides choice/alternative semantics for `Eff` computations.
-    *
-    * `combineK` tries the first computation; if it fails with a typed error, falls back to the
-    * second. This is equivalent to the `alt` extension method but via the `SemigroupK` typeclass.
+  /** Choice semantics: `combineK` falls back to the second computation on typed error (the `alt`
+    * combinator via `SemigroupK`).
     */
   given [F[_]: Monad, E] => SemigroupK[Of[F, E]]:
     def combineK[A](x: Eff[F, E, A], y: Eff[F, E, A]): Eff[F, E, A] =
       x.alt(y)
 
-  /** Combines two `Eff` computations when both succeed, using `Semigroup` to combine values.
-    *
-    * If either computation fails, the error propagates. Both computations must succeed for the
-    * combination to occur.
+  /** Combines two successful computations using `Semigroup` on their values; a failure
+    * short-circuits.
     */
   given [F[_]: Monad, E, A] => (S: Semigroup[A]) => Semigroup[Eff[F, E, A]]:
     def combine(x: Eff[F, E, A], y: Eff[F, E, A]): Eff[F, E, A] =
       x.flatMap(a => y.map(b => S.combine(a, b)))
 
-  /** Combines `Eff` computations with an identity element.
-    *
-    * `empty` produces a successful computation with `Monoid[A].empty`. Combining follows
-    * `Semigroup` semantics where both must succeed for values to be combined.
+  /** Combines computations with an identity element from `Monoid`; `empty` is a successful
+    * `Monoid[A].empty`.
     */
   given [F[_]: Monad, E, A] => (M: Monoid[A]) => Monoid[Eff[F, E, A]]:
     def empty: Eff[F, E, A] = succeed(M.empty)
@@ -1801,38 +1679,21 @@ object Eff extends EffInstancesLowPriority0:
     def combine(x: Eff[F, E, A], y: Eff[F, E, A]): Eff[F, E, A] =
       x.flatMap(a => y.map(b => M.combine(a, b)))
 
-  // ---------------------------------------------------------------------------
-  // Data Typeclass Instances
-  // ---------------------------------------------------------------------------
-
-  /** `Show` instance for `Eff` delegating to the underlying `Show[F[Either[E, A]]]`.
-    *
-    * This enables textual representation of `Eff` values via the `show` method.
-    */
+  /** `Show` delegating to the underlying `Show[F[Either[E, A]]]`. */
   given [F[_], E, A] => (S: Show[F[Either[E, A]]]) => Show[Eff[F, E, A]]:
     def show(fa: Eff[F, E, A]): String = S.show(fa.either)
 
-  /** `Eq` instance for `Eff` delegating to the underlying `Eq[F[Either[E, A]]]`.
-    *
-    * Equality is determined by the underlying effectful `Either` representation.
-    */
+  /** `Eq` delegating to the underlying `Eq[F[Either[E, A]]]`. */
   given [F[_], E, A] => (EQ: Eq[F[Either[E, A]]]) => Eq[Eff[F, E, A]]:
     def eqv(x: Eff[F, E, A], y: Eff[F, E, A]): Boolean =
       EQ.eqv(x.either, y.either)
 
-  /** `PartialOrder` instance for `Eff` delegating to the underlying
-    * `PartialOrder[F[Either[E, A]]]`.
-    *
-    * Ordering is determined by the underlying effectful `Either` representation.
-    */
+  /** `PartialOrder` delegating to the underlying `PartialOrder[F[Either[E, A]]]`. */
   given [F[_], E, A] => (PO: PartialOrder[F[Either[E, A]]]) => PartialOrder[Eff[F, E, A]]:
     def partialCompare(x: Eff[F, E, A], y: Eff[F, E, A]): Double =
       PO.partialCompare(x.either, y.either)
 
-  /** `Foldable` instance for `Eff` when `F` is `Foldable`.
-    *
-    * Folds over the success channel only, treating errors as empty.
-    */
+  /** `Foldable` folding the success channel only; errors fold as empty. */
   given [F[_], E] => (FO: Foldable[F]) => Foldable[Of[F, E]]:
     def foldLeft[A, B](fa: Eff[F, E, A], b: B)(f: (B, A) => B): B =
       FO.foldLeft(fa.either, b) { (acc, eea) =>
@@ -1844,10 +1705,7 @@ object Eff extends EffInstancesLowPriority0:
         eea.fold(_ => acc, a => f(a, acc))
       }
 
-  /** `Traverse` instance for `Eff` when `F` is `Traverse`.
-    *
-    * Traverses over the success channel, passing errors through unchanged.
-    */
+  /** `Traverse` over the success channel; errors pass through unchanged. */
   given [F[_], E] => (TR: Traverse[F]) => Traverse[Of[F, E]]:
     def foldLeft[A, B](fa: Eff[F, E, A], b: B)(f: (B, A) => B): B =
       TR.foldLeft(fa.either, b) { (acc, eea) =>
@@ -1865,10 +1723,7 @@ object Eff extends EffInstancesLowPriority0:
       )(Eff.lift)
   end given
 
-  /** `Bifoldable` instance for `Eff` when `F` is `Foldable`.
-    *
-    * Folds over both error and success channels using `Bifoldable[Either]`.
-    */
+  /** `Bifoldable` over both channels via `Bifoldable[Either]`. */
   given [F[_]] => (FO: Foldable[F]) => Bifoldable[[E, A] =>> Eff[F, E, A]]:
     def bifoldLeft[A, B, C](fab: Eff[F, A, B], c: C)(f: (C, A) => C, g: (C, B) => C): C =
       FO.foldLeft(fab.either, c) { (acc, eab) =>
@@ -1884,10 +1739,7 @@ object Eff extends EffInstancesLowPriority0:
       }
   end given
 
-  /** `Bitraverse` instance for `Eff` when `F` is `Traverse`.
-    *
-    * Traverses over both error and success channels using `Bitraverse[Either]`.
-    */
+  /** `Bitraverse` over both channels via `Bitraverse[Either]`. */
   given [F[_]] => (TR: Traverse[F]) => Bitraverse[[E, A] =>> Eff[F, E, A]]:
     def bifoldLeft[A, B, C](fab: Eff[F, A, B], c: C)(f: (C, A) => C, g: (C, B) => C): C =
       TR.foldLeft(fab.either, c) { (acc, eab) =>

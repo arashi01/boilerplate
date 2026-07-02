@@ -29,11 +29,7 @@ import boilerplate.effect.EffIO
 /** Generators for [[boilerplate.effect.EffIO EffIO]] types used in law testing. */
 trait EffIOGenerators:
 
-  /** Generates arbitrary `EffIO[E, A]` values from arbitrary `IO[Either[E, A]]` values.
-    *
-    * This generator produces effects by lifting `IO[Either[E, A]]` which covers pure success
-    * values, pure failure values, delayed computations, and async operations.
-    */
+  /** Lifts arbitrary `IO[Either[E, A]]` into `EffIO`. */
   implicit def arbitraryEffIO[E, A](using
     arbIO: Arbitrary[IO[Either[E, A]]]
   ): Arbitrary[EffIO[E, A]] =

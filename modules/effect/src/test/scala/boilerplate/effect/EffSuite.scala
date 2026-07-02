@@ -29,20 +29,11 @@ import cats.effect.std.AtomicCell
 import cats.syntax.all.*
 import munit.CatsEffectSuite
 
-/** Test suite for Eff - the zero-cost typed error channel abstraction.
-  *
-  * Design principles:
-  *   - Test OUR logic paths, not upstream cats/cats-effect behaviour
-  *   - Cover each code path in our implementation
-  *   - Focus on edge cases and regression protection
-  *   - Avoid redundant tests that merely confirm upstream behaviour
+/** Covers `Eff`'s own logic paths and edge cases; upstream cats/cats-effect behaviour is assumed,
+  * not re-tested.
   */
 class EffSuite extends CatsEffectSuite:
   private def runEff[E, A](eff: Eff[IO, E, A]): IO[Either[E, A]] = eff.either
-
-  // ===========================================================================
-  // Type Aliases
-  // ===========================================================================
 
   test("UEff represents infallible effect"):
     val eff: UEff[IO, Int] = Eff[IO].succeed(42)
@@ -52,10 +43,6 @@ class EffSuite extends CatsEffectSuite:
     val ex = new RuntimeException("boom")
     val eff: TEff[IO, Int] = Eff.fail(ex)
     runEff(eff).map(r => assertEquals(r, Left(ex)))
-
-  // ===========================================================================
-  // Constructors - Partially Applied
-  // ===========================================================================
 
   test("Eff[F].succeed creates Right"):
     runEff(Eff[IO].succeed(42)).map(r => assertEquals(r, Right(42)))
@@ -76,10 +63,6 @@ class EffSuite extends CatsEffectSuite:
 
   test("Eff[F].unit produces Right(())"):
     runEff(Eff[IO].unit).map(r => assertEquals(r, Right(())))
-
-  // ===========================================================================
-  // Constructors - Static Methods
-  // ===========================================================================
 
   test("Eff.from(Option) converts None to Left"):
     runEff(Eff.from[IO, String, Int](None, "missing")).map(r => assertEquals(r, Left("missing")))
@@ -155,10 +138,6 @@ class EffSuite extends CatsEffectSuite:
     val eff = Eff.delay[IO, String, Int](Right(42))
     runEff(eff).map(r => assertEquals(r, Right(42)))
 
-  // ===========================================================================
-  // Conditional Execution
-  // ===========================================================================
-
   test("Eff.when executes on true"):
     var executed = false // scalafix:ok DisableSyntax.var
     val eff = Eff.when[IO, String](true)(Eff.liftF(IO { executed = true }))
@@ -178,10 +157,6 @@ class EffSuite extends CatsEffectSuite:
     var executed = false // scalafix:ok DisableSyntax.var
     val eff = Eff.unless[IO, String](true)(Eff.liftF(IO { executed = true }))
     runEff(eff).map(_ => assert(!executed))
-
-  // ===========================================================================
-  // Mapping and Transformation
-  // ===========================================================================
 
   test("leftMap transforms error"):
     runEff(Eff.fail[IO, String, Int]("boom").leftMap(_.length)).map(r => assertEquals(r, Left(4)))
@@ -220,10 +195,6 @@ class EffSuite extends CatsEffectSuite:
     val eff = Eff.succeed[IO, String, Int](21).transform(_.map(_ * 2))
     runEff(eff).map(r => assertEquals(r, Right(42)))
 
-  // ===========================================================================
-  // Error Recovery
-  // ===========================================================================
-
   test("valueOr maps all errors to success"):
     runEff(Eff.fail[IO, String, Int]("boom").valueOr(_.length)).map(r => assertEquals(r, Right(4)))
 
@@ -238,9 +209,15 @@ class EffSuite extends CatsEffectSuite:
     val eff: Eff[IO, Int, Int] = Eff.fail[IO, String, Int]("boom").catchAll(e => Eff.fail(e.length))
     runEff(eff).map(r => assertEquals(r, Left(4)))
 
-  // ===========================================================================
-  // Alternative
-  // ===========================================================================
+  test("catchSome recovers matched errors and passes the rest through"):
+    val recovered = Eff.fail[IO, String, Int]("known").catchSome { case "known" => Eff.succeed[IO, String, Int](1) }
+    val passed = Eff.fail[IO, String, Int]("other").catchSome { case "known" => Eff.succeed[IO, String, Int](1) }
+    for
+      r <- runEff(recovered)
+      p <- runEff(passed)
+    yield
+      assertEquals(r, Right(1))
+      assertEquals(p, Left("other"))
 
   test("alt falls back on failure"):
     runEff(Eff.fail[IO, String, Int]("err").alt(Eff.succeed(42))).map(r => assertEquals(r, Right(42)))
@@ -257,10 +234,6 @@ class EffSuite extends CatsEffectSuite:
 
   test("orElseFail replaces error"):
     runEff(Eff.fail[IO, String, Int]("err").orElseFail(404)).map(r => assertEquals(r, Left(404)))
-
-  // ===========================================================================
-  // Observation
-  // ===========================================================================
 
   test("tap observes success"):
     var observed: Option[Int] = None // scalafix:ok DisableSyntax.var
@@ -309,10 +282,6 @@ class EffSuite extends CatsEffectSuite:
     val eff = Eff.fail[IO, String, Int]("original").flatTapError(_ => Eff.fail("side-effect"))
     runEff(eff).map(r => assertEquals(r, Left("side-effect")))
 
-  // ===========================================================================
-  // Folding
-  // ===========================================================================
-
   test("fold applies appropriate function"):
     for
       s <- Eff.succeed[IO, String, Int](42).fold(_.length, _.toString)
@@ -342,10 +311,6 @@ class EffSuite extends CatsEffectSuite:
       )
     runEff(eff).map(r => assertEquals(r, Right("recovered: boom")))
 
-  // ===========================================================================
-  // Composition
-  // ===========================================================================
-
   test("flatTap keeps original value"):
     var sideEffect = 0 // scalafix:ok DisableSyntax.var
     val eff = Eff.succeed[IO, String, Int](42).flatTap { a => sideEffect = a; Eff.succeed("ignored") }
@@ -356,10 +321,6 @@ class EffSuite extends CatsEffectSuite:
 
   test("flatTap short-circuits on side effect failure"):
     runEff(Eff.succeed[IO, String, Int](42).flatTap(_ => Eff.fail("tap failed"))).map(r => assertEquals(r, Left("tap failed")))
-
-  // ===========================================================================
-  // Variance
-  // ===========================================================================
 
   test("widen upcasts success type"):
     val eff: Eff[IO, String, Any] = Eff.succeed[IO, String, Int](42).widen[Any]
@@ -376,10 +337,6 @@ class EffSuite extends CatsEffectSuite:
   test("assumeError downcasts error type"):
     val eff = Eff.fail[IO, Any, Int]("err").assumeError[String]
     runEff(eff).map(r => assertEquals(r, Left("err")))
-
-  // ===========================================================================
-  // Extraction
-  // ===========================================================================
 
   test("option converts success to Some"):
     runEff(Eff.succeed[IO, String, Int](42).option).map(r => assertEquals(r, Right(Some(42))))
@@ -407,10 +364,6 @@ class EffSuite extends CatsEffectSuite:
     val eff: Eff[IO, String, Either[Int, String]] = Eff.succeed(Left(404))
     runEff(eff.collectRight(n => s"code: $n")).map(r => assertEquals(r, Left("code: 404")))
 
-  // ===========================================================================
-  // Conversion
-  // ===========================================================================
-
   test("either unwraps to F[Either]"):
     Eff.succeed[IO, String, Int](42).either.map(r => assertEquals(r, Right(42)))
 
@@ -423,10 +376,6 @@ class EffSuite extends CatsEffectSuite:
 
   test("absolve returns value on success"):
     Eff.succeed[IO, Throwable, Int](42).absolve.map(r => assertEquals(r, 42))
-
-  // ===========================================================================
-  // Bracket
-  // ===========================================================================
 
   test("bracket runs release on success"):
     var released = false // scalafix:ok DisableSyntax.var
@@ -464,20 +413,12 @@ class EffSuite extends CatsEffectSuite:
       assert(outcomeSucceeded)
     }
 
-  // ===========================================================================
-  // Timeout
-  // ===========================================================================
-
   test("timeout returns value within duration"):
     runEff(Eff.succeed[IO, String, Int](42).timeout(1.second, "timeout")).map(r => assertEquals(r, Right(42)))
 
   test("timeout returns error when exceeded"):
     val eff = Eff.liftF[IO, String, Int](IO.sleep(1.second) *> IO.pure(42)).timeout(10.millis, "timeout")
     runEff(eff).map(r => assertEquals(r, Left("timeout")))
-
-  // ===========================================================================
-  // Collection Operations
-  // ===========================================================================
 
   test("traverse short-circuits on first error"):
     var count = 0 // scalafix:ok DisableSyntax.var
@@ -584,10 +525,6 @@ class EffSuite extends CatsEffectSuite:
       // Allow generous CI headroom but ensure cap is clearly working.
       assert(clue(elapsed) < 60.millis)
 
-  // ===========================================================================
-  // Primitive Lifts
-  // ===========================================================================
-
   test("liftRef transforms Ref to Eff context"):
     for
       ref <- Ref.of[IO, Int](0)
@@ -614,10 +551,6 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(result, Left("err"))
       assertEquals(value, Right(0)) // Cell unchanged
 
-  // ===========================================================================
-  // Typeclass Instances
-  // ===========================================================================
-
   test("typed errors and defects are distinguishable"):
     val typedError: Eff[IO, String, Int] = Eff.fail("typed")
     val defect: Eff[IO, String, Int] = Eff.liftF(IO.raiseError(new RuntimeException("defect")))
@@ -637,10 +570,6 @@ class EffSuite extends CatsEffectSuite:
   test("Parallel instance short-circuits on error"):
     val eff = (Eff.succeed[IO, String, Int](1), Eff.fail[IO, String, Int]("err")).parMapN(_ + _)
     runEff(eff).map(r => assertEquals(r, Left("err")))
-
-  // ===========================================================================
-  // GenConcurrent Primitives (ref, deferred via typeclass)
-  // ===========================================================================
 
   test("GenConcurrent.ref creates Ref in Eff context"):
     import cats.effect.kernel.GenConcurrent
@@ -680,10 +609,6 @@ class EffSuite extends CatsEffectSuite:
                yield assertEquals(value, Right(42))
              case Left(e) => IO.pure(fail(s"Deferred creation failed: $e"))
     yield ()
-
-  // ===========================================================================
-  // GenTemporal Primitives (sleep via typeclass)
-  // ===========================================================================
 
   test("GenTemporal.sleep suspends for duration"):
     import cats.effect.kernel.GenTemporal
@@ -730,12 +655,6 @@ class EffSuite extends CatsEffectSuite:
       assert(r.isRight)
       assert(r.toOption.get.toMillis > 0)
     }
-
-  // ===========================================================================
-  // Data Typeclass Instances
-  // ===========================================================================
-  // These tests verify OUR implementation logic for data typeclasses.
-  // Law tests verify algebraic properties; these verify design decisions.
 
   test("Foldable.foldLeft skips error values"):
     import cats.Foldable
@@ -847,10 +766,6 @@ class EffSuite extends CatsEffectSuite:
     )
     assertEquals(result, None)
 
-  // ===========================================================================
-  // Static Factory Tests - New APIs
-  // ===========================================================================
-
   test("Eff.suspend captures side effect as success"):
     var executed = false // scalafix:ok DisableSyntax.var
     val eff = Eff.suspend[IO, String, Int] { executed = true; 42 }
@@ -936,6 +851,26 @@ class EffSuite extends CatsEffectSuite:
     val eff = Eff.fromFuture(IO(Future.failed[Int](ex)), _.getMessage)
     runEff(eff).map(r => assertEquals(r, Left("boom")))
 
+  test("Eff.async completes with a typed success or failure via the callback"):
+    val ok = Eff.async[IO, String, Int] { cb =>
+      cb(Right(7))
+      IO.pure(None)
+    }
+    val ko = Eff.async[IO, String, Int] { cb =>
+      cb(Left("nope"))
+      IO.pure(None)
+    }
+    for
+      o <- runEff(ok)
+      k <- runEff(ko)
+    yield
+      assertEquals(o, Right(7))
+      assertEquals(k, Left("nope"))
+
+  test("Eff.asyncAttempt folds a raised defect into a typed error"):
+    val eff = Eff.asyncAttempt[IO, String, Int](_ => "folded")(_ => IO.raiseError(RuntimeException("boom")))
+    runEff(eff).map(r => assertEquals(r, Left("folded")))
+
   test("Eff.raiseWhen raises on true"):
     runEff(Eff.raiseWhen[IO, String](true)("boom")).map(r => assertEquals(r, Left("boom")))
 
@@ -962,10 +897,6 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(trueSide, 1)
       assertEquals(falseSide, 1)
 
-  // ===========================================================================
-  // Concurrency Extension Tests
-  // ===========================================================================
-
   test("start spawns fibre and allows join"):
     val eff = Eff.succeed[IO, String, Int](42).start
     for
@@ -974,10 +905,8 @@ class EffSuite extends CatsEffectSuite:
                    case Right(fib) => fib.join.either
                    case Left(e)    => IO.pure(Left(e))
     yield outcome match
-      case Right(Outcome.Succeeded(effResult)) =>
-        // Need to extract the actual value from the Eff
-        ()
-      case _ => fail("Expected Succeeded outcome")
+      case Right(Outcome.Succeeded(_)) => ()
+      case _                           => fail("Expected Succeeded outcome")
 
   test("race returns winner"):
     val slow = Eff.liftF[IO, String, Int](IO.sleep(1.second) *> IO.pure(1))
@@ -1017,10 +946,6 @@ class EffSuite extends CatsEffectSuite:
         case _                            => fail("Expected Succeeded outcome")
       }
 
-  // ===========================================================================
-  // Temporal Extension Tests
-  // ===========================================================================
-
   test("delayBy delays execution"):
     for
       start <- IO.monotonic
@@ -1056,10 +981,6 @@ class EffSuite extends CatsEffectSuite:
     val fast = Eff.succeed[IO, String, Int](42)
     val fallback = Eff.succeed[IO, String, Int](0)
     runEff(fast.timeoutTo(1.second, fallback)).map(r => assertEquals(r, Right(42)))
-
-  // ===========================================================================
-  // Cancellation Extension Tests
-  // ===========================================================================
 
   test("onCancel runs finaliser on cancellation"):
     var finRan = false // scalafix:ok DisableSyntax.var
@@ -1104,10 +1025,6 @@ class EffSuite extends CatsEffectSuite:
       assert(observedSuccess)
     }
 
-  // ===========================================================================
-  // Parallel Extension Tests
-  // ===========================================================================
-
   test("&> runs in parallel discarding left"):
     val a = Eff.succeed[IO, String, Int](1)
     val b = Eff.succeed[IO, String, String]("two")
@@ -1127,10 +1044,6 @@ class EffSuite extends CatsEffectSuite:
     val a = Eff.succeed[IO, String, Int](1)
     val b = Eff.fail[IO, String, String]("boom")
     runEff(a <& b).map(r => assertEquals(r, Left("boom")))
-
-  // ===========================================================================
-  // Error Observation Extension Tests
-  // ===========================================================================
 
   test("attemptTap observes success"):
     var observed: Option[Either[String, Int]] = None // scalafix:ok DisableSyntax.var
@@ -1157,10 +1070,6 @@ class EffSuite extends CatsEffectSuite:
   test("attemptTap propagates side effect error"):
     val eff = Eff.succeed[IO, String, Int](42).attemptTap(_ => Eff.fail("side-effect"))
     runEff(eff).map(r => assertEquals(r, Left("side-effect")))
-
-  // ===========================================================================
-  // Error-Channel Transformations - mapError, mapErrorPartial, widenK
-  // ===========================================================================
 
   test("mapError transforms the error channel"):
     val eff = Eff.fail[IO, String, Int]("boom").mapError(_.toUpperCase)
