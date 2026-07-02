@@ -398,4 +398,43 @@ class EffInteropSuite extends CatsEffectSuite:
       yield assertEquals(result, Left("was cancelled"))
     }
 
+  // --- EffIO Fiber join extensions (mirror the Eff-context joins for EffIO.Of fibres) ---
+
+  test("EffIO Fiber.joinNever returns value from successful fibre"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.effIO[String]
+      for
+        fiber <- liftedSup.supervise(EffIO.succeed(42): EffIO[String, Int]).either
+        result <- fiber match
+                    case Right(f) => f.joinNever.either
+                    case Left(e)  => IO.pure(Left(e))
+      yield assertEquals(result, Right(42))
+    }
+
+  test("EffIO Fiber.joinNever propagates a typed error from the fibre"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.effIO[String]
+      for
+        fiber <- liftedSup.supervise(EffIO.fail("boom"): EffIO[String, Int]).either
+        result <- fiber match
+                    case Right(f) => f.joinNever.either
+                    case Left(e)  => IO.pure(Left(e))
+      yield assertEquals(result, Left("boom"))
+    }
+
+  test("EffIO Fiber.joinOrFail returns the typed error when cancelled"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.effIO[String]
+      for
+        fiber <- liftedSup.supervise(EffIO.liftF(IO.never[Int]): EffIO[String, Int]).either
+        result <- fiber match
+                    case Right(f) =>
+                      for
+                        _ <- f.cancel.either
+                        r <- f.joinOrFail("was cancelled").either
+                      yield r
+                    case Left(e) => IO.pure(Left(e))
+      yield assertEquals(result, Left("was cancelled"))
+    }
+
 end EffInteropSuite

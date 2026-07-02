@@ -238,6 +238,16 @@ class EffSuite extends CatsEffectSuite:
     val eff: Eff[IO, Int, Int] = Eff.fail[IO, String, Int]("boom").catchAll(e => Eff.fail(e.length))
     runEff(eff).map(r => assertEquals(r, Left(4)))
 
+  test("catchSome recovers matched errors and passes the rest through"):
+    val recovered = Eff.fail[IO, String, Int]("known").catchSome { case "known" => Eff.succeed[IO, String, Int](1) }
+    val passed = Eff.fail[IO, String, Int]("other").catchSome { case "known" => Eff.succeed[IO, String, Int](1) }
+    for
+      r <- runEff(recovered)
+      p <- runEff(passed)
+    yield
+      assertEquals(r, Right(1))
+      assertEquals(p, Left("other"))
+
   // ===========================================================================
   // Alternative
   // ===========================================================================
@@ -935,6 +945,26 @@ class EffSuite extends CatsEffectSuite:
     val ex = new RuntimeException("boom")
     val eff = Eff.fromFuture(IO(Future.failed[Int](ex)), _.getMessage)
     runEff(eff).map(r => assertEquals(r, Left("boom")))
+
+  test("Eff.async completes with a typed success or failure via the callback"):
+    val ok = Eff.async[IO, String, Int] { cb =>
+      cb(Right(7))
+      IO.pure(None)
+    }
+    val ko = Eff.async[IO, String, Int] { cb =>
+      cb(Left("nope"))
+      IO.pure(None)
+    }
+    for
+      o <- runEff(ok)
+      k <- runEff(ko)
+    yield
+      assertEquals(o, Right(7))
+      assertEquals(k, Left("nope"))
+
+  test("Eff.asyncAttempt folds a raised defect into a typed error"):
+    val eff = Eff.asyncAttempt[IO, String, Int](_ => "folded")(_ => IO.raiseError(RuntimeException("boom")))
+    runEff(eff).map(r => assertEquals(r, Left("folded")))
 
   test("Eff.raiseWhen raises on true"):
     runEff(Eff.raiseWhen[IO, String](true)("boom")).map(r => assertEquals(r, Left("boom")))

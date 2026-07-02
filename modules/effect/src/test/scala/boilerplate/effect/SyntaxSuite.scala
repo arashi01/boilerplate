@@ -41,6 +41,10 @@ class SyntaxSuite extends CatsEffectSuite:
     val fea = IO.pure[Either[String, Int]](Right(7))
     runEff(fea.eff).map(result => assertEquals(result, Right(7)))
 
+  test("F[A].eff lifts an infallible effect as a success"):
+    val lifted: UEff[IO, Int] = IO.pure(42).eff
+    runEff(lifted).map(result => assertEquals(result, Right(42)))
+
   test("Eff.from with Id is unambiguous"):
     val value: Eff[Id, String, Int] = Eff.from[Id, String, Int](Right(9))
     val failure: Eff[Id, String, Int] = Eff.from[Id, String, Int](Left("err"))

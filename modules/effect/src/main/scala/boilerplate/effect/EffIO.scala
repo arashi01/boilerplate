@@ -24,6 +24,7 @@ import scala.annotation.publicInBinary
 import scala.annotation.targetName
 import scala.concurrent.Future
 import scala.concurrent.duration.FiniteDuration
+import scala.reflect.TypeTest
 import scala.util.Try
 
 import cats.Bifunctor
@@ -174,6 +175,9 @@ object EffIO extends EffIOInstances:
 
   // --- Cancellation constructors ---
 
+  /** Introduces a self-cancellation point, immediately cancelling the current fibre. */
+  val canceled: UEffIO[Unit] = liftF(IO.canceled)
+
   /** Introduces a cooperative yielding point. */
   val cede: UEffIO[Unit] = liftF(IO.cede)
 
@@ -196,6 +200,24 @@ object EffIO extends EffIOInstances:
     */
   inline def fromFuture[E, A](future: IO[Future[A]])(pf: PartialFunction[Throwable, E]): EffIO[E, A] =
     fromEff(Eff.fromFuture[IO, E, A](future)(pf))
+
+  // --- Async interop ---
+
+  /** Suspends an asynchronous callback-driven computation completing with a typed `Either[E, A]`.
+    *
+    * The callback is invoked with `Left(e)` for a typed error or `Right(a)` for success - there is
+    * no defect-channel nesting. A raised throwable surfaces as a defect in `IO`'s error channel;
+    * use [[asyncAttempt]] to fold it into a typed error instead. The returned
+    * `IO[Option[IO[Unit]]]` optionally yields a finaliser run on cancellation.
+    */
+  inline def async[E, A](k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]): EffIO[E, A] =
+    fromEff(Eff.async[IO, E, A](k))
+
+  /** As [[async]], additionally folding a raised throwable into a typed error via `ifDefect`.
+    * Cancellation is never folded.
+    */
+  inline def asyncAttempt[E, A](ifDefect: Throwable => E)(k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]): EffIO[E, A] =
+    fromEff(Eff.asyncAttempt[IO, E, A](ifDefect)(k))
 
   // --- Conditional execution ---
 
@@ -281,6 +303,35 @@ object EffIO extends EffIOInstances:
     /** Handles any failure by switching to an alternative computation. */
     inline def catchAll[E2, B >: A](f: E => EffIO[E2, B]): EffIO[E2, B] =
       fromEff(self.toEff.catchAll(e => f(e).toEff))
+
+    /** Recovers the errors `pf` handles with an effect; unmatched errors pass through, widening to
+      * `E2`. The effectful sibling of [[mapErrorPartial]], pairing with [[catchAll]].
+      */
+    inline def catchSome[E2 >: E, B >: A](pf: PartialFunction[E, EffIO[E2, B]]): EffIO[E2, B] =
+      fromEff(self.toEff.catchSome(pf.andThen(_.toEff)))
+
+    /** Recovers the `H` arm of a union error with an effect, narrowing the channel to the residual
+      * `R` (where `E <: R | H`); unmatched errors stay typed as `R`, and `f` may itself fail into
+      * `R`. The residual is inferred from the `E <:< (R | H)` witness - no annotation is needed:
+      *
+      * {{{
+      * val consumed: EffIO[IoError | AppError, Unit] = ...
+      * consumed.catchOnly((app: AppError) => log(app)) // : EffIO[IoError, Unit]
+      * }}}
+      *
+      * `H` must be runtime-testable; an erasure-ambiguous `H` is rejected at the call site.
+      */
+    inline def catchOnly[H, R, B >: A](f: H => EffIO[R, B])(using
+      ev: E <:< (R | H),
+      tt: TypeTest[E, H]
+    ): EffIO[R, B] =
+      self.either.flatMap {
+        case Right(a) => IO.pure(Right(a))
+        case Left(e)  =>
+          e match
+            case tt(h) => f(h).either
+            case _     => IO.pure(Left(ev(e).asInstanceOf[R])) // scalafix:ok DisableSyntax.asInstanceOf
+      }
 
     /** Handles both error and success with effectful functions, allowing error type change. */
     inline def redeemAll[E2, B](fe: E => EffIO[E2, B], fa: A => EffIO[E2, B]): EffIO[E2, B] =

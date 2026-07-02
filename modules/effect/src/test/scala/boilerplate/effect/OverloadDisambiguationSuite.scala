@@ -192,6 +192,20 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(r, Right(5))
       assertEquals(c, Right(5))
 
+  test("catchSome on Eff is unique to boilerplate-effect (partial effectful recovery)"):
+    val eff: Eff[IO, String, Int] = Eff.fail("known")
+
+    // catchSome is our unique name - no collision with cats
+    val result: Eff[IO, String, Int] = eff.catchSome { case "known" => Eff.succeed(1) }
+    val control: Eff[IO, String, Int] = Eff.catchSome(eff) { case "known" => Eff.succeed(1) }
+
+    for
+      r <- result.either
+      c <- control.either
+    yield
+      assertEquals(r, Right(1))
+      assertEquals(c, Right(1))
+
   test("redeemAll on Eff is unique to boilerplate-effect (effectful fold with error type change)"):
     val eff: Eff[IO, String, Int] = Eff.fail("boom")
 

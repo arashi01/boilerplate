@@ -339,7 +339,7 @@ Eff[IO].suspend(sideEffect()) // UEff[IO, A]
 | Temporal     | `sleep(duration)`, `monotonic`, `realTime`                                      |
 | Primitives   | `ref(initial)`, `deferred`                                                      |
 | Cancellation | `canceled`, `cede`, `never`                                                     |
-| Async        | `fromFuture(F[Future], ifFailure)`, `fromFuture(pf)`                            |
+| Async        | `fromFuture(F[Future], ifFailure)`, `fromFuture(pf)`, `async`, `asyncAttempt(ifDefect)` |
 | Conditional  | `when`, `unless`, `raiseWhen`, `raiseUnless`, `cond(pred, ifTrue, ifFalse)`     |
 | Collection   | `traverse`, `sequence`, `parTraverse`, `parSequence`                            |
 | Retry        | `retry(eff, maxRetries)`, `retryWithBackoff(eff, maxRetries, delay, maxDelay)`  |
@@ -350,7 +350,7 @@ Eff[IO].suspend(sideEffect()) // UEff[IO, A]
 |--------------|------------------------------------------------------------------------------|
 | Mapping      | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `transform`                   |
 | Composition  | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`       |
-| Recovery     | `valueOr`, `catchAll`                                                        |
+| Recovery     | `valueOr`, `catchAll`, `catchSome`                                          |
 | Error mapping| `mapError`, `mapErrorPartial`                                                |
 | Alternative  | `alt`, `orElseSucceed`, `orElseFail`                                         |
 | Folding      | `fold`, `foldF`, `redeemAll`                                                 |
@@ -460,6 +460,19 @@ workflow.either                 // IO[Either[AppError, User]]
 Covariance subsumes error widening, so `EffIO` has no `widen`/`widenError`; the trusted narrowing
 casts `assume`/`assumeError` remain.
 
+**Narrowing partial recovery (`catchOnly`).** Covariance also enables handling one arm of a union
+error while keeping the rest typed. Given `EffIO[LibError | AppError, A]`, recover the `AppError`
+arm and the residual `LibError` is inferred - no annotation needed:
+
+```scala
+val consumed: EffIO[LibError | AppError, Unit] = ...
+val handled: EffIO[LibError, Unit] = consumed.catchOnly((app: AppError) => log(app))
+```
+
+The handler may itself fail into the residual channel. The handled arm must be runtime-testable; an
+erasure-ambiguous choice is rejected at the call site. `Eff`'s invariance cannot infer the residual,
+so `catchOnly` is `EffIO`-only.
+
 **Conversion to and from `Eff`.** `EffIO[E, A]` and `Eff[IO, E, A]` share the runtime
 representation `IO[Either[E, A]]`, so conversion is a zero-cost identity:
 
@@ -566,6 +579,7 @@ Importing `boilerplate.effect.*` provides lifting extensions:
 | `F[Option[A]].eff[E](err)`   | `Eff[F, E, A]`        |
 | `Try[A].eff[F, E](f)`        | `Eff[F, E, A]`        |
 | `F[A].eff[E](f)`             | `Eff[F, E, A]`        |
+| `F[A].eff`                   | `UEff[F, A]`          |
 | `Resource[F, A].eff[E]`      | `Resource[Of[F,E],A]` |
 | `Ref[F, A].eff[E]`           | `Ref[Of[F, E], A]`    |
 | `Deferred[F, A].eff[E]`      | `Deferred[Of[F,E],A]` |
@@ -580,6 +594,8 @@ When working with `Fiber[Eff.Of[F, E], Throwable, A]` (e.g. from `Supervisor.sup
 |-------------------------|-----------------|------------------------|
 | `fiber.joinNever`       | `Eff[F, E, A]`  | Never completes        |
 | `fiber.joinOrFail(err)` | `Eff[F, E, A]`  | Fails with typed error |
+
+The same joins are provided for `Fiber[EffIO.Of[E], Throwable, A]`, returning `EffIO[E, A]`.
 
 ### Complete example
 

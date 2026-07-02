@@ -145,6 +145,10 @@ extension [F[_], A](fa: F[A])
   inline def eff[E](ifFailure: Throwable => E)(using MonadError[F, Throwable]): Eff[F, E, A] =
     Eff.attempt(fa, ifFailure)
 
+  /** Lifts an infallible `F[A]` into [[boilerplate.effect.Eff Eff]], treating values as successes. */
+  inline def eff(using Functor[F]): UEff[F, A] =
+    Eff.liftF(fa)
+
 // ============================================================================
 // Fiber Join Extensions
 // ============================================================================
@@ -177,6 +181,38 @@ extension [F[_], E, A](fiber: Fiber[Eff.Of[F, E], Throwable, A])
       case Outcome.Errored(e)    => Eff.liftF(F.raiseError(e))
       case Outcome.Canceled()    => Eff.fail(onCanceled)
     }(using F)
+end extension
+
+// ============================================================================
+// EffIO Fiber Join Extensions
+// ============================================================================
+
+extension [E, A](fiber: Fiber[EffIO.Of[E], Throwable, A])
+
+  /** Joins the fibre and returns its result, never completing if the fibre was cancelled.
+    *
+    * If the fibre succeeds, returns the value; if it fails in the typed channel `E`, that error
+    * propagates; if it was cancelled, this never completes. The `EffIO` sibling of the
+    * `Eff`-context `joinNever`.
+    */
+  inline def joinNever: EffIO[E, A] =
+    fiber.join.flatMap {
+      case Outcome.Succeeded(fa) => fa
+      case Outcome.Errored(e)    => EffIO.liftF(IO.raiseError(e))
+      case Outcome.Canceled()    => EffIO.lift(IO.never[Either[E, A]])
+    }
+
+  /** Joins the fibre and returns its result, failing with a typed error if cancelled.
+    *
+    * If the fibre succeeds, returns the value; if it fails in the typed channel `E`, that error
+    * propagates; if it was cancelled, fails with `onCanceled`.
+    */
+  inline def joinOrFail(onCanceled: => E): EffIO[E, A] =
+    fiber.join.flatMap {
+      case Outcome.Succeeded(fa) => fa
+      case Outcome.Errored(e)    => EffIO.liftF(IO.raiseError(e))
+      case Outcome.Canceled()    => EffIO.fail(onCanceled)
+    }
 end extension
 
 // ============================================================================

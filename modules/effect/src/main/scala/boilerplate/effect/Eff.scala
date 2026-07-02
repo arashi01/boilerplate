@@ -909,6 +909,15 @@ object Eff extends EffInstancesLowPriority0:
         case Right(a) => Monad[F].pure(Right(a))
       }
 
+    /** Recovers the errors `pf` handles with an effect; unmatched errors pass through, widening to
+      * `E2`. The effectful sibling of [[mapErrorPartial]], pairing with [[catchAll]].
+      */
+    inline def catchSome[E2 >: E, B >: A](pf: PartialFunction[E, Eff[F, E2, B]])(using Monad[F]): Eff[F, E2, B] =
+      Monad[F].flatMap(self) {
+        case Left(e)  => if pf.isDefinedAt(e) then pf(e) else Monad[F].pure(Left(e))
+        case Right(a) => Monad[F].pure(Right(a))
+      }
+
     /** Folds over both channels, returning to the base effect. */
     inline def fold[B](fe: E => B, fa: A => B)(using Functor[F]): F[B] =
       Functor[F].map(self)(_.fold(fe, fa))
@@ -1408,6 +1417,26 @@ object Eff extends EffInstancesLowPriority0:
         a => A.pure(Right(a))
       )
     )
+
+  // --- Async Interop ---
+
+  /** Suspends an asynchronous callback-driven computation completing with a typed `Either[E, A]`.
+    *
+    * The callback is invoked with `Left(e)` for a typed error or `Right(a)` for success - there is
+    * no defect-channel nesting. A throwable raised on `F`'s error channel surfaces as a defect; use
+    * [[asyncAttempt]] to fold it into a typed error instead. The returned `F[Option[F[Unit]]]`
+    * optionally yields a finaliser run on cancellation.
+    */
+  inline def async[F[_], E, A](k: (Either[E, A] => Unit) => F[Option[F[Unit]]])(using A: Async[F]): Eff[F, E, A] =
+    lift(A.async[Either[E, A]](cb => k(ea => cb(Right(ea)))))
+
+  /** As [[async]], additionally folding a throwable raised on `F`'s error channel into a typed
+    * error via `ifDefect`. Cancellation is never folded.
+    */
+  inline def asyncAttempt[F[_], E, A](ifDefect: Throwable => E)(k: (Either[E, A] => Unit) => F[Option[F[Unit]]])(using
+    A: Async[F]
+  ): Eff[F, E, A] =
+    lift(A.handleError(async(k).either)(t => Left(ifDefect(t))))
 
   // --- Conditional Execution ---
 
