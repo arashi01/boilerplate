@@ -522,4 +522,39 @@ class EffIOSuite extends CatsEffectSuite:
 
   test("canceled introduces a self-cancellation point"):
     EffIO.canceled.either.start.flatMap(_.join).map(oc => assert(oc.isCanceled))
+
+  test("traverse_ and sequence_ run effects and discard results"):
+    for
+      counter <- IO.ref(0)
+      t <- run(EffIO.traverse_(List(1, 2, 3))(n => EffIO.liftF(counter.update(_ + n))))
+      total <- counter.get
+      s <- run(EffIO.sequence_(List(EffIO.succeed(1), EffIO.succeed(2))))
+    yield
+      assertEquals(t, Right(()))
+      assertEquals(total, 6)
+      assertEquals(s, Right(()))
+
+  test("traverse_ short-circuits on the first error"):
+    run(EffIO.traverse_(List(1, 2, 3))(n => if n == 2 then EffIO.fail("stop") else EffIO.succeed(n)))
+      .map(r => assertEquals(r, Left("stop")))
+
+  test("parTraverse_ and parSequence_ discard results and propagate a typed error"):
+    for
+      ok <- run(EffIO.parTraverse_(List(1, 2, 3))(EffIO.succeed(_)))
+      ko <- run(EffIO.parTraverse_(List(1, 2, 3))(n => if n == 2 then EffIO.fail("stop") else EffIO.succeed(n)))
+      ps <- run(EffIO.parSequence_(List(EffIO.succeed(1), EffIO.succeed(2))))
+    yield
+      assertEquals(ok, Right(()))
+      assertEquals(ko, Left("stop"))
+      assertEquals(ps, Right(()))
+
+  test("blocking and suspendBlocking run on the blocking pool"):
+    for
+      r <- run(EffIO.blocking(Right(7): Either[String, Int]))
+      l <- run(EffIO.blocking(Left("boom"): Either[String, Int]))
+      s <- run(EffIO.suspendBlocking(6 * 7))
+    yield
+      assertEquals(r, Right(7))
+      assertEquals(l, Left("boom"))
+      assertEquals(s, Right(42))
 end EffIOSuite

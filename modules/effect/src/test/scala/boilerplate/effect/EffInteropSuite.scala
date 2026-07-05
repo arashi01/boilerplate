@@ -408,4 +408,29 @@ class EffInteropSuite extends CatsEffectSuite:
       yield assertEquals(result, Left("was cancelled"))
     }
 
+  test("Resource.useEffIO runs the body and always releases the resource"):
+    for
+      released <- Ref.of[IO, Int](0)
+      res = Resource.make(IO.pure(42))(_ => released.update(_ + 1))
+      ok <- res.useEffIO(a => EffIO.succeed(a + 1)).either
+      afterOk <- released.get
+      ko <- res.useEffIO[String, Int](_ => EffIO.fail("boom")).either
+      afterKo <- released.get
+    yield
+      assertEquals(ok, Right(43))
+      assertEquals(ko, Left("boom"))
+      assertEquals(afterOk, 1) // released after success
+      assertEquals(afterKo, 2) // released after typed error too
+
+  test("Resource.useEff (generic F) releases the resource on a typed error"):
+    Ref.of[IO, Boolean](false).flatMap { released =>
+      val res = Resource.make(IO.pure(1))(_ => released.set(true))
+      for
+        r <- res.useEff(_ => Eff.fail[IO, String, Int]("boom")).either
+        wasReleased <- released.get
+      yield
+        assertEquals(r, Left("boom"))
+        assert(wasReleased)
+    }
+
 end EffInteropSuite

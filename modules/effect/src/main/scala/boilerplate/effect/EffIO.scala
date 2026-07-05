@@ -60,8 +60,15 @@ import cats.~>
   * `EffIO` is covariant in both `E` and `A`: `IO` and `Either` are each covariant, so a value of
   * `EffIO[Narrow, A]` is usable wherever `EffIO[Wide, A]` is expected when `Narrow <: Wide`, with
   * no call-site method. It coexists with [[boilerplate.effect.Eff Eff]], shares its runtime
-  * representation with `Eff[IO, E, A]`, and converts to and from it at zero cost. Refer to
-  * [[boilerplate.effect.EffIO$ EffIO]] for constructors, combinators, and type class instances.
+  * representation with `Eff[IO, E, A]`, and converts to and from it at zero cost.
+  *
+  * A consequence of the covariant `E`: a `flatMap`/for-comprehension over steps with distinct error
+  * types infers their union (`E1 | E2 | ...`), and that widening is silent - the channel can grow
+  * wider than intended with no compile error. Ascribe the result type, or `mapError`/`catchOnly`,
+  * to contain it.
+  *
+  * Refer to [[boilerplate.effect.EffIO$ EffIO]] for constructors, combinators, and type class
+  * instances.
   */
 opaque type EffIO[+E, +A] = IO[Either[E, A]]
 
@@ -141,6 +148,12 @@ object EffIO extends EffIOInstances:
     * For side effects that may produce typed errors, use [[delay]].
     */
   inline def suspend[A](thunk: => A): UEffIO[A] = IO.delay(thunk).map(Right(_))
+
+  /** As [[delay]], on the blocking thread pool - for synchronous work that blocks a thread. */
+  inline def blocking[E, A](ea: => Either[E, A]): EffIO[E, A] = IO.blocking(ea)
+
+  /** As [[suspend]], on the blocking thread pool - for synchronous work that blocks a thread. */
+  inline def suspendBlocking[A](thunk: => A): UEffIO[A] = IO.blocking(thunk).map(Right(_))
 
   /** Suspends execution for the specified duration. */
   inline def sleep(duration: FiniteDuration): UEffIO[Unit] = liftF(IO.sleep(duration))
@@ -229,6 +242,20 @@ object EffIO extends EffIOInstances:
   inline def sequence[E, A](effs: Iterable[EffIO[E, A]]): EffIO[E, List[A]] =
     traverse(effs)(identity)
 
+  /** Traverses a collection for effect only, discarding results and short-circuiting on first
+    * error.
+    */
+  @targetName("traverseUnit")
+  inline def traverse_[E, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, Unit] =
+    fromEff(Eff.traverse_[IO, E, A, B](as)(a => f(a).toEff))
+
+  /** Runs a collection of effects for effect only, discarding results and short-circuiting on first
+    * error.
+    */
+  @targetName("sequenceUnit")
+  inline def sequence_[E, A](effs: Iterable[EffIO[E, A]]): EffIO[E, Unit] =
+    traverse_(effs)(identity)
+
   /** Traverses a collection in parallel. */
   inline def parTraverse[E, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, List[B]] =
     fromEff(Eff.parTraverse[IO, E, A, B](as)(a => f(a).toEff))
@@ -236,6 +263,16 @@ object EffIO extends EffIOInstances:
   /** Sequences a collection of effects in parallel. */
   inline def parSequence[E, A](effs: Iterable[EffIO[E, A]]): EffIO[E, List[A]] =
     parTraverse(effs)(identity)
+
+  /** Traverses a collection in parallel for effect only, discarding results. */
+  @targetName("parTraverseUnit")
+  inline def parTraverse_[E, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, Unit] =
+    fromEff(Eff.parTraverse_[IO, E, A, B](as)(a => f(a).toEff))
+
+  /** Sequences a collection of effects in parallel for effect only, discarding results. */
+  @targetName("parSequenceUnit")
+  inline def parSequence_[E, A](effs: Iterable[EffIO[E, A]]): EffIO[E, Unit] =
+    parTraverse_(effs)(identity)
 
   /** Retries the effect up to `maxRetries` times on failure. */
   inline def retry[E, A](eff: EffIO[E, A], maxRetries: Int): EffIO[E, A] =
