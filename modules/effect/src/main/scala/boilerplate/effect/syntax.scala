@@ -46,6 +46,12 @@ extension [F[_], A](resource: Resource[F, A])
   inline def eff[E](using MonadCancel[F, Throwable]): Resource[Eff.Of[F, E], A] =
     Eff.liftResource(resource)
 
+  /** `use` with an `Eff`-returning body, keeping the `Resource` itself `E`-agnostic; release runs
+    * on success, typed error, and defect alike.
+    */
+  inline def useEff[E, B](f: A => Eff[F, E, B])(using MonadCancel[F, Throwable]): Eff[F, E, B] =
+    Eff.lift(resource.use(a => f(a).either))
+
 extension [F[_], A](ref: Ref[F, A])
   /** Returns a `Ref` operating in the `Eff` context. */
   inline def eff[E](using Functor[F]): Ref[Eff.Of[F, E], A] =
@@ -206,6 +212,12 @@ extension [A](resource: Resource[IO, A])
   /** Transforms this `Resource[IO, A]` to `Resource[EffIO.Of[E], A]`. */
   inline def effIO[E]: Resource[EffIO.Of[E], A] =
     EffIO.liftResource(resource)
+
+  /** `use` with an `EffIO`-returning body, keeping the `Resource` itself `E`-agnostic; release runs
+    * on success, typed error, and defect alike.
+    */
+  inline def useEffIO[E, B](f: A => EffIO[E, B]): EffIO[E, B] =
+    EffIO.lift(resource.use(a => f(a).either))
 
 extension [A](ref: Ref[IO, A])
   /** Returns a `Ref` operating in the `EffIO` context. */

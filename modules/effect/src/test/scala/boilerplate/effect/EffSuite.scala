@@ -1092,4 +1092,56 @@ class EffSuite extends CatsEffectSuite:
     val k = Eff.widenK[IO, RuntimeException, Throwable]
     val widened: Eff[IO, Throwable, Int] = k(Eff.fail[IO, RuntimeException, Int](boom))
     runEff(widened).map(r => assertEquals(r, Left(boom)))
+
+  test("traverse preserves order for a large collection"):
+    val n = 5000
+    runEff(Eff.traverse[IO, String, Int, Int]((1 to n).toList)(Eff.succeed(_)))
+      .map(r => assertEquals(r, Right((1 to n).toList)))
+
+  test("traverse_ runs each effect for its side effect and discards results"):
+    var sum = 0 // scalafix:ok DisableSyntax.var
+    val eff = Eff.traverse_[IO, String, Int, Int](List(1, 2, 3))(n => Eff.liftF(IO { sum += n; n }))
+    runEff(eff).map { r =>
+      assertEquals(r, Right(()))
+      assertEquals(sum, 6)
+    }
+
+  test("traverse_ short-circuits on first error"):
+    var count = 0 // scalafix:ok DisableSyntax.var
+    val eff = Eff.traverse_[IO, String, Int, Int](List(1, 2, 3)) { n =>
+      count += 1
+      if n == 2 then Eff.fail("stop") else Eff.succeed(n)
+    }
+    runEff(eff).map { r =>
+      assertEquals(r, Left("stop"))
+      assertEquals(count, 2)
+    }
+
+  test("sequence_ and parSequence_ discard results"):
+    val effs = List(Eff.succeed[IO, String, Int](1), Eff.succeed[IO, String, Int](2))
+    for
+      s <- runEff(Eff.sequence_(effs))
+      p <- runEff(Eff.parSequence_(effs))
+    yield
+      assertEquals(s, Right(()))
+      assertEquals(p, Right(()))
+
+  test("parTraverse_ runs all, discards results, and propagates a typed error"):
+    for
+      ok <- runEff(Eff.parTraverse_[IO, String, Int, Int](List(1, 2, 3))(Eff.succeed(_)))
+      ko <- runEff(Eff.parTraverse_[IO, String, Int, Int](List(1, 2, 3))(n => if n == 2 then Eff.fail("stop") else Eff.succeed(n)))
+    yield
+      assertEquals(ok, Right(()))
+      assertEquals(ko, Left("stop"))
+
+  test("blocking captures an Either on the blocking pool"):
+    for
+      r <- runEff(Eff.blocking[IO, String, Int](Right(7)))
+      l <- runEff(Eff.blocking[IO, String, Int](Left("boom")))
+    yield
+      assertEquals(r, Right(7))
+      assertEquals(l, Left("boom"))
+
+  test("suspendBlocking captures a value on the blocking pool"):
+    runEff(Eff.suspendBlocking[IO, String, Int](6 * 7)).map(r => assertEquals(r, Right(42)))
 end EffSuite

@@ -334,14 +334,14 @@ Eff[IO].suspend(sideEffect()) // UEff[IO, A]
 |--------------|---------------------------------------------------------------------------------|
 | Pure         | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)` |
 | Effectful    | `lift(F[Either])`, `lift(F[Option], ifNone)`, `liftF(F[A])`                     |
-| Suspended    | `delay(=> Either)`, `defer(=> Eff)`, `suspend(=> A)`                            |
+| Suspended    | `delay(=> Either)`, `defer(=> Eff)`, `suspend(=> A)`, `blocking`, `suspendBlocking` |
 | Values       | `succeed`, `fail`, `unit`, `attempt`, `attempt(pf)`                             |
 | Temporal     | `sleep(duration)`, `monotonic`, `realTime`                                      |
 | Primitives   | `ref(initial)`, `deferred`                                                      |
 | Cancellation | `canceled`, `cede`, `never`                                                     |
 | Async        | `fromFuture(F[Future], ifFailure)`, `fromFuture(pf)`, `async`, `asyncAttempt(ifDefect)` |
 | Conditional  | `when`, `unless`, `raiseWhen`, `raiseUnless`, `cond(pred, ifTrue, ifFalse)`     |
-| Collection   | `traverse`, `sequence`, `parTraverse`, `parSequence`                            |
+| Collection   | `traverse`, `sequence`, `parTraverse`, `parSequence` (each with a `_` discard variant) |
 | Retry        | `retry(eff, maxRetries)`, `retryWithBackoff(eff, maxRetries, delay, maxDelay)`  |
 
 ### Eff combinators
@@ -458,7 +458,9 @@ workflow.either                 // IO[Either[AppError, User]]
 ```
 
 Covariance subsumes error widening, so `EffIO` has no `widen`/`widenError`; the trusted narrowing
-casts `assume`/`assumeError` remain.
+casts `assume`/`assumeError` remain. The flip side: a `flatMap`/for-comprehension over steps with
+distinct error types silently infers their union (`E1 | E2 | ...`), which can grow wider than
+intended with no compile error - ascribe the result type, or `mapError`/`catchOnly`, to contain it.
 
 **Narrowing partial recovery (`catchOnly`).** Covariance also enables handling one arm of a union
 error while keeping the rest typed. Given `EffIO[LibError | AppError, A]`, recover the `AppError`
@@ -502,6 +504,7 @@ val liftK: IO ~> EffIO.Of[Nothing]                  = EffIO.liftK
 | `IO[Option[A]].effIO(ifNone)` | `EffIO[E, A]`              |
 | `Try[A].effIO(ifFailure)`     | `EffIO[E, A]`              |
 | `Resource[IO, A].effIO[E]`    | `Resource[EffIO.Of[E], A]` |
+| `Resource[IO, A].useEffIO(f)` | `EffIO[E, B]`              |
 | `Ref[IO, A].effIO[E]`         | `Ref[EffIO.Of[E], A]`      |
 
 `Deferred`, `Queue`, `Semaphore`, `CountDownLatch`, `CyclicBarrier`, `AtomicCell`, and `Supervisor`
@@ -581,6 +584,7 @@ Importing `boilerplate.effect.*` provides lifting extensions:
 | `F[A].eff[E](f)`             | `Eff[F, E, A]`        |
 | `F[A].eff`                   | `UEff[F, A]`          |
 | `Resource[F, A].eff[E]`      | `Resource[Of[F,E],A]` |
+| `Resource[F, A].useEff(f)`   | `Eff[F, E, B]`        |
 | `Ref[F, A].eff[E]`           | `Ref[Of[F, E], A]`    |
 | `Deferred[F, A].eff[E]`      | `Deferred[Of[F,E],A]` |
 | `Queue[F, A].eff[E]`         | `Queue[Of[F, E], A]`  |

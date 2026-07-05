@@ -1248,6 +1248,14 @@ object Eff extends EffInstancesLowPriority0:
   inline def suspend[F[_], E, A](thunk: => A)(using F: Sync[F]): Eff[F, E, A] =
     F.map(F.delay(thunk))(Right(_))
 
+  /** As [[delay]], on the blocking thread pool - for synchronous work that blocks a thread. */
+  inline def blocking[F[_], E, A](ea: => Either[E, A])(using F: Sync[F]): Eff[F, E, A] =
+    F.blocking(ea)
+
+  /** As [[suspend]], on the blocking thread pool - for synchronous work that blocks a thread. */
+  inline def suspendBlocking[F[_], E, A](thunk: => A)(using F: Sync[F]): Eff[F, E, A] =
+    F.map(F.blocking(thunk))(Right(_))
+
   /** Suspends execution for the specified duration. */
   inline def sleep[F[_], E](duration: FiniteDuration)(using T: GenTemporal[F, Throwable]): Eff[F, E, Unit] =
     liftF(T.sleep(duration))
@@ -1354,13 +1362,28 @@ object Eff extends EffInstancesLowPriority0:
 
   /** Traverses a collection, short-circuiting on first error. */
   inline def traverse[F[_]: Monad, E, A, B](as: Iterable[A])(f: A => Eff[F, E, B]): Eff[F, E, List[B]] =
+    // Prepend then reverse once: `:+` per element would be O(n^2) on `List`.
     as.foldLeft(succeed[F, E, List[B]](Nil)) { (acc, a) =>
-      acc.flatMap(bs => f(a).map(b => bs :+ b))
-    }
+      acc.flatMap(bs => f(a).map(b => b :: bs))
+    }.map(_.reverse)
 
   /** Sequences a collection of effects, short-circuiting on first error. */
   inline def sequence[F[_]: Monad, E, A](effs: Iterable[Eff[F, E, A]]): Eff[F, E, List[A]] =
     traverse(effs)(identity)
+
+  /** Traverses a collection for effect only, discarding results and short-circuiting on first
+    * error.
+    */
+  @targetName("traverseUnit")
+  inline def traverse_[F[_]: Monad, E, A, B](as: Iterable[A])(f: A => Eff[F, E, B]): Eff[F, E, Unit] =
+    as.foldLeft(unit[F, E])((acc, a) => acc.flatMap(_ => f(a).void))
+
+  /** Runs a collection of effects for effect only, discarding results and short-circuiting on first
+    * error.
+    */
+  @targetName("sequenceUnit")
+  inline def sequence_[F[_]: Monad, E, A](effs: Iterable[Eff[F, E, A]]): Eff[F, E, Unit] =
+    traverse_(effs)(identity)
 
   /** Traverses a collection in parallel using `F`'s `Parallel` instance. */
   inline def parTraverse[F[_], E, A, B](as: Iterable[A])(f: A => Eff[F, E, B])(using P: Parallel[F]): Eff[F, E, List[B]] =
@@ -1384,6 +1407,23 @@ object Eff extends EffInstancesLowPriority0:
   /** Sequences a collection of effects in parallel. */
   inline def parSequence[F[_]: Parallel, E, A](effs: Iterable[Eff[F, E, A]]): Eff[F, E, List[A]] =
     parTraverse(effs)(identity)
+
+  /** Traverses a collection in parallel for effect only, discarding results. */
+  @targetName("parTraverseUnit")
+  inline def parTraverse_[F[_], E, A, B](as: Iterable[A])(f: A => Eff[F, E, B])(using P: Parallel[F]): Eff[F, E, Unit] =
+    val parF = P.applicative
+    Eff.lift(
+      P.sequential(
+        as.toList.foldRight(parF.pure(Right(()): Either[E, Unit])) { (a, acc) =>
+          parF.map2(P.parallel(f(a).either), acc)((eb, eu) => eu.flatMap(_ => eb.map(_ => ())))
+        }
+      )
+    )
+
+  /** Sequences a collection of effects in parallel for effect only, discarding results. */
+  @targetName("parSequenceUnit")
+  inline def parSequence_[F[_]: Parallel, E, A](effs: Iterable[Eff[F, E, A]]): Eff[F, E, Unit] =
+    parTraverse_(effs)(identity)
 
   /** Retries the effect up to `maxRetries` times on failure. */
   inline def retry[F[_]: Monad, E, A](eff: Eff[F, E, A], maxRetries: Int): Eff[F, E, A] =
