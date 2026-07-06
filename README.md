@@ -183,6 +183,40 @@ result.flatMapNull("null value")(s => Right(s.trim))  // Either[String, String]
 
 ---
 
+### Slice
+
+`Slice` is a bounds-checked, immutable view over caller-owned bytes - one byte-slice vocabulary
+across the ecosystem. A `Slice` never owns, frees, or outlives its backing region: it is a borrower,
+valid only while the caller keeps that region alive.
+
+```scala
+import boilerplate.Slice
+
+val buf: Array[Byte] = receive()
+val header = Slice.of(buf).take(8)      // a view of the first 8 bytes - no copy
+val body   = Slice.of(buf).drop(8)      // the rest - no copy
+val owned  = header.toArray             // copy out to an owned Array[Byte]
+```
+
+Re-slicing (`take`/`drop`/`slice`) allocates only a small header over the same memory; `toArray` and
+`copyInto` are the copy-out seams. On Scala Native, `Slice.of(ptr, len)` additionally views
+pointer-backed memory (the FFI `(Ptr, len)` world); the caller owns the region's lifetime.
+
+| Member                         | Description                                            |
+|--------------------------------|--------------------------------------------------------|
+| `Slice.of(array[, off, len])`  | Bounds-checked view over an array (or sub-range)       |
+| `Slice.of(ptr, len)`           | Pointer-backed view (Scala Native only)                |
+| `Slice.empty`                  | The zero-length view                                   |
+| `length` / `isEmpty`           | Size of the view                                       |
+| `take(n)` / `drop(n)` / `slice(from, until)` | Bounds-checked sub-views (no copy)       |
+| `toArray`                      | Copies the viewed bytes out to a fresh array           |
+| `copyInto(dst)`                | Copies `min(length, dst.length)` bytes; returns count  |
+
+The `unsafe*` accessors (array + offset, or an interior pointer on Native) are a seam for
+library-author backends; ordinary users never need them.
+
+---
+
 ### Platform (`boilerplate-native`, Scala Native only)
 
 Compile-time operating-system and architecture detection for Scala Native targets. Each OS/arch target is
