@@ -59,4 +59,10 @@ class SlicePtrSuite extends munit.FunSuite:
     val _ = Slice.of(Array[Byte](9, 9, 9, 9)).copyInto(Slice.of(buf, 4))
     Slice.of(buf, 4).slice(1, 3).wipe()
     assertEquals(Slice.of(buf, 4).toArray.toList, List[Byte](9, 0, 0, 9))
+
+  test("constantTimeEquals over pointer-backed memory"):
+    val buf = stackalloc[Byte](3)
+    val _ = Slice.of(Array[Byte](1, 2, 3)).copyInto(Slice.of(buf, 3))
+    assert(Slice.of(buf, 3).constantTimeEquals(Slice.of(Array[Byte](1, 2, 3))))
+    assert(!Slice.of(buf, 3).constantTimeEquals(Slice.of(Array[Byte](1, 2, 9))))
 end SlicePtrSuite

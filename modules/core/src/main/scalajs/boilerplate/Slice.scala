@@ -98,12 +98,21 @@ object Slice:
       require(0 <= i && i < s.length, "index out of range")
       s.unsafeArray(s.unsafeOffset + i)
 
-    /** Compares content for equality. NOT constant-time - unsuitable where comparison timing could
-      * leak a secret.
+    /** Compares content for equality. NOT constant-time - use [[constantTimeEquals]] where
+      * comparison timing could leak a secret.
       */
     def contentEquals(that: Slice): Boolean =
       s.length == that.length &&
         sameBytes(s.unsafeArray, s.unsafeOffset, that.unsafeArray, that.unsafeOffset, s.length)
+
+    /** Compares content for equality in constant time - the timing reveals nothing about where the
+      * bytes differ - for secrets, MACs, or authentication tags where [[contentEquals]] would be a
+      * timing oracle. Views of differing length compare unequal; that check is not itself
+      * constant-time, as lengths are taken to be public.
+      */
+    def constantTimeEquals(that: Slice): Boolean =
+      s.length == that.length &&
+        ctEquals(s.unsafeArray, s.unsafeOffset, that.unsafeArray, that.unsafeOffset, s.length)
 
     /** Reads a big-endian `Short`, `Int`, or `Long` (per `A`) at `offset`, without sub-slicing; an
       * out-of-range read raises.
@@ -131,6 +140,13 @@ object Slice:
       else if a(ao + i) != b(bo + i) then false
       else go(i + 1)
     go(0)
+
+  // No early-out is deliberate: OR-accumulating every byte keeps the timing independent of where the
+  // bytes differ. A short-circuit compare (sameBytes) would reintroduce the timing oracle.
+  private def ctEquals(a: Array[Byte], ao: Int, b: Array[Byte], bo: Int, n: Int): Boolean =
+    @tailrec def go(i: Int, acc: Int): Int =
+      if i >= n then acc else go(i + 1, acc | (a(ao + i) ^ b(bo + i)))
+    go(0, 0) == 0
 
   // Concrete-return scalar readers. `@publicInBinary` so the `inline` readBE/readLE may reference
   // them from an expanded call site; kept private so the public surface is just readBE/readLE.
