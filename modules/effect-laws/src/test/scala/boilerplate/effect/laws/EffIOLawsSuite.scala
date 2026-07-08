@@ -41,14 +41,10 @@ import org.scalacheck.util.Pretty
 
 import boilerplate.effect.EffIO
 
-/** Law tests for [[boilerplate.effect.EffIO EffIO]] typeclass instances via cats-effect-laws,
-  * verifying the phantom instances (a representation cast of `IO`'s) are lawful.
-  *
-  * `GenConcurrent`, `GenTemporal`, `Sync`, and `Async` all resolve from the single `Async` instance
-  * by subtyping, so `GenSpawnTests` exercises the shared structure.
-  * `Foldable`/`Traverse`/`Bifunctor` do not apply - `IO` is an effect, and the error is a
-  * `Throwable` in the channel, not a foldable value. Behavioural tests are in `EffIOSuite`.
-  */
+// `GenConcurrent`, `GenTemporal`, `Sync`, and `Async` all resolve from the single `Async` instance by
+// subtyping, so `GenSpawnTests` exercises the shared structure. `Foldable`/`Traverse`/`Bifunctor` do
+// not apply - the error is a `Throwable` in the channel, not a foldable value. Behavioural tests are
+// in `EffIOSuite`.
 class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
 
   type E = LawError

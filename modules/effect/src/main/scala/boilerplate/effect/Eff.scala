@@ -102,10 +102,10 @@ type TEff[F[_], A] = Eff[F, Throwable, A]
 /** Base of the effect-typeclass ladder for `Eff`. Because `Eff.Of[F, E]` is structurally `F`, each
   * cats-effect capability transfers by a representation cast (`Async[F]` '''is'''
   * `Async[Of[F, E]]`). The instances are split across priority traits so that summoning
-  * `Functor`/`Monad`/`MonadError[_, E]` resolves to the dedicated typed-error instances in [[Eff$]]
-  * rather than these `Async`-derived ones (`Async` and `MonadError[_, E]` are both `<: Monad`, yet
-  * incomparable). A fibre's typed error `E` now rides `F`'s `Throwable` channel, so a typed failure
-  * is `Outcome.Errored(e)`.
+  * `Functor`/`Monad`/`MonadError[_, E]` resolves to the dedicated typed-error instances in
+  * [[Eff$ Eff]] rather than these `Async`-derived ones (`Async` and `MonadError[_, E]` are both
+  * `<: Monad`, yet incomparable). A fibre's typed error `E` rides `F`'s `Throwable` channel, so a
+  * typed failure is `Outcome.Errored(e)`.
   */
 private[effect] trait EffInstances0:
   import Eff.Of
@@ -206,9 +206,8 @@ object Eff extends EffInstances5:
     /** Canonical successful unit value. */
     inline def unit(using F: Applicative[F]): UEff[F, Unit] = F.pure(())
 
-    /** Suspends a synchronous side effect as a success value.
-      *
-      * For side effects that may produce typed errors, use [[Eff.delay]] instead.
+    /** Suspends a synchronous side effect as a success value; for typed errors use
+      * [[Eff.delay delay]].
       */
     inline def suspend[A](thunk: => A)(using F: Sync[F]): UEff[F, A] = F.delay(thunk)
   end EffPartiallyApplied
@@ -615,10 +614,7 @@ object Eff extends EffInstances5:
   inline def delay[F[_], E <: Throwable, A](ea: => Either[E, A])(using F: Sync[F]): Eff[F, E, A] =
     lift(F.delay(ea))
 
-  /** Suspends a synchronous side effect as a success value.
-    *
-    * For side effects that may produce typed errors, use [[delay]] instead.
-    */
+  /** Suspends a synchronous side effect as a success value; for typed errors use [[delay]]. */
   inline def suspend[F[_], E <: Throwable, A](thunk: => A)(using F: Sync[F]): Eff[F, E, A] =
     F.delay(thunk)
 
@@ -775,13 +771,7 @@ object Eff extends EffInstances5:
     if maxRetries <= 0 then eff
     else eff.catchAll(_ => retry(eff, maxRetries - 1))
 
-  /** Retries the effect with exponential backoff between attempts.
-    *
-    * @param eff the effect to retry
-    * @param maxRetries maximum number of retry attempts
-    * @param initialDelay delay before first retry
-    * @param maxDelay optional cap on delay duration
-    */
+  /** Retries the effect with exponential backoff, capping each delay at `maxDelay`. */
   inline def retryWithBackoff[F[_], E <: Throwable, A](
     eff: Eff[F, E, A],
     maxRetries: Int,

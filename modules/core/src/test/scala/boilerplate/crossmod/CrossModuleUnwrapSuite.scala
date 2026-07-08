@@ -24,13 +24,9 @@ import munit.FunSuite
 
 import boilerplate.*
 
-/** Tests extension methods across module boundaries.
-  *
-  * The opaque types (`NonEmptyString`, `PositiveInt`, `Email`, `Distance`) are defined in `package
-  * boilerplate`. This suite lives in a child package where opaque type equality does NOT hold -
-  * simulating the cross-module scenario where the underlying type would be abstract if not properly
-  * propagated via transparent inline.
-  */
+// Sits in a child package rather than `boilerplate` so the opaque types' underlying representation
+// is abstract here, exercising that `transparent inline` carries unwrap/as/asUnsafe across a module
+// boundary.
 class CrossModuleUnwrapSuite extends FunSuite:
 
   test("unwrap extension resolves concrete type for String-based opaque"):

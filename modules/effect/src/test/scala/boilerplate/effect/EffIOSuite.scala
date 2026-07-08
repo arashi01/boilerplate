@@ -33,17 +33,10 @@ import munit.CatsEffectSuite
 import boilerplate.effect.AppError.*
 import boilerplate.effect.IoError.*
 
-/** Behavioural tests for `EffIO` - the covariant, `IO`-specialised typed-error effect, a phantom
-  * over `IO`'s own `Throwable` channel. Typeclass lawfulness is verified separately by the
-  * discipline suite. These cover the phantom-specific contracts: a typed failure IS an `IO` failure
-  * (`Outcome.Errored`), observation filters by `TypeTest` and never swallows a defect, `absolve` is
-  * a no-op, and covariant `E` widening / union narrowing distinguish `EffIO` from a plain error
-  * monad.
-  */
 class EffIOSuite extends CatsEffectSuite:
   private def run[E <: Throwable, A](eff: EffIO[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either
 
-  // --- Constructors -----------------------------------------------------------------------------
+  // Constructors
 
   test("succeed lands in the success channel, fail in IO's Throwable channel"):
     for
@@ -123,7 +116,7 @@ class EffIOSuite extends CatsEffectSuite:
       assertEquals(rwN, Right(()))
       assertEquals(ru, Left(Timeout))
 
-  // --- Covariance in E and A --------------------------------------------------------------------
+  // Covariance in E and A
 
   test("a narrow error widens to a broad error with no call-site method"):
     val narrow: EffIO[NotFound, Int] = EffIO.fail(NotFound("u1"))
@@ -155,7 +148,7 @@ class EffIOSuite extends CatsEffectSuite:
       yield base + found
     run(workflow).map(r => assertEquals(r, Right(101)))
 
-  // --- Mapping ----------------------------------------------------------------------------------
+  // Mapping
 
   test("map and flatMap act on success and short-circuit on a typed failure"):
     for
@@ -177,7 +170,7 @@ class EffIOSuite extends CatsEffectSuite:
       assertEquals(sub, Right(3))
       assertEquals(tr, Left(Timeout))
 
-  // --- Recovery ---------------------------------------------------------------------------------
+  // Recovery
 
   test("catchAll recovers from a typed error"):
     run((EffIO.fail(Closed): EffIO[IoError, Int]).catchAll(e => EffIO.succeed(e.getMessage.length)))
@@ -308,7 +301,7 @@ class EffIOSuite extends CatsEffectSuite:
       assertEquals(r, Left(Closed))
       assertEquals(observed, Some(Left(Closed)))
 
-  // --- Concurrency, cancellation, resources -----------------------------------------------------
+  // Concurrency, cancellation, resources
 
   test("bracket releases the resource on a typed use failure"):
     for
@@ -397,7 +390,7 @@ class EffIOSuite extends CatsEffectSuite:
       assertEquals(r, Right(3))
       assertEquals(count, 3)
 
-  // --- async ------------------------------------------------------------------------------------
+  // async
 
   test("async completes with a typed success or failure via the callback"):
     val ok = EffIO.async[AppError, Int] { cb => cb(Right(7)); IO.pure(None) }
@@ -419,7 +412,7 @@ class EffIOSuite extends CatsEffectSuite:
       assertEquals(f, Left(Invalid("boom")))
       assertEquals(t, Left(NotFound("y")))
 
-  // --- Instances and lifting --------------------------------------------------------------------
+  // Instances and lifting
 
   test("the summoned GenConcurrent instance runs a concurrent program"):
     val F = summon[cats.effect.kernel.GenConcurrent[EffIO.Of[AppError], Throwable]]

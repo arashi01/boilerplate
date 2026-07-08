@@ -30,15 +30,6 @@ import munit.CatsEffectSuite
 import boilerplate.effect.AppError.*
 import boilerplate.effect.IoError.*
 
-/** Interop tests for the phantom-error redesign: the identity `functionK`, the O(0) `lift*` casts
-  * of cats-effect primitives into the typed context (for both the generic `Eff` with `F = IO` and
-  * the `IO`-specialised `EffIO`), the `.eff`/`.effIO` syntax that delegates to them, and the fibre
-  * `joinNever`/`joinOrFail` helpers.
-  *
-  * The key contract exercised here: a typed failure rides `F`'s native `Throwable` channel, so a
-  * fibre that fails with a typed error joins as `Outcome.Errored(e)`, and the join helpers re-raise
-  * that `e` on the channel. Every error is a `Throwable` drawn from `TestErrors`.
-  */
 class EffInteropSuite extends CatsEffectSuite:
   private def runEff[E <: Throwable, A](eff: Eff[IO, E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =
     eff.either
@@ -46,7 +37,7 @@ class EffInteropSuite extends CatsEffectSuite:
   private def runEffIO[E <: Throwable, A](eff: EffIO[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =
     eff.either
 
-  // --- functionK ---------------------------------------------------------------------------------
+  // functionK
 
   test("functionK builds a valid natural transformation into the Eff channel"):
     val fk = Eff.functionK[IO, AppError]
@@ -66,7 +57,7 @@ class EffInteropSuite extends CatsEffectSuite:
         assertEquals(after, 1)
     }
 
-  // --- Generic Eff (F = IO) lifts + `.eff` syntax ------------------------------------------------
+  // Generic Eff (F = IO) lifts + `.eff` syntax
 
   test("Eff.liftResource acquires, uses, and releases, returning the body result"):
     for
@@ -278,7 +269,7 @@ class EffInteropSuite extends CatsEffectSuite:
         assertEquals(finalValue, 42)
     }
 
-  // --- EffIO lifts + `.effIO` syntax -------------------------------------------------------------
+  // EffIO lifts + `.effIO` syntax
 
   test("Ref.effIO preserves get/set/update semantics in the EffIO context"):
     Ref.of[IO, Int](0).flatMap { ref =>
@@ -357,7 +348,7 @@ class EffInteropSuite extends CatsEffectSuite:
       yield assertEquals(value, 42)
     }
 
-  // --- Fibre joins in the Eff context ------------------------------------------------------------
+  // Fibre joins in the Eff context
 
   test("Eff Fiber.joinNever returns the value from a successful fibre"):
     Supervisor[IO](await = true).use { sup =>
@@ -432,7 +423,7 @@ class EffInteropSuite extends CatsEffectSuite:
       runEff(eff).map(r => assertEquals(r, Right(1)))
     }
 
-  // --- Fibre joins in the EffIO context ----------------------------------------------------------
+  // Fibre joins in the EffIO context
 
   test("EffIO Fiber.joinNever returns the value from a successful fibre"):
     Supervisor[IO](await = true).use { sup =>
@@ -496,7 +487,7 @@ class EffInteropSuite extends CatsEffectSuite:
       runEffIO(eff).map(r => assertEquals(r, Right(1)))
     }
 
-  // --- Resource.useEff / useEffIO ----------------------------------------------------------------
+  // Resource.useEff / useEffIO
 
   test("Resource.useEffIO runs the body and always releases the resource"):
     for

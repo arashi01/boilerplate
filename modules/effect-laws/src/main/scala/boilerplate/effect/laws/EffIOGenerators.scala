@@ -25,12 +25,8 @@ import org.scalacheck.Arbitrary
 
 import boilerplate.effect.EffIO
 
-/** Generators for [[boilerplate.effect.EffIO EffIO]] types used in law testing. */
 trait EffIOGenerators:
 
-  /** Generates `EffIO[E, A]` from an arbitrary `IO[Either[E, A]]`: a `Right` succeeds, a `Left`
-    * fails on `IO`'s channel - covering both the success and typed-failure space.
-    */
   implicit def arbitraryEffIO[E <: Throwable, A](using
     arbIO: Arbitrary[IO[Either[E, A]]]
   ): Arbitrary[EffIO[E, A]] =

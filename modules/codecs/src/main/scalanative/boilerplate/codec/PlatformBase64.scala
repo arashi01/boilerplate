@@ -20,7 +20,7 @@
  */
 package boilerplate.codec
 
-/** Native Base64 implementation backed by `java.util.Base64` (Scala Native javalib). */
+// Native base64 backend: java.util.Base64 (Scala Native javalib).
 private[codec] object PlatformBase64:
 
   inline def encode(data: Array[Byte]): String =

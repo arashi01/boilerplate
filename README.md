@@ -452,11 +452,11 @@ yield a + b
 
 ### cats interop
 
-Because `Eff.Of[F, E]` (the type lambda `[A] =>> Eff[F, E, A]`) is structurally `F` - the phantom
-`E` erases - every cats and cats-effect instance transfers by a representation cast: `F`'s own
-`Async[F]` **is** the `Async[Eff.Of[F, E]]`, with no hand-written typeclass ladder. The exception is
-the typed `MonadError[_, E]`, whose `handleErrorWith` filters `F`'s `Throwable` channel through a
-`TypeTest[Throwable, E]` so only a genuine `E` is caught and any other defect re-raises:
+Every cats and cats-effect instance for `F` is available on `Eff.Of[F, E]` (the type lambda
+`[A] =>> Eff[F, E, A]`) at no cost - `E` is a phantom, so `F`'s own `Async[F]` **is** the
+`Async[Eff.Of[F, E]]`. The one bespoke instance is the typed `MonadError[_, E]`, whose
+`handleErrorWith` filters `F`'s `Throwable` channel through a `TypeTest[Throwable, E]`, catching only
+a genuine `E` and re-raising any other defect:
 
 <details>
 <summary><strong>Effect typeclasses</strong></summary>
@@ -492,10 +492,10 @@ the typed `MonadError[_, E]`, whose `handleErrorWith` filters `F`'s `Throwable` 
 | `Eq`           | `Eq[F[A]]`           | Equality comparison                       |
 | `PartialOrder` | `PartialOrder[F[A]]` | Partial ordering                          |
 
-Because the error is a `Throwable` in `F`'s channel rather than a foldable value, the `Bifunctor`,
-`Foldable`, `Traverse`, `Bifoldable`, and `Bitraverse` instances are intentionally dropped - mapping
-the error to a non-`Throwable` would be unsound, and `Show`/`Eq`/`PartialOrder` now delegate straight
-to the base `F[A]`.
+Because the error is a `Throwable` in `F`'s channel rather than a foldable value, there are no
+`Bifunctor`, `Foldable`, `Traverse`, `Bifoldable`, or `Bitraverse` instances - mapping the error to a
+non-`Throwable` would be unsound - and `Show`/`Eq`/`PartialOrder` delegate straight to the base
+`F[A]`.
 
 </details>
 

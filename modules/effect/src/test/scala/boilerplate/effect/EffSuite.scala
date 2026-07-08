@@ -39,19 +39,11 @@ import munit.CatsEffectSuite
 import boilerplate.effect.AppError.*
 import boilerplate.effect.IoError.*
 
-/** Behavioural tests for the generic `Eff[F, E, A]` - the phantom typed-error effect over an
-  * arbitrary base `F`'s own `Throwable` channel - exercised primarily with `F = IO`. Typeclass
-  * lawfulness is verified separately by the discipline suite; these cover `Eff`'s own logic paths
-  * and the phantom-specific contracts: `E <: Throwable`, a typed failure IS an `F` failure
-  * (`Outcome.Errored`), observation needs `MonadThrow[F]` + a `TypeTest` and never swallows a
-  * defect, covariant `E` widening / union inference, and every capability transferring from `F` by
-  * representation.
-  */
 class EffSuite extends CatsEffectSuite:
   private def runEff[F[_], E <: Throwable, A](eff: Eff[F, E, A])(using MonadThrow[F], TypeTest[Throwable, E]): F[Either[E, A]] =
     eff.either
 
-  // --- Constructors -----------------------------------------------------------------------------
+  // Constructors
 
   test("the Eff[F] partially-applied constructors fix F and resolve its channels"):
     for
@@ -200,7 +192,7 @@ class EffSuite extends CatsEffectSuite:
       yield a + b
     assertEquals(eff.absolve, Some(42))
 
-  // --- Covariance in E and union inference -------------------------------------------------------
+  // Covariance in E and union inference
 
   test("a narrow error widens to a broad error with no call-site method"):
     val narrow: Eff[IO, NotFound, Int] = Eff.fail(NotFound("u1"))
@@ -229,7 +221,7 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(ok, Right(1))
       assertEquals(ko, Left(NotFound("2")))
 
-  // --- Mapping ----------------------------------------------------------------------------------
+  // Mapping
 
   test("map and flatMap act on success and short-circuit on a typed failure"):
     for
@@ -264,7 +256,7 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(tr, Right(42))
       assertEquals(trErr, Right(0))
 
-  // --- Recovery ---------------------------------------------------------------------------------
+  // Recovery
 
   test("catchAll recovers a typed error, allows an error-type change, and never swallows a defect"):
     for
@@ -438,7 +430,7 @@ class EffSuite extends CatsEffectSuite:
       assert(defect.isLeft) // IO fails
       assert(defect.left.exists(_.getMessage == "defect"))
 
-  // --- Concurrency, cancellation, resources -----------------------------------------------------
+  // Concurrency, cancellation, resources
 
   test("bracket releases on a typed use failure and skips release when acquire fails"):
     for
@@ -648,7 +640,7 @@ class EffSuite extends CatsEffectSuite:
       yield a + b
     runEff(prog).map(r => assertEquals(r, Right(15)))
 
-  // --- Traversal --------------------------------------------------------------------------------
+  // Traversal
 
   test("traverse short-circuits on the first error and collects successes"):
     for
@@ -752,7 +744,7 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(attempts, 4) // 1 initial + 3 retries
       assert(clue(end - start) < 60.millis)
 
-  // --- async ------------------------------------------------------------------------------------
+  // async
 
   test("async completes with a typed success or failure via the callback"):
     val ok = Eff.async[IO, AppError, Int] { cb => cb(Right(7)); IO.pure(None) }
@@ -784,7 +776,7 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(o, Right(42))
       assertEquals(k, Left(Invalid("boom")))
 
-  // --- Instances (via cats combinators) and lifting ---------------------------------------------
+  // Instances (via cats combinators) and lifting
 
   test("the summoned MonadError instance handles the typed error channel"):
     val F = summon[cats.MonadError[Eff.Of[IO, IoError], IoError]]

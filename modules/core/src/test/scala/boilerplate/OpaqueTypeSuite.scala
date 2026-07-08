@@ -22,7 +22,6 @@ package boilerplate
 
 import munit.FunSuite
 
-/** Simple string-based opaque type: must be non-empty. Opts in to equality. */
 opaque type NonEmptyString = String
 
 object NonEmptyString extends OpaqueType[NonEmptyString, String], OpaqueType.Eq[NonEmptyString]:
@@ -36,7 +35,6 @@ object NonEmptyString extends OpaqueType[NonEmptyString, String], OpaqueType.Eq[
     if s.nonEmpty then None
     else Some(new IllegalArgumentException("String must be non-empty"))
 
-/** Numeric opaque type: must be positive. Opts in to equality. */
 opaque type PositiveInt = Int
 
 object PositiveInt extends OpaqueType[PositiveInt, Int], OpaqueType.Eq[PositiveInt]:
@@ -50,13 +48,11 @@ object PositiveInt extends OpaqueType[PositiveInt, Int], OpaqueType.Eq[PositiveI
     if n > 0 then None
     else Some(new IllegalArgumentException(s"$n must be positive"))
 
-/** Domain-specific error type for Email validation. */
 final class EmailError(message: String) extends RuntimeException(message)
 
 object EmailError:
   given CanEqual[EmailError, EmailError] = CanEqual.derived
 
-/** Email opaque type with custom error type. Opts in to equality. */
 opaque type Email = String
 
 object Email extends OpaqueType[Email, String], OpaqueType.Eq[Email]:
@@ -70,7 +66,7 @@ object Email extends OpaqueType[Email, String], OpaqueType.Eq[Email]:
     if s.contains("@") then None
     else Some(new EmailError(s"Invalid email format: $s"))
 
-/** Secret token: must be non-empty. Deliberately omits OpaqueType.Eq to forbid ==. */
+// Omits OpaqueType.Eq deliberately, so == on SecretToken is a compile error.
 opaque type SecretToken = String
 
 object SecretToken extends OpaqueType[SecretToken, String]:
@@ -84,15 +80,12 @@ object SecretToken extends OpaqueType[SecretToken, String]:
     if s.nonEmpty then None
     else Some(new IllegalArgumentException("Token must be non-empty"))
 
-/** Marker traits for type-level unit tagging. */
 sealed trait Metres
 sealed trait Feet
 
-/** Distance opaque type parameterised by unit phantom type. */
 opaque type Distance[U] = Double
 
 object Distance:
-  /** Companion for Metres-tagged Distance. */
   object Metres extends OpaqueType[Distance[boilerplate.Metres], Double], OpaqueType.Eq[Distance[boilerplate.Metres]]:
     type Error = IllegalArgumentException
 
@@ -104,7 +97,6 @@ object Distance:
       if d >= 0.0 then None
       else Some(new IllegalArgumentException(s"Distance cannot be negative: $d"))
 
-  /** Companion for Feet-tagged Distance. */
   object Feet extends OpaqueType[Distance[boilerplate.Feet], Double], OpaqueType.Eq[Distance[boilerplate.Feet]]:
     type Error = IllegalArgumentException
 
@@ -117,7 +109,6 @@ object Distance:
       else Some(new IllegalArgumentException(s"Distance cannot be negative: $d"))
 end Distance
 
-/** Positive integer with compile-time validation for literals. */
 opaque type CheckedPositive = Int
 
 object CheckedPositive extends OpaqueType[CheckedPositive, Int], OpaqueType.Eq[CheckedPositive]:
@@ -358,7 +349,7 @@ class OpaqueTypeSuite extends FunSuite:
       case Right(_) => fail("Expected Left")
 
   test("whitespace-only string is valid for NonEmptyString"):
-    // Design decision: NonEmptyString checks nonEmpty, not non-blank
+    // nonEmpty, not non-blank: whitespace-only strings pass.
     assert(NonEmptyString.from("   ").isRight)
 
   test("zero is invalid for PositiveInt"):

@@ -20,7 +20,7 @@
  */
 package boilerplate.codec
 
-/** JVM Base64 implementation backed by `java.util.Base64`. */
+// JVM base64 backend: java.util.Base64.
 private[codec] object PlatformBase64:
 
   inline def encode(data: Array[Byte]): String =
