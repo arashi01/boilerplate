@@ -18,22 +18,23 @@
  * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package boilerplate.effect.laws
+package boilerplate.effect
 
-import cats.effect.*
-import org.scalacheck.Arbitrary
+import scala.util.control.NoStackTrace
 
-import boilerplate.effect.Eff
+/** Shared typed-error taxonomies for the effect test suites, following the ecosystem `EmileError`
+  * DNA: `sealed abstract class X(msg) extends Exception(msg) with NoStackTrace derives CanEqual`.
+  * Since `E <: Throwable` is the phantom's bound, every error a test raises must be a `Throwable`;
+  * these two independent sealed roots exercise the subtype lattice (covariance) and the union
+  * channel (`AppError | IoError`).
+  */
+sealed abstract class AppError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
+object AppError:
+  final case class NotFound(id: String) extends AppError(s"not found: $id")
+  final case class Invalid(reason: String) extends AppError(s"invalid: $reason")
+  case object Timeout extends AppError("timed out")
 
-/** Generators for [[boilerplate.effect.Eff Eff]] types used in law testing. */
-trait EffGenerators:
-
-  /** Generates `Eff[IO, E, A]` from an arbitrary `IO[Either[E, A]]`: a `Right` succeeds, a `Left`
-    * fails on `IO`'s channel - covering both the success and typed-failure space.
-    */
-  implicit def arbitraryEff[E <: Throwable, A](using
-    arbIO: Arbitrary[IO[Either[E, A]]]
-  ): Arbitrary[Eff[IO, E, A]] =
-    Arbitrary(arbIO.arbitrary.map(Eff.lift(_)))
-
-object EffGenerators extends EffGenerators
+sealed abstract class IoError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
+object IoError:
+  final case class Failed(code: Int) extends IoError(s"io failed: $code")
+  case object Closed extends IoError("closed")

@@ -20,145 +20,139 @@
  */
 package boilerplate.effect
 
-import cats.*
+import scala.reflect.TypeTest
+
 import cats.effect.*
+import cats.effect.kernel.Outcome
 import cats.effect.std.*
-import cats.syntax.all.*
 import munit.CatsEffectSuite
 
-/** Tests that lifted cats-effect primitives preserve their semantics and compose in the `Eff`
-  * context with correct error-channel typing.
+import boilerplate.effect.AppError.*
+import boilerplate.effect.IoError.*
+
+/** Interop tests for the phantom-error redesign: the identity `functionK`, the O(0) `lift*` casts
+  * of cats-effect primitives into the typed context (for both the generic `Eff` with `F = IO` and
+  * the `IO`-specialised `EffIO`), the `.eff`/`.effIO` syntax that delegates to them, and the fibre
+  * `joinNever`/`joinOrFail` helpers.
+  *
+  * The central beta contract exercised here: a typed failure now rides `F`'s native `Throwable`
+  * channel, so a fibre that fails with a typed error joins as `Outcome.Errored(e)` (never
+  * `Outcome.Succeeded(Left(e))`), and the join helpers re-raise that `e` on the channel rather than
+  * unwrapping an `Either`. Every error is therefore a `Throwable` drawn from `TestErrors`.
   */
 class EffInteropSuite extends CatsEffectSuite:
-  private def runEff[E, A](eff: Eff[IO, E, A]): IO[Either[E, A]] = eff.either
+  private def runEff[E <: Throwable, A](eff: Eff[IO, E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =
+    eff.either
 
-  test("functionK creates valid natural transformation"):
-    val fk = Eff.functionK[IO, String]
-    val result: Eff[IO, String, Int] = fk(IO.pure(42))
-    runEff(result).map(r => assertEquals(r, Right(42)))
+  private def runEffIO[E <: Throwable, A](eff: EffIO[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =
+    eff.either
 
-  test("functionK preserves effect semantics"):
-    Ref.of[IO, Boolean](false).flatMap { executed =>
-      val fk = Eff.functionK[IO, String]
-      val io = IO.defer(executed.set(true).as(42))
-      val eff = fk(io)
+  // --- functionK ---------------------------------------------------------------------------------
+
+  test("functionK builds a valid natural transformation into the Eff channel"):
+    val fk = Eff.functionK[IO, AppError]
+    val lifted: Eff[IO, AppError, Int] = fk(IO.pure(42))
+    runEff(lifted).map(r => assertEquals(r, Right(42)))
+
+  test("functionK is lazy: it neither runs the effect early nor duplicates it"):
+    Ref.of[IO, Int](0).flatMap { runs =>
+      val fk = Eff.functionK[IO, AppError]
+      val lifted = fk(runs.update(_ + 1))
       for
-        before <- executed.get
-        result <- runEff(eff)
-        after <- executed.get
+        before <- runs.get
+        _ <- runEff(lifted)
+        after <- runs.get
       yield
-        assert(!before, "effect should not have executed before run")
-        assert(after, "effect should have executed after run")
-        assertEquals(result, Right(42))
+        assertEquals(before, 0)
+        assertEquals(after, 1)
     }
 
-  test("Eff.liftResource produces Resource in Eff context"):
-    (Ref.of[IO, Boolean](false), Ref.of[IO, Boolean](false)).tupled.flatMap { (acquired, released) =>
-      val resource: Resource[IO, Int] = Resource.make(
-        acquired.set(true).as(42)
-      )(_ => released.set(true))
+  // --- Generic Eff (F = IO) lifts + `.eff` syntax ------------------------------------------------
 
-      val liftedResource: Resource[Eff.Of[IO, String], Int] = Eff.liftResource(resource)
+  test("Eff.liftResource acquires, uses, and releases, returning the body result"):
+    for
+      acquired <- Ref.of[IO, Boolean](false)
+      released <- Ref.of[IO, Boolean](false)
+      resource = Resource.make(acquired.set(true).as(42))(_ => released.set(true))
+      lifted = Eff.liftResource[IO, IoError, Int](resource)
+      result <- runEff(lifted.use(n => Eff.succeed[IO, IoError, Int](n * 2)))
+      wasAcquired <- acquired.get
+      wasReleased <- released.get
+    yield
+      assert(wasAcquired, "resource should have been acquired")
+      assert(wasReleased, "resource should have been released")
+      assertEquals(result, Right(84))
 
-      for
-        result <- liftedResource.use(n => Eff.succeed[IO, String, Int](n * 2)).either
-        wasAcquired <- acquired.get
-        wasReleased <- released.get
-      yield
-        assert(wasAcquired, "resource should have been acquired")
-        assert(wasReleased, "resource should have been released")
-        assertEquals(result, Right(84))
-    }
-
-  test("Eff.liftResource release runs even when use fails with typed error"):
+  test("Eff.liftResource releases the resource even when the body fails with a typed error"):
     Ref.of[IO, Boolean](false).flatMap { released =>
       val resource: Resource[IO, Int] = Resource.make(IO.pure(42))(_ => released.set(true))
-      val liftedResource = Eff.liftResource[IO, String, Int](resource)
-
+      val lifted = Eff.liftResource[IO, IoError, Int](resource)
       for
-        result <- liftedResource.use(_ => Eff.fail[IO, String, Int]("boom")).either
+        result <- runEff(lifted.use(_ => Eff.fail[IO, IoError, Int](Closed)))
         wasReleased <- released.get
       yield
-        assert(wasReleased, "resource should have been released on typed error")
-        assertEquals(result, Left("boom"))
+        assert(wasReleased, "resource should have been released on a typed error")
+        assertEquals(result, Left(Closed))
     }
 
-  test("Resource.eff[E] extension delegates to Eff.liftResource"):
+  test("Resource.eff delegates to Eff.liftResource"):
     Ref.of[IO, Boolean](false).flatMap { released =>
       val resource: Resource[IO, Int] = Resource.make(IO.pure(42))(_ => released.set(true))
-      val liftedResource: Resource[Eff.Of[IO, String], Int] = resource.eff[String]
-
+      val lifted: Resource[Eff.Of[IO, IoError], Int] = resource.eff[IoError]
       for
-        result <- liftedResource.use(n => Eff.succeed[IO, String, Int](n)).either
+        result <- runEff(lifted.use(n => Eff.succeed[IO, IoError, Int](n)))
         wasReleased <- released.get
       yield
         assert(wasReleased)
         assertEquals(result, Right(42))
     }
 
-  test("Eff.liftRef preserves get/set semantics in Eff context"):
+  test("Eff.liftRef preserves get/set/update semantics in the Eff context"):
     Ref.of[IO, Int](0).flatMap { ref =>
-      val liftedRef = Eff.liftRef[IO, String, Int](ref)
-      val eff: Eff[IO, String, Int] = for
+      val liftedRef = Eff.liftRef[IO, IoError, Int](ref)
+      val eff: Eff[IO, IoError, Int] = for
         _ <- liftedRef.set(42)
+        _ <- liftedRef.update(_ + 3)
         result <- liftedRef.get
       yield result
-      runEff(eff).map(r => assertEquals(r, Right(42)))
+      runEff(eff).map(r => assertEquals(r, Right(45)))
     }
 
-  test("Eff.liftRef modifications compose with Eff operations"):
-    Ref.of[IO, Int](10).flatMap { ref =>
-      val liftedRef = Eff.liftRef[IO, String, Int](ref)
-      val eff: Eff[IO, String, Int] = for
-        current <- liftedRef.get
-        _ <- liftedRef.set(current + 5)
-        updated <- liftedRef.get
-      yield updated
-      runEff(eff).map(r => assertEquals(r, Right(15)))
-    }
-
-  test("Ref.eff[E] extension delegates to Eff.liftRef"):
+  test("Ref.eff delegates to Eff.liftRef"):
     Ref.of[IO, Int](100).flatMap { ref =>
-      val liftedRef: Ref[Eff.Of[IO, String], Int] = ref.eff[String]
+      val liftedRef: Ref[Eff.Of[IO, IoError], Int] = ref.eff[IoError]
       runEff(liftedRef.get).map(r => assertEquals(r, Right(100)))
     }
 
-  test("Eff.liftDeferred preserves complete/get semantics"):
+  test("Eff.liftDeferred preserves complete/get and writes through to the underlying Deferred"):
     Deferred[IO, Int].flatMap { deferred =>
-      val liftedDeferred = Eff.liftDeferred[IO, String, Int](deferred)
-      val eff: Eff[IO, String, Int] = for
+      val liftedDeferred = Eff.liftDeferred[IO, IoError, Int](deferred)
+      val eff: Eff[IO, IoError, Int] = for
         _ <- liftedDeferred.complete(42)
         result <- liftedDeferred.get
       yield result
-      runEff(eff).map(r => assertEquals(r, Right(42)))
-    }
-
-  test("Eff.liftDeferred can be completed from Eff context"):
-    Deferred[IO, Int].flatMap { deferred =>
-      val liftedDeferred = Eff.liftDeferred[IO, String, Int](deferred)
-      val eff: Eff[IO, String, Boolean] = liftedDeferred.complete(99)
       for
-        completed <- runEff(eff)
-        value <- deferred.get // Read from original to verify
+        r <- runEff(eff)
+        original <- deferred.get
       yield
-        assertEquals(completed, Right(true))
-        assertEquals(value, 99)
+        assertEquals(r, Right(42))
+        assertEquals(original, 42)
     }
 
-  test("Deferred.eff[E] extension delegates to Eff.liftDeferred"):
+  test("Deferred.eff delegates to Eff.liftDeferred"):
     Deferred[IO, String].flatMap { deferred =>
-      val liftedDeferred: Deferred[Eff.Of[IO, Int], String] = deferred.eff[Int]
-      val eff: Eff[IO, Int, String] = for
+      val liftedDeferred: Deferred[Eff.Of[IO, IoError], String] = deferred.eff[IoError]
+      val eff: Eff[IO, IoError, String] = for
         _ <- liftedDeferred.complete("hello")
         result <- liftedDeferred.get
       yield result
       runEff(eff).map(r => assertEquals(r, Right("hello")))
     }
 
-  test("Eff.liftQueue preserves offer/take semantics"):
+  test("Eff.liftQueue preserves FIFO offer/take semantics"):
     Queue.unbounded[IO, Int].flatMap { queue =>
-      val liftedQueue = Eff.liftQueue[IO, String, Int](queue)
-      val eff: Eff[IO, String, (Int, Int)] = for
+      val liftedQueue = Eff.liftQueue[IO, IoError, Int](queue)
+      val eff: Eff[IO, IoError, (Int, Int)] = for
         _ <- liftedQueue.offer(1)
         _ <- liftedQueue.offer(2)
         first <- liftedQueue.take
@@ -167,215 +161,285 @@ class EffInteropSuite extends CatsEffectSuite:
       runEff(eff).map(r => assertEquals(r, Right((1, 2))))
     }
 
-  test("Eff.liftQueue composes with Eff for-comprehensions"):
-    Queue.unbounded[IO, Int].flatMap { queue =>
-      val liftedQueue = Eff.liftQueue[IO, String, Int](queue)
-      val eff: Eff[IO, String, List[Int]] = for
-        _ <- liftedQueue.offer(10)
-        _ <- liftedQueue.offer(20)
-        a <- liftedQueue.take
-        b <- liftedQueue.take
-      yield List(a, b)
-      runEff(eff).map(r => assertEquals(r, Right(List(10, 20))))
-    }
-
-  test("Queue.eff[E] extension delegates to Eff.liftQueue"):
+  test("Queue.eff delegates to Eff.liftQueue"):
     Queue.unbounded[IO, String].flatMap { queue =>
-      val liftedQueue: Queue[Eff.Of[IO, Int], String] = queue.eff[Int]
-      val eff: Eff[IO, Int, String] = for
+      val liftedQueue: Queue[Eff.Of[IO, IoError], String] = queue.eff[IoError]
+      val eff: Eff[IO, IoError, String] = for
         _ <- liftedQueue.offer("test")
         result <- liftedQueue.take
       yield result
       runEff(eff).map(r => assertEquals(r, Right("test")))
     }
 
-  test("Eff.liftSemaphore preserves permit semantics"):
+  test("Eff.liftSemaphore preserves acquire/available/release semantics"):
     Semaphore[IO](1).flatMap { sem =>
-      val liftedSem = Eff.liftSemaphore[IO, String](sem)
-      val eff: Eff[IO, String, (Long, Long)] = for
+      val liftedSem = Eff.liftSemaphore[IO, IoError](sem)
+      val eff: Eff[IO, IoError, (Long, Long)] = for
         _ <- liftedSem.acquire
         available <- liftedSem.available
         _ <- liftedSem.release
         availableAfter <- liftedSem.available
       yield (available, availableAfter)
-      runEff(eff).map { r =>
-        assertEquals(r, Right((0L, 1L)))
-      }
+      runEff(eff).map(r => assertEquals(r, Right((0L, 1L))))
     }
 
-  test("Eff.liftSemaphore permit guards Eff operations"):
-    (Semaphore[IO](1), Ref.of[IO, Int](0)).tupled.flatMap { (sem, ref) =>
-      val liftedSem = Eff.liftSemaphore[IO, String](sem)
-      val liftedRef = Eff.liftRef[IO, String, Int](ref)
+  test("Eff.liftSemaphore permit guards an Eff operation"):
+    for
+      sem <- Semaphore[IO](1)
+      ref <- Ref.of[IO, Int](0)
+      liftedSem = Eff.liftSemaphore[IO, IoError](sem)
+      liftedRef = Eff.liftRef[IO, IoError, Int](ref)
+      eff = liftedSem.permit.use { _ =>
+              for
+                current <- liftedRef.get
+                _ <- liftedRef.set(current + 1)
+                updated <- liftedRef.get
+              yield updated
+            }
+      result <- runEff(eff)
+      finalValue <- ref.get
+    yield
+      assertEquals(result, Right(1))
+      assertEquals(finalValue, 1)
 
-      val eff: Eff[IO, String, Int] = liftedSem.permit.use { _ =>
-        for
-          current <- liftedRef.get
-          _ <- liftedRef.set(current + 1)
-          updated <- liftedRef.get
-        yield updated
-      }
-      for
-        result <- runEff(eff)
-        finalValue <- ref.get
-      yield
-        assertEquals(result, Right(1))
-        assertEquals(finalValue, 1)
-    }
-
-  test("Semaphore.eff[E] extension delegates to Eff.liftSemaphore"):
+  test("Semaphore.eff delegates to Eff.liftSemaphore"):
     Semaphore[IO](2).flatMap { sem =>
-      val liftedSem: Semaphore[Eff.Of[IO, String]] = sem.eff[String]
+      val liftedSem: Semaphore[Eff.Of[IO, IoError]] = sem.eff[IoError]
       runEff(liftedSem.available).map(r => assertEquals(r, Right(2L)))
     }
 
-  test("lifted primitives compose in complex Eff workflows"):
-    (Ref.of[IO, List[String]](Nil), Queue.unbounded[IO, Int]).tupled.flatMap { (ref, queue) =>
-      val liftedRef = Eff.liftRef[IO, String, List[String]](ref)
-      val liftedQueue = Eff.liftQueue[IO, String, Int](queue)
-
-      val workflow: Eff[IO, String, List[String]] = for
-        _ <- liftedQueue.offer(1)
-        _ <- liftedQueue.offer(2)
-        n1 <- liftedQueue.take
-        _ <- liftedRef.update(_ :+ s"got $n1")
-        n2 <- liftedQueue.take
-        _ <- liftedRef.update(_ :+ s"got $n2")
-        log <- liftedRef.get
-      yield log
-
-      runEff(workflow).map(r => assertEquals(r, Right(List("got 1", "got 2"))))
-    }
-
-  test("lifted Resource with lifted Ref maintains state correctly"):
-    Ref.of[IO, Int](0).flatMap { ref =>
-      val liftedRef = Eff.liftRef[IO, String, Int](ref)
-      val resource = Resource.make(
-        liftedRef.updateAndGet(_ + 1)
-      )(_ => liftedRef.update(_ + 10))
-
-      for
-        result <- resource.use(n => Eff.succeed[IO, String, Int](n * 2)).either
-        finalValue <- ref.get
-      yield
-        assertEquals(result, Right(2)) // 1 * 2
-        assertEquals(finalValue, 11) // 1 + 10 from release
-    }
-
-  test("lifted primitives preserve typed error channel in failure scenarios"):
-    Ref.of[IO, Int](0).flatMap { ref =>
-      val liftedRef = Eff.liftRef[IO, String, Int](ref)
-
-      val workflow: Eff[IO, String, Int] = for
-        _ <- liftedRef.set(42)
-        _ <- Eff.fail[IO, String, Unit]("intentional failure")
-        _ <- liftedRef.set(99) // Should not execute
-      yield 0
-
-      for
-        result <- runEff(workflow)
-        finalValue <- ref.get
-      yield
-        assertEquals(result, Left("intentional failure"))
-        assertEquals(finalValue, 42) // Set before failure, not 99
-    }
-
-  test("CountDownLatch.eff[E] extension delegates to Eff.liftLatch"):
-    cats.effect.std.CountDownLatch[IO](1).flatMap { latch =>
-      val liftedLatch: cats.effect.std.CountDownLatch[Eff.Of[IO, String]] = latch.eff[String]
-      for
-        _ <- latch.release
-        _ <- runEff(liftedLatch.await)
+  test("CountDownLatch.eff releases awaiters once the count reaches zero"):
+    CountDownLatch[IO](1).flatMap { latch =>
+      val liftedLatch = latch.eff[IoError]
+      val eff: Eff[IO, IoError, Unit] = for
+        _ <- liftedLatch.release
+        _ <- liftedLatch.await
       yield ()
+      runEff(eff).map(r => assertEquals(r, Right(())))
     }
 
-  test("CyclicBarrier.eff[E] extension delegates to Eff.liftBarrier"):
-    cats.effect.std.CyclicBarrier[IO](1).flatMap { barrier =>
-      val liftedBarrier: cats.effect.std.CyclicBarrier[Eff.Of[IO, String]] = barrier.eff[String]
-      runEff(liftedBarrier.await).map(r => assert(r.isRight))
+  test("CyclicBarrier.eff releases when the party count is reached"):
+    CyclicBarrier[IO](1).flatMap { barrier =>
+      val liftedBarrier = barrier.eff[IoError]
+      runEff(liftedBarrier.await).map(r => assertEquals(r, Right(())))
     }
 
-  test("AtomicCell.eff[E] extension delegates to Eff.liftCell"):
-    cats.effect.std.AtomicCell[IO].of(10).flatMap { cell =>
-      val liftedCell: cats.effect.std.AtomicCell[Eff.Of[IO, String], Int] = cell.eff[String]
+  test("AtomicCell.eff writes through to the underlying cell"):
+    AtomicCell[IO].of(10).flatMap { cell =>
+      val liftedCell = cell.eff[IoError]
       for
         _ <- runEff(liftedCell.set(42))
         value <- cell.get
       yield assertEquals(value, 42)
     }
 
-  test("Supervisor.eff[E] extension delegates to Eff.liftSupervisor"):
-    cats.effect.std.Supervisor[IO](await = true).use { sup =>
-      val liftedSup: cats.effect.std.Supervisor[Eff.Of[IO, String]] = sup.eff[String]
-      val supervised: Eff[IO, String, cats.effect.kernel.Fiber[Eff.Of[IO, String], Throwable, Int]] =
-        liftedSup.supervise(Eff.succeed[IO, String, Int](42))
-      runEff(supervised).map(r => assert(r.isRight))
+  test("lifted Ref and Queue compose in a single Eff workflow"):
+    for
+      ref <- Ref.of[IO, List[String]](Nil)
+      queue <- Queue.unbounded[IO, Int]
+      liftedRef = Eff.liftRef[IO, IoError, List[String]](ref)
+      liftedQueue = Eff.liftQueue[IO, IoError, Int](queue)
+      workflow = (for
+                   _ <- liftedQueue.offer(1)
+                   _ <- liftedQueue.offer(2)
+                   n1 <- liftedQueue.take
+                   _ <- liftedRef.update(_ :+ s"got $n1")
+                   n2 <- liftedQueue.take
+                   _ <- liftedRef.update(_ :+ s"got $n2")
+                   log <- liftedRef.get
+                 yield log): Eff[IO, IoError, List[String]]
+      r <- runEff(workflow)
+    yield assertEquals(r, Right(List("got 1", "got 2")))
+
+  test("a lifted Resource whose acquire/release run in the Eff context keeps state consistent"):
+    Ref.of[IO, Int](0).flatMap { ref =>
+      val liftedRef = Eff.liftRef[IO, IoError, Int](ref)
+      val resource = Resource.make(liftedRef.updateAndGet(_ + 1))(_ => liftedRef.update(_ + 10))
+      for
+        result <- runEff(resource.use(n => Eff.succeed[IO, IoError, Int](n * 2)))
+        finalValue <- ref.get
+      yield
+        assertEquals(result, Right(2)) // acquired 1, doubled
+        assertEquals(finalValue, 11) // 1 acquire + 10 release
     }
 
-  test("Fiber.joinNever returns value from successful fiber"):
-    cats.effect.std.Supervisor[IO](await = true).use { sup =>
-      val liftedSup = sup.eff[String]
+  test("a typed failure short-circuits the workflow and preserves prior lifted-Ref writes"):
+    Ref.of[IO, Int](0).flatMap { ref =>
+      val liftedRef = Eff.liftRef[IO, IoError, Int](ref)
+      val workflow: Eff[IO, IoError, Int] = for
+        _ <- liftedRef.set(42)
+        _ <- Eff.fail[IO, IoError, Unit](Closed)
+        _ <- liftedRef.set(99) // must not run
+      yield 0
       for
-        fiber <- liftedSup.supervise(Eff.succeed[IO, String, Int](42)).either
+        result <- runEff(workflow)
+        finalValue <- ref.get
+      yield
+        assertEquals(result, Left(Closed))
+        assertEquals(finalValue, 42)
+    }
+
+  // --- EffIO lifts + `.effIO` syntax -------------------------------------------------------------
+
+  test("Ref.effIO preserves get/set/update semantics in the EffIO context"):
+    Ref.of[IO, Int](0).flatMap { ref =>
+      val liftedRef = ref.effIO[IoError]
+      val eff: EffIO[IoError, Int] = for
+        _ <- liftedRef.set(7)
+        _ <- liftedRef.update(_ + 5)
+        v <- liftedRef.get
+      yield v
+      runEffIO(eff).map(r => assertEquals(r, Right(12)))
+    }
+
+  test("Deferred.effIO preserves complete/get semantics"):
+    Deferred[IO, Int].flatMap { deferred =>
+      val liftedDeferred = deferred.effIO[IoError]
+      val eff: EffIO[IoError, Int] = for
+        _ <- liftedDeferred.complete(42)
+        v <- liftedDeferred.get
+      yield v
+      runEffIO(eff).map(r => assertEquals(r, Right(42)))
+    }
+
+  test("Queue.effIO preserves FIFO offer/take semantics"):
+    Queue.unbounded[IO, Int].flatMap { queue =>
+      val liftedQueue = queue.effIO[IoError]
+      val eff: EffIO[IoError, List[Int]] = for
+        _ <- liftedQueue.offer(1)
+        _ <- liftedQueue.offer(2)
+        a <- liftedQueue.take
+        b <- liftedQueue.take
+      yield List(a, b)
+      runEffIO(eff).map(r => assertEquals(r, Right(List(1, 2))))
+    }
+
+  test("Semaphore.effIO permit guards an EffIO operation"):
+    for
+      sem <- Semaphore[IO](1)
+      ref <- Ref.of[IO, Int](0)
+      liftedSem = sem.effIO[IoError]
+      liftedRef = ref.effIO[IoError]
+      eff = liftedSem.permit.use { _ =>
+              for
+                current <- liftedRef.get
+                _ <- liftedRef.set(current + 1)
+                updated <- liftedRef.get
+              yield updated
+            }
+      result <- runEffIO(eff)
+      finalValue <- ref.get
+    yield
+      assertEquals(result, Right(1))
+      assertEquals(finalValue, 1)
+
+  test("CountDownLatch.effIO releases awaiters once the count reaches zero"):
+    CountDownLatch[IO](1).flatMap { latch =>
+      val liftedLatch = latch.effIO[IoError]
+      val eff: EffIO[IoError, Unit] = for
+        _ <- liftedLatch.release
+        _ <- liftedLatch.await
+      yield ()
+      runEffIO(eff).map(r => assertEquals(r, Right(())))
+    }
+
+  test("CyclicBarrier.effIO releases when the party count is reached"):
+    CyclicBarrier[IO](1).flatMap { barrier =>
+      val liftedBarrier = barrier.effIO[IoError]
+      runEffIO(liftedBarrier.await).map(r => assertEquals(r, Right(())))
+    }
+
+  test("AtomicCell.effIO writes through to the underlying cell"):
+    AtomicCell[IO].of(10).flatMap { cell =>
+      val liftedCell = cell.effIO[IoError]
+      for
+        _ <- runEffIO(liftedCell.set(42))
+        value <- cell.get
+      yield assertEquals(value, 42)
+    }
+
+  // --- Fibre joins in the Eff context ------------------------------------------------------------
+
+  test("Eff Fiber.joinNever returns the value from a successful fibre"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.eff[AppError]
+      for
+        fiber <- liftedSup.supervise(Eff.succeed[IO, AppError, Int](42)).either
         result <- fiber match
                     case Right(f) => f.joinNever.either
                     case Left(e)  => IO.pure(Left(e))
       yield assertEquals(result, Right(42))
     }
 
-  test("Fiber.joinNever propagates typed error from fiber"):
-    cats.effect.std.Supervisor[IO](await = true).use { sup =>
-      val liftedSup = sup.eff[String]
+  test("Eff Fiber.joinNever propagates a typed error from the fibre"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.eff[AppError]
       for
-        fiber <- liftedSup.supervise(Eff.fail[IO, String, Int]("boom")).either
+        fiber <- liftedSup.supervise(Eff.fail[IO, AppError, Int](Invalid("boom"))).either
         result <- fiber match
                     case Right(f) => f.joinNever.either
                     case Left(e)  => IO.pure(Left(e))
-      yield assertEquals(result, Left("boom"))
+      yield assertEquals(result, Left(Invalid("boom")))
     }
 
-  test("Fiber.joinOrFail returns value from successful fiber"):
-    cats.effect.std.Supervisor[IO](await = true).use { sup =>
-      val liftedSup = sup.eff[String]
+  test("Eff Fiber.joinOrFail returns the value from a successful fibre"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.eff[AppError]
       for
-        fiber <- liftedSup.supervise(Eff.succeed[IO, String, Int](42)).either
+        fiber <- liftedSup.supervise(Eff.succeed[IO, AppError, Int](42)).either
         result <- fiber match
-                    case Right(f) => f.joinOrFail("was cancelled").either
+                    case Right(f) => f.joinOrFail(Timeout).either
                     case Left(e)  => IO.pure(Left(e))
       yield assertEquals(result, Right(42))
     }
 
-  test("Fiber.joinOrFail propagates typed error from fiber"):
-    cats.effect.std.Supervisor[IO](await = true).use { sup =>
-      val liftedSup = sup.eff[String]
+  test("Eff Fiber.joinOrFail propagates a typed error from the fibre"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.eff[AppError]
       for
-        fiber <- liftedSup.supervise(Eff.fail[IO, String, Int]("boom")).either
+        fiber <- liftedSup.supervise(Eff.fail[IO, AppError, Int](Invalid("boom"))).either
         result <- fiber match
-                    case Right(f) => f.joinOrFail("was cancelled").either
+                    case Right(f) => f.joinOrFail(Timeout).either
                     case Left(e)  => IO.pure(Left(e))
-      yield assertEquals(result, Left("boom"))
+      yield assertEquals(result, Left(Invalid("boom")))
     }
 
-  test("Fiber.joinOrFail returns typed error when fiber is cancelled"):
-    cats.effect.std.Supervisor[IO](await = true).use { sup =>
-      val liftedSup = sup.eff[String]
+  test("Eff Fiber.joinOrFail fails with onCanceled when the fibre is cancelled"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.eff[AppError]
       for
-        fiber <- liftedSup.supervise(Eff.liftF[IO, String, Int](IO.never)).either
+        fiber <- liftedSup.supervise(Eff.liftF[IO, AppError, Int](IO.never)).either
         result <- fiber match
                     case Right(f) =>
                       for
                         _ <- f.cancel.either
-                        r <- f.joinOrFail("was cancelled").either
+                        r <- f.joinOrFail(Timeout).either
                       yield r
                     case Left(e) => IO.pure(Left(e))
-      yield assertEquals(result, Left("was cancelled"))
+      yield assertEquals(result, Left(Timeout))
     }
 
-  test("EffIO Fiber.joinNever returns value from successful fibre"):
+  test("an Eff fibre failing with a typed error joins as Outcome.Errored, not Succeeded"):
     Supervisor[IO](await = true).use { sup =>
-      val liftedSup = sup.effIO[String]
+      val liftedSup = sup.eff[AppError]
+      val boom = Invalid("boom")
+      val eff: Eff[IO, AppError, Int] =
+        for
+          fiber <- liftedSup.supervise(Eff.fail[IO, AppError, Int](boom))
+          outcome <- fiber.join
+        yield outcome match
+          case Outcome.Errored(e) if e eq boom => 1
+          case _                               => 0
+      runEff(eff).map(r => assertEquals(r, Right(1)))
+    }
+
+  // --- Fibre joins in the EffIO context ----------------------------------------------------------
+
+  test("EffIO Fiber.joinNever returns the value from a successful fibre"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.effIO[IoError]
       for
-        fiber <- liftedSup.supervise(EffIO.succeed(42): EffIO[String, Int]).either
+        fiber <- liftedSup.supervise(EffIO.succeed(42): EffIO[IoError, Int]).either
         result <- fiber match
                     case Right(f) => f.joinNever.either
                     case Left(e)  => IO.pure(Left(e))
@@ -384,52 +448,79 @@ class EffInteropSuite extends CatsEffectSuite:
 
   test("EffIO Fiber.joinNever propagates a typed error from the fibre"):
     Supervisor[IO](await = true).use { sup =>
-      val liftedSup = sup.effIO[String]
+      val liftedSup = sup.effIO[IoError]
       for
-        fiber <- liftedSup.supervise(EffIO.fail("boom"): EffIO[String, Int]).either
+        fiber <- liftedSup.supervise(EffIO.fail(Closed): EffIO[IoError, Int]).either
         result <- fiber match
                     case Right(f) => f.joinNever.either
                     case Left(e)  => IO.pure(Left(e))
-      yield assertEquals(result, Left("boom"))
+      yield assertEquals(result, Left(Closed))
     }
 
-  test("EffIO Fiber.joinOrFail returns the typed error when cancelled"):
+  test("EffIO Fiber.joinOrFail propagates a typed error from the fibre"):
     Supervisor[IO](await = true).use { sup =>
-      val liftedSup = sup.effIO[String]
+      val liftedSup = sup.effIO[IoError]
       for
-        fiber <- liftedSup.supervise(EffIO.liftF(IO.never[Int]): EffIO[String, Int]).either
+        fiber <- liftedSup.supervise(EffIO.fail(Failed(500)): EffIO[IoError, Int]).either
+        result <- fiber match
+                    case Right(f) => f.joinOrFail(Closed).either
+                    case Left(e)  => IO.pure(Left(e))
+      yield assertEquals(result, Left(Failed(500)))
+    }
+
+  test("EffIO Fiber.joinOrFail fails with onCanceled when the fibre is cancelled"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.effIO[IoError]
+      for
+        fiber <- liftedSup.supervise(EffIO.liftF(IO.never[Int]): EffIO[IoError, Int]).either
         result <- fiber match
                     case Right(f) =>
                       for
                         _ <- f.cancel.either
-                        r <- f.joinOrFail("was cancelled").either
+                        r <- f.joinOrFail(Closed).either
                       yield r
                     case Left(e) => IO.pure(Left(e))
-      yield assertEquals(result, Left("was cancelled"))
+      yield assertEquals(result, Left(Closed))
     }
+
+  test("an EffIO fibre failing with a typed error joins as Outcome.Errored, not Succeeded"):
+    Supervisor[IO](await = true).use { sup =>
+      val liftedSup = sup.effIO[IoError]
+      val boom = Failed(1)
+      val eff: EffIO[IoError, Int] =
+        for
+          fiber <- liftedSup.supervise(EffIO.fail(boom): EffIO[IoError, Int])
+          outcome <- fiber.join
+        yield outcome match
+          case Outcome.Errored(e) if e eq boom => 1
+          case _                               => 0
+      runEffIO(eff).map(r => assertEquals(r, Right(1)))
+    }
+
+  // --- Resource.useEff / useEffIO ----------------------------------------------------------------
 
   test("Resource.useEffIO runs the body and always releases the resource"):
     for
       released <- Ref.of[IO, Int](0)
       res = Resource.make(IO.pure(42))(_ => released.update(_ + 1))
-      ok <- res.useEffIO(a => EffIO.succeed(a + 1)).either
+      ok <- runEffIO(res.useEffIO(a => EffIO.succeed(a + 1)))
       afterOk <- released.get
-      ko <- res.useEffIO[String, Int](_ => EffIO.fail("boom")).either
+      ko <- runEffIO(res.useEffIO[IoError, Int](_ => EffIO.fail(Closed)))
       afterKo <- released.get
     yield
       assertEquals(ok, Right(43))
-      assertEquals(ko, Left("boom"))
+      assertEquals(ko, Left(Closed))
       assertEquals(afterOk, 1) // released after success
-      assertEquals(afterKo, 2) // released after typed error too
+      assertEquals(afterKo, 2) // released after a typed error too
 
   test("Resource.useEff (generic F) releases the resource on a typed error"):
     Ref.of[IO, Boolean](false).flatMap { released =>
       val res = Resource.make(IO.pure(1))(_ => released.set(true))
       for
-        r <- res.useEff(_ => Eff.fail[IO, String, Int]("boom")).either
+        r <- runEff(res.useEff(_ => Eff.fail[IO, IoError, Int](Closed)))
         wasReleased <- released.get
       yield
-        assertEquals(r, Left("boom"))
+        assertEquals(r, Left(Closed))
         assert(wasReleased)
     }
 

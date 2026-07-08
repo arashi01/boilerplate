@@ -29,7 +29,6 @@ import cats.effect.laws.GenSpawnTests
 import cats.effect.laws.UniqueTests
 import cats.effect.testkit.TestContext
 import cats.kernel.laws.discipline.EqTests
-import cats.laws.discipline.BifunctorTests
 import cats.laws.discipline.DeferTests
 import cats.laws.discipline.MonadErrorTests
 import cats.laws.discipline.SemigroupKTests
@@ -38,19 +37,21 @@ import munit.DisciplineSuite
 import org.scalacheck.Arbitrary
 import org.scalacheck.Cogen
 import org.scalacheck.Prop
+import org.scalacheck.util.Pretty
 
 import boilerplate.effect.EffIO
 
-/** Law tests for [[boilerplate.effect.EffIO EffIO]] typeclass instances via cats-effect-laws. The
-  * `IO`-specialised instances delegate to the corresponding `Eff[IO, *, *]` instances.
+/** Law tests for [[boilerplate.effect.EffIO EffIO]] typeclass instances via cats-effect-laws,
+  * verifying the beta phantom instances (a representation cast of `IO`'s) are lawful.
   *
   * `GenConcurrent`, `GenTemporal`, `Sync`, and `Async` all resolve from the single `Async` instance
-  * by subtyping, so `GenSpawnTests` exercises the shared structure. `Foldable`/`Traverse` do not
-  * apply - `IO` is an effect, not a data container. Behavioural tests are in `EffIOSuite`.
+  * by subtyping, so `GenSpawnTests` exercises the shared structure.
+  * `Foldable`/`Traverse`/`Bifunctor` do not apply - `IO` is an effect, and the error is a
+  * `Throwable` in the channel, not a foldable value. Behavioural tests are in `EffIOSuite`.
   */
 class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
 
-  type E = Int
+  type E = LawError
   type TestEffIO[A] = EffIO[E, A]
 
   implicit val ticker: Ticker = Ticker(TestContext())
@@ -92,27 +93,27 @@ class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
   implicit def testEffIOBoolToProp(eff: TestEffIO[Boolean]): Prop =
     effIOBooleanToProp(eff)
 
-  implicit def prettyTestEffIO[A]: TestEffIO[A] => org.scalacheck.util.Pretty =
+  implicit def prettyTestEffIO[A]: TestEffIO[A] => Pretty =
     prettyEffIO[E, A]
 
   // GenSpawn tests include MonadCancel and Monad laws
   checkAll(
-    "EffIO[Int, *].GenSpawn[Throwable]",
+    "EffIO[LawError, *].GenSpawn[Throwable]",
     GenSpawnTests[TestEffIO, Throwable].spawn[Int, Int, Int]
   )
 
   checkAll(
-    "EffIO[Int, *].Defer",
+    "EffIO[LawError, *].Defer",
     DeferTests[TestEffIO].defer[Int]
   )
 
   checkAll(
-    "EffIO[Int, *].Clock",
+    "EffIO[LawError, *].Clock",
     ClockTests[TestEffIO].clock
   )
 
   checkAll(
-    "EffIO[Int, *].Unique",
+    "EffIO[LawError, *].Unique",
     UniqueTests[TestEffIO].unique
   )
 
@@ -122,33 +123,17 @@ class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
     EitherT.catsDataEqForEitherT[TestEffIO, E, Int]
 
   checkAll(
-    "EffIO[Int, *].MonadError[Int]",
+    "EffIO[LawError, *].MonadError[LawError]",
     MonadErrorTests[TestEffIO, E].monadError[Int, Int, Int]
   )
 
   checkAll(
-    "EffIO[Int, *].SemigroupK",
+    "EffIO[LawError, *].SemigroupK",
     SemigroupKTests[TestEffIO].semigroupK[Int]
   )
 
-  // For Bifunctor tests, we need to vary both type parameters
-  type TestEffIOBi[E, A] = EffIO[E, A]
-
-  implicit def arbTestEffIOBi[E: Arbitrary, A: Arbitrary]: Arbitrary[TestEffIOBi[E, A]] =
-    Arbitrary(
-      for either <- Arbitrary.arbitrary[Either[E, A]]
-      yield EffIO.from(either)
-    )
-
-  implicit def eqTestEffIOBi[E: Eq, A: Eq]: Eq[TestEffIOBi[E, A]] = eqEffIO[E, A]
-
   checkAll(
-    "EffIO[*, *].Bifunctor",
-    BifunctorTests[TestEffIOBi].bifunctor[Int, Int, Int, String, String, String]
-  )
-
-  checkAll(
-    "EffIO[Int, Int].Eq",
+    "EffIO[LawError, Int].Eq",
     EqTests[EffIO[E, Int]].eqv
   )
 end EffIOLawsSuite

@@ -20,82 +20,48 @@
  */
 package boilerplate.effect.laws
 
+import scala.reflect.TypeTest
+
 import cats.*
 import cats.effect.*
 import cats.effect.testkit.TestInstances as CatsEffectTestInstances
 import cats.laws.discipline.SemigroupalTests.Isomorphisms
-import org.scalacheck.Arbitrary
 import org.scalacheck.Cogen
 import org.scalacheck.Prop
 import org.scalacheck.util.Pretty
 
 import boilerplate.effect.Eff
 
-/** Test instances for [[boilerplate.effect.Eff Eff]] law testing.
+/** Test instances for [[boilerplate.effect.Eff Eff]] law testing (base effect `IO`).
   *
-  * Provides `Eq`, `Cogen`, and `Pretty` instances required by discipline law tests.
+  * Provides `Eq`, `Cogen`, and `Pretty`. Under the beta model the typed error rides `IO`'s channel,
+  * so equality/cogen reify it back to an `Either` via `either` (needing `TypeTest[Throwable, E]`,
+  * synthesised for the concrete law error) before comparing.
   */
 trait EffTestInstances extends CatsEffectTestInstances with EffGenerators:
 
-  /** Equality for `Eff[IO, E, A]` based on running to completion and comparing outcomes.
-    *
-    * Uses the `Ticker` mechanism from cats-effect testkit to evaluate effects deterministically.
-    */
-  implicit def eqEff[E: Eq, A: Eq](using ticker: Ticker): Eq[Eff[IO, E, A]] =
+  /** Equality for `Eff[IO, E, A]` based on running the reified `IO[Either[E, A]]` to an outcome. */
+  implicit def eqEff[E <: Throwable: Eq, A: Eq](using ticker: Ticker, tt: TypeTest[Throwable, E]): Eq[Eff[IO, E, A]] =
     Eq.by[Eff[IO, E, A], IO[Either[E, A]]](_.either)(using eqIOA[Either[E, A]])
 
-  /** Cogen for `Eff[IO, E, A]` based on running to outcome. */
-  implicit def cogenEff[E: Cogen, A: Cogen](using ticker: Ticker): Cogen[Eff[IO, E, A]] =
+  /** Cogen for `Eff[IO, E, A]` based on the reified outcome. */
+  implicit def cogenEff[E <: Throwable: Cogen, A: Cogen](using ticker: Ticker, tt: TypeTest[Throwable, E]): Cogen[Eff[IO, E, A]] =
     cogenIO[Either[E, A]].contramap(_.either)
 
   /** Pretty printer for `Eff` in test failure messages. */
-  implicit def prettyEff[E, A](using ticker: Ticker): Eff[IO, E, A] => Pretty =
+  implicit def prettyEff[E <: Throwable, A](using ticker: Ticker, tt: TypeTest[Throwable, E]): Eff[IO, E, A] => Pretty =
     eff => Pretty(_ => unsafeRun(eff.either).toString)
 
   /** Isomorphisms for `Eff.Of[IO, E]` required by Semigroupal tests. */
-  implicit def isomorphismsEff[E]: Isomorphisms[Eff.Of[IO, E]] =
+  implicit def isomorphismsEff[E <: Throwable]: Isomorphisms[Eff.Of[IO, E]] =
     Isomorphisms.invariant[Eff.Of[IO, E]]
 
   /** Converts `Eff[IO, E, Boolean]` to `Prop` for property assertions.
     *
     * The effect must complete successfully with `Right(true)` to pass.
     */
-  implicit def effBooleanToProp[E](eff: Eff[IO, E, Boolean])(using ticker: Ticker): Prop =
+  implicit def effBooleanToProp[E <: Throwable](eff: Eff[IO, E, Boolean])(using ticker: Ticker, tt: TypeTest[Throwable, E]): Prop =
     Prop(unsafeRun(eff.either).fold(false, _ => false, _.fold(false)(_.fold(_ => false, identity))))
 end EffTestInstances
 
 object EffTestInstances extends EffTestInstances
-
-/** Test instances for `Eff[Option, E, A]` used in Foldable/Traverse law testing.
-  *
-  * Option is used as the base effect since it is both a Monad and Traverse, allowing us to test the
-  * Foldable, Traverse, Bifoldable, and Bitraverse instances which require `Foldable[F]` or
-  * `Traverse[F]` constraints that `IO` does not satisfy.
-  */
-trait EffOptionTestInstances:
-
-  /** Arbitrary for `Eff[Option, E, A]` generating the full space of Option[Either[E, A]]. */
-  implicit def arbitraryEffOption[E: Arbitrary, A: Arbitrary]: Arbitrary[Eff[Option, E, A]] =
-    Arbitrary(
-      for outer <- Arbitrary.arbOption[Either[E, A]].arbitrary
-      yield Eff.lift[Option, E, A](outer)
-    )
-
-  /** Cogen for `Eff[Option, E, A]` based on the underlying Option[Either[E, A]]. */
-  implicit def cogenEffOption[E: Cogen, A: Cogen]: Cogen[Eff[Option, E, A]] =
-    Cogen[Option[Either[E, A]]].contramap(_.either)
-
-  /** Equality for `Eff[Option, E, A]` based on the underlying Option[Either[E, A]]. */
-  implicit def eqEffOption[E: Eq, A: Eq]: Eq[Eff[Option, E, A]] =
-    Eq.by[Eff[Option, E, A], Option[Either[E, A]]](_.either)
-
-  /** Pretty printer for `Eff[Option, E, A]` in test failure messages. */
-  implicit def prettyEffOption[E, A]: Eff[Option, E, A] => Pretty =
-    eff => Pretty(_ => eff.either.toString)
-
-  /** Isomorphisms for `Eff.Of[Option, E]` required by Semigroupal tests. */
-  implicit def isomorphismsEffOption[E]: Isomorphisms[Eff.Of[Option, E]] =
-    Isomorphisms.invariant[Eff.Of[Option, E]]
-end EffOptionTestInstances
-
-object EffOptionTestInstances extends EffOptionTestInstances

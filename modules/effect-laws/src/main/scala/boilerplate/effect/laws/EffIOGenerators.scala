@@ -22,30 +22,18 @@ package boilerplate.effect.laws
 
 import cats.effect.*
 import org.scalacheck.Arbitrary
-import org.scalacheck.Gen
 
 import boilerplate.effect.EffIO
 
 /** Generators for [[boilerplate.effect.EffIO EffIO]] types used in law testing. */
 trait EffIOGenerators:
 
-  /** Lifts arbitrary `IO[Either[E, A]]` into `EffIO`. */
-  implicit def arbitraryEffIO[E, A](using
+  /** Generates `EffIO[E, A]` from an arbitrary `IO[Either[E, A]]`: a `Right` succeeds, a `Left`
+    * fails on `IO`'s channel - covering both the success and typed-failure space.
+    */
+  implicit def arbitraryEffIO[E <: Throwable, A](using
     arbIO: Arbitrary[IO[Either[E, A]]]
   ): Arbitrary[EffIO[E, A]] =
     Arbitrary(arbIO.arbitrary.map(EffIO.lift(_)))
-
-  /** Generates success-only `EffIO` values for testing operations that expect success. */
-  def genSuccessEffIO[E, A: Arbitrary]: Gen[EffIO[E, A]] =
-    Arbitrary.arbitrary[A].map(a => EffIO.succeed(a))
-
-  /** Generates failure-only `EffIO` values for testing error handling. */
-  def genFailEffIO[E: Arbitrary, A]: Gen[EffIO[E, A]] =
-    Arbitrary.arbitrary[E].map(e => EffIO.fail(e))
-
-  /** Generates `EffIO[E, A]` from `Either[E, A]`. */
-  def genFromEitherEffIO[E: Arbitrary, A: Arbitrary]: Gen[EffIO[E, A]] =
-    Arbitrary.arbitrary[Either[E, A]].map(ea => EffIO.from(ea))
-end EffIOGenerators
 
 object EffIOGenerators extends EffIOGenerators
