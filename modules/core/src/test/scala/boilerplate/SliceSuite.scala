@@ -46,6 +46,16 @@ class SliceSuite extends munit.FunSuite:
     val _ = intercept[IllegalArgumentException](s(3))
     val _ = intercept[IllegalArgumentException](s(-1))
 
+  test("update writes a byte via s(i) = b, honouring the offset; an out-of-range index raises"):
+    val a = new Array[Byte](4)
+    val s = Slice.of(a)
+    s(1) = 42.toByte
+    assertEquals(s(1), 42.toByte)
+    s.drop(2)(1) = 7.toByte // through a sub-view: backing index 3
+    assertEquals(a.toList, List[Byte](0, 42, 0, 7))
+    val _ = intercept[IllegalArgumentException](s(4) = 1.toByte)
+    val _ = intercept[IllegalArgumentException](s(-1) = 1.toByte)
+
   test("contentEquals compares bytes; reference == does not"):
     val s = Slice.of(Array[Byte](10, 20, 30, 40)).take(3)
     assert(s.contentEquals(Slice.of(Array[Byte](10, 20, 30))))
@@ -93,6 +103,40 @@ class SliceSuite extends munit.FunSuite:
     val s = Slice.of(Array[Byte](1, 2, 3))
     val _ = intercept[IllegalArgumentException](s.readBE[Int](0))
     val _ = intercept[IllegalArgumentException](s.readBE[Short](2))
+
+  test("writeBE / writeLE encode Short, Int, and Long, round-tripping through readBE / readLE"):
+    val s = Slice.of(new Array[Byte](8))
+    s.writeBE[Short](0, 0x0a0b.toShort)
+    assertEquals(s.readBE[Short](0), 0x0a0b.toShort)
+    s.writeLE[Short](0, 0x0a0b.toShort)
+    assertEquals(s.readLE[Short](0), 0x0a0b.toShort)
+    s.writeBE[Int](0, 0x0a0b0c0d)
+    assertEquals(s.readBE[Int](0), 0x0a0b0c0d)
+    s.writeLE[Int](0, 0x0a0b0c0d)
+    assertEquals(s.readLE[Int](0), 0x0a0b0c0d)
+    s.writeBE[Long](0, 0x0a0b0c0d0e0f1011L)
+    assertEquals(s.readBE[Long](0), 0x0a0b0c0d0e0f1011L)
+    s.writeLE[Long](0, 0x0a0b0c0d0e0f1011L)
+    assertEquals(s.readLE[Long](0), 0x0a0b0c0d0e0f1011L)
+
+  test("writeBE lays bytes big-endian, writeLE little-endian, honouring the offset"):
+    val be = new Array[Byte](6)
+    Slice.of(be).writeBE[Int](1, 0x01020304)
+    assertEquals(be.toList, List[Byte](0, 1, 2, 3, 4, 0))
+    val le = new Array[Byte](6)
+    Slice.of(le).writeLE[Int](1, 0x01020304)
+    assertEquals(le.toList, List[Byte](0, 4, 3, 2, 1, 0))
+
+  test("writeBE writes through a sub-view into the shared backing"):
+    val a = new Array[Byte](6)
+    Slice.of(a).drop(2).writeBE[Short](0, 0x0102.toShort)
+    assertEquals(a.toList, List[Byte](0, 0, 1, 2, 0, 0))
+
+  test("a scalar write past the end raises"):
+    val s = Slice.of(new Array[Byte](3))
+    val _ = intercept[IllegalArgumentException](s.writeBE[Int](0, 1))
+    val _ = intercept[IllegalArgumentException](s.writeBE[Short](2, 1.toShort))
+    val _ = intercept[IllegalArgumentException](s.writeLE[Long](0, 1L))
 
   test("sliceOrError returns a view for valid bounds and a typed error for invalid ones"):
     val s = Slice.of(Array[Byte](1, 2, 3, 4, 5))
