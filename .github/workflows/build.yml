@@ -55,14 +55,14 @@ jobs:
         uses: coursier/cache-action@v8
 
       - name: Test
-        run: sbt "boilerplate-aggregate/test"
+        run: sbt --server "boilerplate-aggregate/test"
 
       - name: Package
-        run: sbt "boilerplate-aggregate/package"
+        run: sbt --server "boilerplate-aggregate/package"
 
       - name: Stage Release Artefacts
         if: startsWith(github.ref, 'refs/tags/v') && matrix.java == env.JDK_RELEASE
-        run: sbt "boilerplate-aggregate/publish"
+        run: sbt --server "boilerplate-aggregate/publish"
 
       - name: Upload Staging Tree
         if: startsWith(github.ref, 'refs/tags/v') && matrix.java == env.JDK_RELEASE
@@ -107,14 +107,14 @@ jobs:
         uses: coursier/cache-action@v8
 
       - name: Test
-        run: sbt "boilerplate-aggregateJS/test"
+        run: sbt --server "boilerplate-aggregateJS/test"
 
       - name: Package
-        run: sbt "boilerplate-aggregateJS/package"
+        run: sbt --server "boilerplate-aggregateJS/package"
 
       - name: Stage Release Artefacts
         if: startsWith(github.ref, 'refs/tags/v') && matrix.node == env.NODE_LTS
-        run: sbt "boilerplate-aggregateJS/publish"
+        run: sbt --server "boilerplate-aggregateJS/publish"
 
       - name: Upload Staging Tree
         if: startsWith(github.ref, 'refs/tags/v') && matrix.node == env.NODE_LTS
@@ -182,7 +182,7 @@ jobs:
 
       - name: Test
         shell: bash
-        run: sbt "boilerplate-aggregateNative/test"
+        run: sbt --server "boilerplate-aggregateNative/test"
 
       # Stage native artefacts UNSIGNED on a release tag; the release job signs the merged tree centrally
       # on Linux (the Windows VS2026 images have no gpg). Each artefact is published from exactly one
@@ -194,9 +194,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.target }}" = "linux-x86_64" ]; then
-            sbt "boilerplate-aggregateNative/publish"   # unclassified native libs + linux-x86_64 classifier
+            sbt --server "boilerplate-aggregateNative/publish"   # unclassified native libs + linux-x86_64 classifier
           else
-            sbt "boilerplate-native/publish"            # this platform's classifier only
+            sbt --server "boilerplate-native/publish"            # this platform's classifier only
           fi
 
       - name: Upload Staging Tree
@@ -234,12 +234,12 @@ jobs:
       - name: Verify Source Formatting
         id: scalafmt
         continue-on-error: true
-        run: sbt "scalafmtCheckAll; scalafmtSbtCheck"
+        run: sbt --server "scalafmtCheckAll; scalafmtSbtCheck"
 
       - name: Verify Linting Conformity
         id: scalafix
         continue-on-error: true
-        run: sbt "scalafixAll --check"
+        run: sbt --server "scalafixAll --check"
 
       - name: Verify File Header Conformity
         id: headers
@@ -290,7 +290,7 @@ jobs:
       # Snapshots publish straight to central-snapshots (publishTo handles routing). boilerplate-native
       # publishes only linux-x86_64 classifier; the full matrix is published for tagged releases only.
       - name: Publish Snapshot
-        run: sbt "publish"
+        run: sbt --server "publish"
         env:
           SONATYPE_USERNAME: ${{ secrets.PUBLISH_USER }}
           SONATYPE_PASSWORD: ${{ secrets.PUBLISH_USER_PASSPHRASE }}
@@ -365,7 +365,7 @@ jobs:
 
       # Single deployment: zip the merged, signed staging tree and upload-and-publish in one shot.
       - name: Release to Central Portal
-        run: sbt "sonaRelease"
+        run: sbt --server "sonaRelease"
         env:
           SONATYPE_USERNAME: ${{ secrets.PUBLISH_USER }}
           SONATYPE_PASSWORD: ${{ secrets.PUBLISH_USER_PASSPHRASE }}
