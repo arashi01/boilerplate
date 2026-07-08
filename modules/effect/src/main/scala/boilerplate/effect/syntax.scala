@@ -39,6 +39,8 @@ import cats.effect.std.Queue
 import cats.effect.std.Semaphore
 import cats.effect.std.Supervisor
 
+import boilerplate.Slice
+
 extension [F[_], A](resource: Resource[F, A])
   /** Transforms this `Resource[F, A]` to `Resource[Eff.Of[F, E], A]`. */
   inline def eff[E <: Throwable]: Resource[Eff.Of[F, E], A] =
@@ -216,6 +218,15 @@ extension [A](resource: Resource[IO, A])
     */
   inline def useEffIO[E <: Throwable, B](f: A => EffIO[E, B]): EffIO[E, B] =
     EffIO.liftF(resource.use(a => f(a).absolve))
+
+extension (acquire: IO[Slice])
+  /** A `Resource` that acquires a secret slice through `acquire` and wipes it on release - on
+    * success, error, or cancellation of the using effect. Keep the working-copy allocation inside
+    * `acquire` so the slice is erased from the moment it exists; consume with [[useEffIO]] or
+    * `use`, and do not let the slice escape the use.
+    */
+  inline def wiping: Resource[IO, Slice] =
+    Resource.make(acquire)(s => IO(s.wipe()))
 
 extension [A](ref: Ref[IO, A])
   /** Returns a `Ref` operating in the `EffIO` context. */
