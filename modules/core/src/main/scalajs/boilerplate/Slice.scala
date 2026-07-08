@@ -25,16 +25,16 @@ import scala.annotation.tailrec
 import scala.compiletime.erasedValue
 import scala.compiletime.error
 
-/** A bounds-checked, immutable view over caller-owned bytes - the ecosystem's one byte-slice
+/** A bounds-checked, borrowing view over caller-owned bytes - the ecosystem's one byte-slice
   * vocabulary. A `Slice` never owns, frees, or outlives its backing region: it is a borrower, valid
   * only while the caller keeps that region alive.
   *
   * The class is a bare carrier; every operation lives as an extension in [[Slice$]]. Construct with
   * [[Slice$.of]] (bounds-checked); re-slice with `take`/`drop`/`slice` (each a fresh header over
   * the same memory, no copy); read with `apply`/`readBE`/`readLE`/`contentEquals`; copy out with
-  * `toArray`/`copyInto`. The `unsafe*` accessors are the seam for library-author backends and are
-  * platform-specific (an array and offset on JVM/JS, an interior pointer on Native); ordinary users
-  * never need them.
+  * `toArray`/`copyInto`; erase in place with `wipe`. The `unsafe*` accessors are the seam for
+  * library-author backends and are platform-specific (an array and offset on JVM/JS, an interior
+  * pointer on Native); ordinary users never need them.
   */
 final class Slice private (val unsafeArray: Array[Byte], val unsafeOffset: Int, val length: Int)
 
@@ -83,6 +83,15 @@ object Slice:
       val n = math.min(s.length, dst.length)
       System.arraycopy(s.unsafeArray, s.unsafeOffset, dst.unsafeArray, dst.unsafeOffset, n)
       n
+
+    /** Overwrites the viewed bytes with zeros in place, for erasing secret material after use.
+      *
+      * Resists dead-store elimination. On Native the bytes are written through a volatile store the
+      * optimiser must keep; on the JVM and Scala.js it is best-effort, as a managed runtime may
+      * retain copies (a relocating GC, register spills) beyond the reach of any in-place erase.
+      */
+    def wipe(): Unit =
+      java.util.Arrays.fill(s.unsafeArray, s.unsafeOffset, s.unsafeOffset + s.length, 0.toByte)
 
     /** Reads the byte at `i`. Requires `0 <= i < length`. */
     def apply(i: Int): Byte =

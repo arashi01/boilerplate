@@ -185,7 +185,7 @@ result.flatMapNull("null value")(s => Right(s.trim))  // Either[String, String]
 
 ### Slice
 
-`Slice` is a bounds-checked, immutable view over caller-owned bytes - one byte-slice vocabulary
+`Slice` is a bounds-checked, borrowing view over caller-owned bytes - one byte-slice vocabulary
 across the ecosystem. A `Slice` never owns, frees, or outlives its backing region: it is a borrower,
 valid only while the caller keeps that region alive.
 
@@ -213,6 +213,11 @@ s.readBE[Int](0)    // 256
 s.readLE[Int](0)    // 65536
 ```
 
+**Erasing secrets.** `wipe` zeros the viewed bytes in place once a secret is no longer needed. On
+Native the erase goes through a volatile store the optimiser cannot drop; on the JVM and Scala.js it
+is best-effort, as a managed runtime may retain copies (a relocating GC, register spills) beyond its
+reach.
+
 **Untrusted bounds.** For wire input whose bounds are attacker-controlled, `sliceOrError` returns a
 typed error rather than raising:
 
@@ -238,6 +243,7 @@ lifetime the caller owns; `Slice.borrowing(ptr, len) { s => ... }` scopes that v
 | `contentEquals(that)`          | Byte equality (not constant-time)                      |
 | `sliceOrError(from, until)`    | Typed sub-view for untrusted bounds                    |
 | `toArray` / `copyInto(dst)`    | Copy out to a fresh array / into `dst`                 |
+| `wipe()`                       | Zero the viewed bytes in place (erase secrets)         |
 
 The `unsafe*` accessors (array + offset, or an interior pointer on Native) are a seam for
 library-author backends; ordinary users never need them.
