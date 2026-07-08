@@ -53,6 +53,28 @@ class SliceSuite extends munit.FunSuite:
     assert(!s.contentEquals(Slice.of(Array[Byte](10, 20))))
     assert(!(s == Slice.of(Array[Byte](10, 20, 30))))
 
+  test("constantTimeEquals is true on equal content and false for a change at any position"):
+    val a = Slice.of(Array[Byte](1, 2, 3, 4, 5))
+    assert(a.constantTimeEquals(Slice.of(Array[Byte](1, 2, 3, 4, 5))))
+    assert(!a.constantTimeEquals(Slice.of(Array[Byte](9, 2, 3, 4, 5))))
+    assert(!a.constantTimeEquals(Slice.of(Array[Byte](1, 2, 9, 4, 5))))
+    assert(!a.constantTimeEquals(Slice.of(Array[Byte](1, 2, 3, 4, 9))))
+
+  test("constantTimeEquals treats differing lengths as unequal, and empty views as equal"):
+    assert(!Slice.of(Array[Byte](1, 2, 3)).constantTimeEquals(Slice.of(Array[Byte](1, 2))))
+    assert(!Slice.of(Array[Byte](1, 2)).constantTimeEquals(Slice.of(Array[Byte](1, 2, 3))))
+    assert(Slice.empty.constantTimeEquals(Slice.empty))
+    assert(!Slice.empty.constantTimeEquals(Slice.of(Array[Byte](1))))
+
+  test("constantTimeEquals compares the viewed sub-range and agrees with contentEquals"):
+    val view = Slice.of(Array[Byte](9, 1, 2, 3, 9)).slice(1, 4)
+    val same = Slice.of(Array[Byte](1, 2, 3))
+    val diff = Slice.of(Array[Byte](1, 2, 9))
+    assert(view.constantTimeEquals(same))
+    assert(!view.constantTimeEquals(diff))
+    assertEquals(view.constantTimeEquals(same), view.contentEquals(same))
+    assertEquals(view.constantTimeEquals(diff), view.contentEquals(diff))
+
   test("readBE / readLE decode Short, Int, and Long without sub-slicing"):
     val s = Slice.of(Array[Byte](0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11))
     assertEquals(s.readBE[Short](0), 0x0a0b.toShort)
