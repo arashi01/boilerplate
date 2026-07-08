@@ -34,9 +34,9 @@ import boilerplate.effect.Eff
 
 /** Test instances for [[boilerplate.effect.Eff Eff]] law testing (base effect `IO`).
   *
-  * Provides `Eq`, `Cogen`, and `Pretty`. Under the beta model the typed error rides `IO`'s channel,
-  * so equality/cogen reify it back to an `Either` via `either` (needing `TypeTest[Throwable, E]`,
-  * synthesised for the concrete law error) before comparing.
+  * Provides `Eq`, `Cogen`, and `Pretty`. The typed error rides `IO`'s channel, so equality/cogen
+  * reify it to an `Either` via `either` (needing `TypeTest[Throwable, E]`, synthesised for the
+  * concrete law error) before comparing.
   */
 trait EffTestInstances extends CatsEffectTestInstances with EffGenerators:
 

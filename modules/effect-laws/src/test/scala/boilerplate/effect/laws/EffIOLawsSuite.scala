@@ -42,7 +42,7 @@ import org.scalacheck.util.Pretty
 import boilerplate.effect.EffIO
 
 /** Law tests for [[boilerplate.effect.EffIO EffIO]] typeclass instances via cats-effect-laws,
-  * verifying the beta phantom instances (a representation cast of `IO`'s) are lawful.
+  * verifying the phantom instances (a representation cast of `IO`'s) are lawful.
   *
   * `GenConcurrent`, `GenTemporal`, `Sync`, and `Async` all resolve from the single `Async` instance
   * by subtyping, so `GenSpawnTests` exercises the shared structure.

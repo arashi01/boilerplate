@@ -199,18 +199,45 @@ val owned  = header.toArray             // copy out to an owned Array[Byte]
 ```
 
 Re-slicing (`take`/`drop`/`slice`) allocates only a small header over the same memory; `toArray` and
-`copyInto` are the copy-out seams. On Scala Native, `Slice.of(ptr, len)` additionally views
-pointer-backed memory (the FFI `(Ptr, len)` world); the caller owns the region's lifetime.
+`copyInto` copy out.
+
+**Reading.** `apply(i)` reads a byte; `readBE`/`readLE` decode a `Short`, `Int`, or `Long` at an
+offset without sub-slicing - allocation-free, so prefer them in hot decoders over re-slicing per
+byte. `contentEquals` compares bytes, but is **not** constant-time (use a constant-time equality for
+secret-dependent comparison). These operations trust their bounds: an out-of-range access raises.
+
+```scala
+val s = Slice.of(Array[Byte](0, 0, 1, 0))
+s(2)                // 1: Byte
+s.readBE[Int](0)    // 256
+s.readLE[Int](0)    // 65536
+```
+
+**Untrusted bounds.** For wire input whose bounds are attacker-controlled, `sliceOrError` returns a
+typed error rather than raising:
+
+```scala
+Slice.of(frame).sliceOrError(offset, offset + len) match
+  case Right(field)                          => decode(field)
+  case Left(SliceError.OutOfBounds(_, _, _)) => reject()
+```
+
+**Scala Native.** `Slice.of(ptr, len)` views pointer-backed memory (the FFI `(Ptr, len)` world) whose
+lifetime the caller owns; `Slice.borrowing(ptr, len) { s => ... }` scopes that view to the block.
 
 | Member                         | Description                                            |
 |--------------------------------|--------------------------------------------------------|
 | `Slice.of(array[, off, len])`  | Bounds-checked view over an array (or sub-range)       |
 | `Slice.of(ptr, len)`           | Pointer-backed view (Scala Native only)                |
+| `Slice.borrowing(ptr, len)(f)` | Scoped pointer-backed view (Scala Native only)         |
 | `Slice.empty`                  | The zero-length view                                   |
 | `length` / `isEmpty`           | Size of the view                                       |
-| `take(n)` / `drop(n)` / `slice(from, until)` | Bounds-checked sub-views (no copy)       |
-| `toArray`                      | Copies the viewed bytes out to a fresh array           |
-| `copyInto(dst)`                | Copies `min(length, dst.length)` bytes; returns count  |
+| `take(n)` / `drop(n)` / `slice(from, until)` | Bounds-checked sub-views, no copy (raise) |
+| `apply(i)`                     | Byte at `i` (raises out of range)                      |
+| `readBE[A](o)` / `readLE[A](o)`| Decode `A` = `Short`/`Int`/`Long`, allocation-free (raise) |
+| `contentEquals(that)`          | Byte equality (not constant-time)                      |
+| `sliceOrError(from, until)`    | Typed sub-view for untrusted bounds                    |
+| `toArray` / `copyInto(dst)`    | Copy out to a fresh array / into `dst`                 |
 
 The `unsafe*` accessors (array + offset, or an interior pointer on Native) are a seam for
 library-author backends; ordinary users never need them.

@@ -22,16 +22,12 @@ package boilerplate
 
 import scala.scalanative.unsafe.*
 
-/** Native-only: the pointer-backed `Slice.of(ptr, len)` path (emile's libuv `(Ptr, len)` shape).
-  * Pointer memory is populated via `copyInto` from an array slice, which also exercises the
-  * array-to-pointer and pointer-to-array copy paths.
-  */
+// The pointer-backed path (of(ptr, len) / borrowing) that the array constructors cannot reach.
 class SlicePtrSuite extends munit.FunSuite:
   test("of(ptr, len) views pointer-backed memory; re-slice and copy out"):
     val buf = stackalloc[Byte](4)
     assertEquals(Slice.of(Array[Byte](1, 2, 3, 4)).copyInto(Slice.of(buf, 4)), 4)
     val s = Slice.of(buf, 4)
-    assertEquals(s.length, 4)
     assertEquals(s.toArray.toList, List[Byte](1, 2, 3, 4))
     assertEquals(s.drop(1).take(2).toArray.toList, List[Byte](2, 3))
 
@@ -41,4 +37,14 @@ class SlicePtrSuite extends munit.FunSuite:
     val dst = stackalloc[Byte](3)
     assertEquals(Slice.of(src, 3).copyInto(Slice.of(dst, 3)), 3)
     assertEquals(Slice.of(dst, 3).toArray.toList, List[Byte](5, 6, 7))
+
+  test("borrowing hands f a pointer-backed slice; the copy-out persists beyond the scope"):
+    val ptr = stackalloc[Byte](4)
+    ptr(0) = 1.toByte; ptr(1) = 2.toByte; ptr(2) = 3.toByte; ptr(3) = 4.toByte
+    val copied = Slice.borrowing(ptr, 4) { s =>
+      assertEquals(s(0), 1.toByte)
+      assertEquals(s.readBE[Int](0), 0x01020304)
+      s.toArray
+    }
+    assertEquals(copied.toList, List[Byte](1, 2, 3, 4))
 end SlicePtrSuite

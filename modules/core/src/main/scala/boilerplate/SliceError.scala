@@ -18,21 +18,23 @@
  * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package boilerplate.effect
+package boilerplate
 
 import scala.util.control.NoStackTrace
 
-/** Shared typed-error taxonomies for the effect test suites. Since `E <: Throwable`, every error a
-  * test raises is a `Throwable`; these two independent sealed roots exercise the subtype lattice
-  * (covariance) and the union channel (`AppError | IoError`).
+/** The typed error for the untrusted-bounds reader [[sliceOrError]] - wire input whose bounds are
+  * attacker-controlled. Trusted-bounds operations (`take`/`drop`/`slice`,
+  * `apply`/`readBE`/`readLE`) raise instead.
   */
-sealed abstract class AppError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
-object AppError:
-  final case class NotFound(id: String) extends AppError(s"not found: $id")
-  final case class Invalid(reason: String) extends AppError(s"invalid: $reason")
-  case object Timeout extends AppError("timed out")
+sealed abstract class SliceError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
+object SliceError:
+  /** The requested range `[from, until)` did not satisfy `0 <= from <= until <= length`. */
+  final case class OutOfBounds(from: Int, until: Int, length: Int) extends SliceError(s"slice [$from, $until) is outside [0, $length]")
 
-sealed abstract class IoError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
-object IoError:
-  final case class Failed(code: Int) extends IoError(s"io failed: $code")
-  case object Closed extends IoError("closed")
+extension (s: Slice)
+  /** The untrusted-bounds reader for wire input: `Right(view)` when `0 <= from <= until <= length`,
+    * else `Left(SliceError.OutOfBounds)`. Trusted callers use `slice`, which raises.
+    */
+  def sliceOrError(from: Int, until: Int): Either[SliceError, Slice] =
+    if 0 <= from && from <= until && until <= s.length then Right(s.slice(from, until))
+    else Left(SliceError.OutOfBounds(from, until, s.length))

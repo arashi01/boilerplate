@@ -34,10 +34,9 @@ import boilerplate.effect.EffIO
 
 /** Test instances for [[boilerplate.effect.EffIO EffIO]] law testing.
   *
-  * Provides `Eq`, `Cogen`, and `Pretty` instances required by discipline law tests. Under the beta
-  * model the typed error rides `IO`'s channel, so equality/cogen reify it back to an `Either` via
-  * `either` (which needs `TypeTest[Throwable, E]`, synthesised for the concrete law error) before
-  * comparing.
+  * Provides `Eq`, `Cogen`, and `Pretty` instances required by discipline law tests. The typed error
+  * rides `IO`'s channel, so equality/cogen reify it to an `Either` via `either` (which needs
+  * `TypeTest[Throwable, E]`, synthesised for the concrete law error) before comparing.
   */
 trait EffIOTestInstances extends CatsEffectTestInstances with EffIOGenerators:
 
