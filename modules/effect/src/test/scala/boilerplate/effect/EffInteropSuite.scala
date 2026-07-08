@@ -35,10 +35,9 @@ import boilerplate.effect.IoError.*
   * the `IO`-specialised `EffIO`), the `.eff`/`.effIO` syntax that delegates to them, and the fibre
   * `joinNever`/`joinOrFail` helpers.
   *
-  * The central beta contract exercised here: a typed failure now rides `F`'s native `Throwable`
-  * channel, so a fibre that fails with a typed error joins as `Outcome.Errored(e)` (never
-  * `Outcome.Succeeded(Left(e))`), and the join helpers re-raise that `e` on the channel rather than
-  * unwrapping an `Either`. Every error is therefore a `Throwable` drawn from `TestErrors`.
+  * The key contract exercised here: a typed failure rides `F`'s native `Throwable` channel, so a
+  * fibre that fails with a typed error joins as `Outcome.Errored(e)`, and the join helpers re-raise
+  * that `e` on the channel. Every error is a `Throwable` drawn from `TestErrors`.
   */
 class EffInteropSuite extends CatsEffectSuite:
   private def runEff[E <: Throwable, A](eff: Eff[IO, E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =

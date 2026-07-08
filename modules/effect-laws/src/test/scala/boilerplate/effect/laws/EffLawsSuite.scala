@@ -42,13 +42,13 @@ import org.scalacheck.util.Pretty
 import boilerplate.effect.Eff
 
 /** Law tests for [[boilerplate.effect.Eff Eff]] typeclass instances via cats-effect-laws, verifying
-  * the beta phantom instances (a representation cast of `IO`'s) are lawful.
+  * the phantom instances (a representation cast of `IO`'s) are lawful.
   *
   * `GenConcurrent`/`GenTemporal` add no laws over `GenSpawn`; since every instance is a
   * representation cast of the corresponding `IO` instance, correctness follows from upstream, and
   * the primitives are exercised behaviourally in `EffSuite`.
-  * `Foldable`/`Traverse`/`Bifoldable`/`Bitraverse`/`Bifunctor` no longer exist under beta (the
-  * error is a `Throwable` in the channel, not a foldable value), so those law tests are gone.
+  * `Foldable`/`Traverse`/`Bifoldable`/`Bitraverse`/`Bifunctor` do not apply - the error is a
+  * `Throwable` in the channel, not a foldable value.
   */
 class EffLawsSuite extends DisciplineSuite with EffTestInstances:
 

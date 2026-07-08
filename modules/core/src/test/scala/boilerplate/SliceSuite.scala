@@ -20,21 +20,14 @@
  */
 package boilerplate
 
-/** Cross-platform behaviour of the common `Slice` surface, exercised over array-backed views (which
-  * on Native drive the interior-pointer `memcpy`/`memmove` paths).
-  */
+// Array-backed views on Native lower to the interior-pointer paths, so these shared cases also
+// exercise the Native memcpy/memmove/memcmp code.
 class SliceSuite extends munit.FunSuite:
-  test("of views the whole array"):
-    val s = Slice.of(Array[Byte](1, 2, 3))
-    assertEquals(s.length, 3)
-    assert(!s.isEmpty)
-    assertEquals(s.toArray.toList, List[Byte](1, 2, 3))
+  test("of views the whole array; of(offset, length) views a sub-range"):
+    assertEquals(Slice.of(Array[Byte](1, 2, 3)).toArray.toList, List[Byte](1, 2, 3))
+    assertEquals(Slice.of(Array[Byte](1, 2, 3, 4, 5), 1, 3).toArray.toList, List[Byte](2, 3, 4))
 
-  test("of with offset and length views a sub-range"):
-    val s = Slice.of(Array[Byte](1, 2, 3, 4, 5), 1, 3)
-    assertEquals(s.toArray.toList, List[Byte](2, 3, 4))
-
-  test("take / drop / slice are bounds-checked sub-views"):
+  test("take / drop / slice are bounds-checked sub-views over the same memory"):
     val s = Slice.of(Array[Byte](10, 20, 30, 40, 50))
     assertEquals(s.take(2).toArray.toList, List[Byte](10, 20))
     assertEquals(s.drop(3).toArray.toList, List[Byte](40, 50))
@@ -46,15 +39,54 @@ class SliceSuite extends munit.FunSuite:
     assertEquals(Slice.empty.length, 0)
     assertEquals(Slice.empty.toArray.length, 0)
 
-  test("copyInto copies min(length, dst.length) bytes and returns the count"):
-    val dst = new Array[Byte](2)
-    assertEquals(Slice.of(Array[Byte](1, 2, 3, 4)).copyInto(Slice.of(dst)), 2)
-    assertEquals(dst.toList, List[Byte](1, 2))
+  test("apply reads a byte by index; an out-of-range index raises"):
+    val s = Slice.of(Array[Byte](10, 20, 30))
+    assertEquals(s(0), 10.toByte)
+    assertEquals(s.drop(1)(1), 30.toByte)
+    val _ = intercept[IllegalArgumentException](s(3))
+    val _ = intercept[IllegalArgumentException](s(-1))
 
-  test("copyInto into a larger destination copies only the source length"):
-    val dst = new Array[Byte](5)
-    assertEquals(Slice.of(Array[Byte](7, 8)).copyInto(Slice.of(dst)), 2)
-    assertEquals(dst.toList, List[Byte](7, 8, 0, 0, 0))
+  test("contentEquals compares bytes; reference == does not"):
+    val s = Slice.of(Array[Byte](10, 20, 30, 40)).take(3)
+    assert(s.contentEquals(Slice.of(Array[Byte](10, 20, 30))))
+    assert(!s.contentEquals(Slice.of(Array[Byte](10, 20, 99))))
+    assert(!s.contentEquals(Slice.of(Array[Byte](10, 20))))
+    assert(!(s == Slice.of(Array[Byte](10, 20, 30))))
+
+  test("readBE / readLE decode Short, Int, and Long without sub-slicing"):
+    val s = Slice.of(Array[Byte](0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11))
+    assertEquals(s.readBE[Short](0), 0x0a0b.toShort)
+    assertEquals(s.readLE[Short](0), 0x0b0a.toShort)
+    assertEquals(s.readBE[Int](0), 0x0a0b0c0d)
+    assertEquals(s.readLE[Int](0), 0x0d0c0b0a)
+    assertEquals(s.readBE[Long](0), 0x0a0b0c0d0e0f1011L)
+    assertEquals(s.readLE[Long](0), 0x11100f0e0d0c0b0aL)
+
+  test("readBE keeps high bytes unsigned (no sign extension) and honours the offset"):
+    val s = Slice.of(Array[Byte](0, 0xff.toByte, 0xff.toByte, 0xff.toByte, 0xff.toByte))
+    assertEquals(s.readBE[Int](1), -1)
+    assertEquals(s.readBE[Int](1) & 0xffffffffL, 0xffffffffL)
+
+  test("a reader past the end raises"):
+    val s = Slice.of(Array[Byte](1, 2, 3))
+    val _ = intercept[IllegalArgumentException](s.readBE[Int](0))
+    val _ = intercept[IllegalArgumentException](s.readBE[Short](2))
+
+  test("sliceOrError returns a view for valid bounds and a typed error for invalid ones"):
+    val s = Slice.of(Array[Byte](1, 2, 3, 4, 5))
+    assertEquals(s.sliceOrError(1, 3).map(_.toArray.toList), Right(List[Byte](2, 3)))
+    assertEquals(s.sliceOrError(0, 5).map(_.length), Right(5))
+    assertEquals(s.sliceOrError(1, 99), Left(SliceError.OutOfBounds(1, 99, 5)))
+    assertEquals(s.sliceOrError(3, 1), Left(SliceError.OutOfBounds(3, 1, 5)))
+    assertEquals(s.sliceOrError(-1, 2), Left(SliceError.OutOfBounds(-1, 2, 5)))
+
+  test("copyInto copies min(length, dst.length) bytes and returns the count"):
+    val small = new Array[Byte](2)
+    assertEquals(Slice.of(Array[Byte](1, 2, 3, 4)).copyInto(Slice.of(small)), 2)
+    assertEquals(small.toList, List[Byte](1, 2))
+    val large = new Array[Byte](5)
+    assertEquals(Slice.of(Array[Byte](7, 8)).copyInto(Slice.of(large)), 2)
+    assertEquals(large.toList, List[Byte](7, 8, 0, 0, 0))
 
   test("toArray produces a copy independent of the backing memory"):
     val backing = Array[Byte](1, 2, 3)
