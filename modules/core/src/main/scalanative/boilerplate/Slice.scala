@@ -25,20 +25,23 @@ import scala.annotation.unused
 import scala.compiletime.erasedValue
 import scala.compiletime.error
 import scala.scalanative.libc.string
+import scala.scalanative.unsafe.CSize
 import scala.scalanative.unsafe.Ptr
 import scala.scalanative.unsafe.UnsafeRichArray
+import scala.scalanative.unsafe.extern
+import scala.scalanative.unsafe.name
 import scala.scalanative.unsigned.*
 
-/** A bounds-checked, immutable view over caller-owned bytes - the ecosystem's one byte-slice
+/** A bounds-checked, borrowing view over caller-owned bytes - the ecosystem's one byte-slice
   * vocabulary. A `Slice` never owns, frees, or outlives its backing region: it is a borrower, valid
   * only while the caller keeps that region alive.
   *
   * The class is a bare carrier; every operation lives as an extension in [[Slice$]]. Construct with
   * [[Slice$.of]] (bounds-checked); re-slice with `take`/`drop`/`slice` (each a fresh header over
   * the same memory, no copy); read with `apply`/`readBE`/`readLE`/`contentEquals`; copy out with
-  * `toArray`/`copyInto`. The `unsafe*` accessors are the seam for library-author backends and are
-  * platform-specific (an array and offset on JVM/JS, an interior pointer on Native); ordinary users
-  * never need them.
+  * `toArray`/`copyInto`; erase in place with `wipe`. The `unsafe*` accessors are the seam for
+  * library-author backends and are platform-specific (an array and offset on JVM/JS, an interior
+  * pointer on Native); ordinary users never need them.
   *
   * Every slice is lowered at construction to an interior pointer plus an `anchor` that keeps a
   * GC-managed backing array reachable; array- and pointer-backed memory then share one branch-free
@@ -115,6 +118,15 @@ object Slice:
         val _ = string.memmove(dst.unsafePtr, s.unsafePtr, n.toUSize) // memmove: dst may alias src
       n
 
+    /** Overwrites the viewed bytes with zeros in place, for erasing secret material after use.
+      *
+      * Resists dead-store elimination. On Native the bytes are written through a volatile store the
+      * optimiser must keep; on the JVM and Scala.js it is best-effort, as a managed runtime may
+      * retain copies (a relocating GC, register spills) beyond the reach of any in-place erase.
+      */
+    def wipe(): Unit =
+      if s.length > 0 then Wipe.secureZero(s.unsafePtr, s.length.toUSize)
+
     /** Reads the byte at `i`. Requires `0 <= i < length`. */
     def apply(i: Int): Byte =
       require(0 <= i && i < s.length, "index out of range")
@@ -182,3 +194,9 @@ object Slice:
       ((p(o + 4) & 0xffL) << 32) | ((p(o + 3) & 0xffL) << 24) | ((p(o + 2) & 0xffL) << 16) |
       ((p(o + 1) & 0xffL) << 8) | (p(o) & 0xffL)
 end Slice
+
+// Scala Native has no volatile store to a raw pointer, so a dead-store-resistant erase lives in
+// bundled C (resources/scala-native/boilerplate_slice_wipe.c).
+@extern private[boilerplate] object Wipe:
+  @name("scalanative_boilerplate_wipe")
+  def secureZero(buffer: Ptr[Byte], length: CSize): Unit = extern

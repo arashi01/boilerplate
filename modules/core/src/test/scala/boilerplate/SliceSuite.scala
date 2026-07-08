@@ -88,6 +88,23 @@ class SliceSuite extends munit.FunSuite:
     assertEquals(Slice.of(Array[Byte](7, 8)).copyInto(Slice.of(large)), 2)
     assertEquals(large.toList, List[Byte](7, 8, 0, 0, 0))
 
+  test("wipe zeros the viewed bytes"):
+    val backing = Array[Byte](1, 2, 3, 4, 5)
+    Slice.of(backing).wipe()
+    assertEquals(backing.toList, List[Byte](0, 0, 0, 0, 0))
+
+  test("wipe erases exactly the viewed sub-range, leaving neighbours intact"):
+    val backing = Array[Byte](1, 2, 3, 4, 5)
+    Slice.of(backing).slice(1, 4).wipe()
+    assertEquals(backing.toList, List[Byte](1, 0, 0, 0, 5))
+
+  test("wipe of an empty view is a no-op"):
+    Slice.empty.wipe()
+    val backing = Array[Byte](7, 8, 9)
+    Slice.of(backing).take(0).wipe()
+    Slice.of(backing).drop(3).wipe()
+    assertEquals(backing.toList, List[Byte](7, 8, 9))
+
   test("toArray produces a copy independent of the backing memory"):
     val backing = Array[Byte](1, 2, 3)
     val copy = Slice.of(backing).toArray

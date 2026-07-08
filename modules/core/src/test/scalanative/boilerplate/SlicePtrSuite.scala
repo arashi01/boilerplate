@@ -47,4 +47,16 @@ class SlicePtrSuite extends munit.FunSuite:
       s.toArray
     }
     assertEquals(copied.toList, List[Byte](1, 2, 3, 4))
+
+  test("wipe zeros pointer-backed memory"):
+    val buf = stackalloc[Byte](4)
+    val _ = Slice.of(Array[Byte](1, 2, 3, 4)).copyInto(Slice.of(buf, 4))
+    Slice.of(buf, 4).wipe()
+    assertEquals(Slice.of(buf, 4).toArray.toList, List[Byte](0, 0, 0, 0))
+
+  test("wipe erases exactly the viewed sub-range of pointer-backed memory"):
+    val buf = stackalloc[Byte](4)
+    val _ = Slice.of(Array[Byte](9, 9, 9, 9)).copyInto(Slice.of(buf, 4))
+    Slice.of(buf, 4).slice(1, 3).wipe()
+    assertEquals(Slice.of(buf, 4).toArray.toList, List[Byte](9, 0, 0, 9))
 end SlicePtrSuite
