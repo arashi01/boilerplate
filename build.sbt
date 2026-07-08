@@ -53,6 +53,7 @@ val `boilerplate-codecs` =
 val `boilerplate-effect` =
   projectMatrix
     .in(file("modules/effect"))
+    .dependsOn(boilerplate)
     .settings(compilerSettings)
     .settings(unitTestSettings)
     .settings(fileHeaderSettings)

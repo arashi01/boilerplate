@@ -660,6 +660,22 @@ val fk: IO ~> Eff.Of[IO, AppError]                              = Eff.functionK[
 val widen: Eff.Of[IO, AppError.NotFound] ~> Eff.Of[IO, AppError] = Eff.widenK[IO, AppError.NotFound, AppError]
 ```
 
+### Erasing secrets
+
+`boilerplate-effect` depends on core, so a secret [`Slice`](#slice) can be tied to an effect's
+lifecycle. `IO[Slice].wiping` is a `Resource` that acquires the slice and wipes it on release - on
+success, error, or cancellation:
+
+```scala
+import boilerplate.Slice
+
+// make a working copy, use it, and zero it once `use` completes - however it completes
+IO(Slice.of(secret.toArray)).wiping.useEffIO(use) // : EffIO[E, A]
+```
+
+Keep the copy allocation inside the acquire, so the slice is erased from the moment it exists; it
+must not escape `use`.
+
 ### Syntax extensions
 
 Importing `boilerplate.effect.*` provides lifting extensions:
