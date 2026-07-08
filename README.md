@@ -290,9 +290,11 @@ val urlDecoded: Either[Base64.Error, Array[Byte]] = Base64.decode(urlEncoded, ur
 
 ## Effect
 
-Zero-cost typed-error effects atop cats-effect. `Eff` and `EffIO` add a compile-time-tracked error
-channel `E` separate from `Throwable`, enabling exhaustive error handling with full cats-effect
-integration.
+Zero-cost typed-error effects atop cats-effect. `Eff` and `EffIO` track a compile-time error type
+`E <: Throwable` as a **phantom** over the base effect's own error channel: the representation is
+exactly `F[A]` (or `IO[A]`), a typed failure rides `F`'s native `Throwable` channel, and no `Either`
+is ever allocated. The result is exhaustive, statically-tracked error handling with full cats-effect
+integration and no runtime wrapper.
 
 ```scala
 import boilerplate.effect.*
@@ -304,50 +306,54 @@ import cats.syntax.all.*
 
 | Type           | Representation         | Purpose                                   |
 |----------------|------------------------|-------------------------------------------|
-| `Eff[F, E, A]` | `F[Either[E, A]]`      | Typed-error effect                        |
-| `EffIO[E, A]`  | `IO[Either[E, A]]`     | Covariant, `IO`-specialised typed effect  |
+| `Eff[F, E, A]` | `F[A]`                 | Typed-error effect (phantom `E`)          |
+| `EffIO[E, A]`  | `IO[A]`                | Covariant, `IO`-specialised typed effect  |
 | `UEff[F, A]`   | `Eff[F, Nothing, A]`   | Infallible effect                         |
 | `TEff[F, A]`   | `Eff[F, Throwable, A]` | Throwable-errored effect                  |
 | `UEffIO[A]`    | `EffIO[Nothing, A]`    | Infallible `IO`-specialised effect        |
 | `TEffIO[A]`    | `EffIO[Throwable, A]`  | Throwable-errored `IO`-specialised effect |
 
-All opaque types erase at runtime. No wrapper allocation occurs.
+The typed error `E` is bounded by `Throwable`: it rides the base effect's native error channel, so
+every domain error is a `Throwable` subtype - typically a sealed `Exception` root with `NoStackTrace`.
+`E` is a phantom, absent from the representation, so all opaque types erase to their base effect at
+runtime: no wrapper allocation ever occurs and the happy path IS the base effect.
 
 ### Quick start
 
 ```scala
-sealed trait AppError
-case class NotFound(id: String) extends AppError
-case class InvalidInput(msg: String) extends AppError
-case object Timeout extends AppError
+import scala.util.control.NoStackTrace
+
+sealed abstract class AppError(msg: String) extends Exception(msg) with NoStackTrace derives CanEqual
+object AppError:
+  final case class NotFound(id: String) extends AppError(s"not found: $id")
+  final case class Invalid(reason: String) extends AppError(s"invalid: $reason")
 
 case class User(id: String, name: String)
 
-def findUser(id: String): Eff[IO, NotFound, User] =
+def findUser(id: String): Eff[IO, AppError.NotFound, User] =
   if id == "1" then Eff.succeed(User("1", "Alice"))
-  else Eff.fail(NotFound(id))
+  else Eff.fail(AppError.NotFound(id))
 
-def validateUser(user: User): Eff[IO, InvalidInput, User] =
+def validateUser(user: User): Eff[IO, AppError.Invalid, User] =
   if user.name.nonEmpty then Eff.succeed(user)
-  else Eff.fail(InvalidInput("name required"))
+  else Eff.fail(AppError.Invalid("name required"))
 
-// for-comprehension with error unification
+// for-comprehension: the error channel widens to the union automatically - no widenError
 val workflow: Eff[IO, AppError, User] = for
-  user      <- findUser("1").widenError[AppError]
-  validated <- validateUser(user).widenError[AppError]
+  user      <- findUser("1")
+  validated <- validateUser(user)
 yield validated
 
-// Exhaustive error handling
-val result: IO[String] = workflow.fold(
+// Exhaustive error handling - fold both channels back to the base effect
+val message: IO[String] = workflow.fold(
   {
-    case NotFound(id)      => s"User $id not found"
-    case InvalidInput(msg) => s"Invalid: $msg"
-    case Timeout           => "timed out"
+    case AppError.NotFound(id) => s"user $id not found"
+    case AppError.Invalid(msg) => s"invalid: $msg"
   },
-  user => s"Welcome ${user.name}"
+  user => s"welcome ${user.name}"
 )
 
-// Run the underlying effect
+// Reify the typed channel on demand
 val io: IO[Either[AppError, User]] = workflow.either
 ```
 
@@ -356,12 +362,12 @@ val io: IO[Either[AppError, User]] = workflow.either
 Partially-applied constructors minimise type annotations:
 
 ```scala
-Eff[IO].succeed(42)           // UEff[IO, Int]
-Eff[IO].fail("boom")          // Eff[IO, String, Nothing]
-Eff[IO].from(Right(1))        // Eff[IO, Nothing, Int]
-Eff[IO].liftF(IO.pure(42))    // UEff[IO, Int]
-Eff[IO].unit                  // UEff[IO, Unit]
-Eff[IO].suspend(sideEffect()) // UEff[IO, A]
+Eff[IO].succeed(42)                    // UEff[IO, Int]
+Eff[IO].fail(AppError.NotFound("u1"))  // Eff[IO, AppError.NotFound, Nothing]
+Eff[IO].from(Right(1))                 // Eff[IO, Nothing, Int]
+Eff[IO].liftF(IO.pure(42))             // UEff[IO, Int]
+Eff[IO].unit                           // UEff[IO, Unit]
+Eff[IO].suspend(sideEffect())          // UEff[IO, A]
 ```
 
 | Category     | Methods                                                                         |
@@ -384,12 +390,12 @@ Eff[IO].suspend(sideEffect()) // UEff[IO, A]
 |--------------|------------------------------------------------------------------------------|
 | Mapping      | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `transform`                   |
 | Composition  | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`       |
-| Recovery     | `valueOr`, `catchAll`, `catchSome`                                          |
+| Recovery     | `valueOr`, `catchAll`, `catchSome`, `catchOnly`                             |
 | Error mapping| `mapError`, `mapErrorPartial`                                                |
 | Alternative  | `alt`, `orElseSucceed`, `orElseFail`                                         |
 | Folding      | `fold`, `foldF`, `redeemAll`                                                 |
 | Observation  | `tap`, `tapError`, `flatTapError`, `attemptTap`                              |
-| Variance     | `widen`, `widenError`, `assume`, `assumeError`                               |
+| Variance     | `assume`, `assumeError`                                                       |
 | Extraction   | `option`, `collectSome`, `collectRight`                                      |
 | Conversion   | `either`, `absolve`, `eitherT`                                               |
 | Resource     | `bracket`, `bracketCase`, `timeout`                                          |
@@ -398,119 +404,139 @@ Eff[IO].suspend(sideEffect()) // UEff[IO, A]
 | Cancellation | `onCancel(fin)`, `guarantee(fin)`, `guaranteeCase(fin)`                      |
 | Parallel     | `&>`, `<&`                                                                   |
 
+**Observing the typed channel.** The combinators that observe or transform the error - `either`,
+`catchAll`, `mapError`, `fold`, `catchOnly`, `option`, `redeemAll`, `orElseFail`, `valueOr`, `alt`,
+`tapError`, `attemptTap`, `retry`, ... - filter the caught `Throwable` through a
+`TypeTest[Throwable, E]`, re-raising any non-`E` defect unchanged. For a concrete `E` (a sealed
+`Throwable` root, or a union of them) the compiler **synthesises** that `TypeTest`, so nothing is
+written at the call site; a library `given TypeTest[Throwable, Nothing]` covers the infallible
+(`E = Nothing`) case. For the generic `Eff` these combinators additionally need `MonadThrow[F]` -
+introducing a failure requires `F`'s `Throwable` channel - whereas the success-only ops
+(`succeed`/`map`/`flatMap`/`liftF`) compose over any `Monad`/`Functor` `F`:
+
+```scala
+// success-only composition over a non-IO Monad - no MonadThrow, no TypeTest
+val overOption: Eff[Option, Nothing, Int] = for
+  a <- Eff.succeed[Option, Nothing, Int](20)
+  b <- Eff.liftF[Option, Nothing, Int](Some(22))
+yield a + b
+// overOption.absolve == Some(42)
+```
+
 ### cats interop
 
-`Eff.Of[F, E]` (the type lambda `[A] =>> Eff[F, E, A]`) derives typeclass instances from the underlying `F`:
+Because `Eff.Of[F, E]` (the type lambda `[A] =>> Eff[F, E, A]`) is structurally `F` - the phantom
+`E` erases - every cats and cats-effect instance transfers by a representation cast: `F`'s own
+`Async[F]` **is** the `Async[Eff.Of[F, E]]`, with no hand-written typeclass ladder. The exception is
+the typed `MonadError[_, E]`, whose `handleErrorWith` filters `F`'s `Throwable` channel through a
+`TypeTest[Throwable, E]` so only a genuine `E` is caught and any other defect re-raises:
 
 <details>
 <summary><strong>Effect typeclasses</strong></summary>
 
-| Typeclass                     | Requirement on `F`            | Capability                           |
-|-------------------------------|-------------------------------|--------------------------------------|
-| `Functor`                     | `Functor[F]`                  | `map`                                |
-| `Bifunctor`                   | `Functor[F]`                  | `bimap`, `leftMap`                   |
-| `Monad`                       | `Monad[F]`                    | `flatMap`, `pure`                    |
-| `MonadError[_, E]`            | `Monad[F]`                    | Typed error channel                  |
-| `MonadError[_, EE]`           | `MonadError[F, EE]`           | Defect channel (e.g. `Throwable`)    |
-| `MonadCancel[_, EE]`          | `MonadCancel[F, EE]`          | Cancellation, `bracket`              |
-| `GenSpawn[_, Throwable]`      | `GenSpawn[F, Throwable]`      | `start`, `race`, fibres              |
-| `GenConcurrent[_, Throwable]` | `GenConcurrent[F, Throwable]` | `Ref`, `Deferred`, `memoize`         |
-| `GenTemporal[_, Throwable]`   | `GenTemporal[F, Throwable]`   | `sleep`, `timeout`                   |
-| `Sync`                        | `Sync[F]`                     | `delay`, `blocking`, `interruptible` |
-| `Async`                       | `Async[F]`                    | `async`, `evalOn`, `fromFuture`      |
-| `Parallel`                    | `Parallel[F]`                 | `.parMapN`, `.parTraverse`           |
-| `Clock`                       | `Clock[F]`                    | `monotonic`, `realTime`              |
-| `Unique`                      | `Unique[F]`                   | Unique token generation              |
-| `Defer`                       | `Defer[F]`                    | Lazy evaluation                      |
-| `SemigroupK`                  | `Monad[F]`                    | `combineK` / `<+>`                   |
-| `Semigroup`                   | `Monad[F]`, `Semigroup[A]`    | `combine` on success values          |
-| `Monoid`                      | `Monad[F]`, `Monoid[A]`       | `combine` with `empty`               |
+| Typeclass                     | Requirement on `F`                       | Capability                           |
+|-------------------------------|------------------------------------------|--------------------------------------|
+| `Functor`                     | `Functor[F]`                             | `map`                                |
+| `Monad`                       | `Monad[F]`                               | `flatMap`, `pure`                    |
+| `MonadError[_, E]`            | `MonadThrow[F]`, `TypeTest[Throwable, E]`| Typed error channel `E`              |
+| `MonadError[_, EE]`           | `MonadError[F, EE]`                       | Defect channel (e.g. `Throwable`)    |
+| `MonadCancel[_, EE]`          | `MonadCancel[F, EE]`                      | Cancellation, `bracket`              |
+| `GenSpawn[_, Throwable]`      | `GenSpawn[F, Throwable]`                  | `start`, `race`, fibres              |
+| `GenConcurrent[_, Throwable]` | `GenConcurrent[F, Throwable]`             | `Ref`, `Deferred`, `memoize`         |
+| `GenTemporal[_, Throwable]`   | `GenTemporal[F, Throwable]`               | `sleep`, `timeout`                   |
+| `Sync`                        | `Sync[F]`                                 | `delay`, `blocking`, `interruptible` |
+| `Async`                       | `Async[F]`                                | `async`, `evalOn`, `fromFuture`      |
+| `Parallel`                    | `Parallel[F]`                             | `.parMapN`, `.parTraverse`           |
+| `Clock`                       | `Clock[F]`                                | `monotonic`, `realTime`              |
+| `Unique`                      | `Unique[F]`                               | Unique token generation              |
+| `Defer`                       | `Defer[F]`                                | Lazy evaluation                      |
+| `SemigroupK`                  | `MonadThrow[F]`, `TypeTest[Throwable, E]`| `combineK` / `<+>` (choice via `alt`)|
+| `Semigroup`                   | `Monad[F]`, `Semigroup[A]`                | `combine` on success values          |
+| `Monoid`                      | `Monad[F]`, `Monoid[A]`                   | `combine` with `empty`               |
 
 </details>
 
 <details>
 <summary><strong>Data typeclasses</strong></summary>
 
-| Typeclass      | Requirement on `F`              | Behaviour                                      |
-|----------------|---------------------------------|------------------------------------------------|
-| `Show`         | `Show[F[Either[E, A]]]`        | Textual representation                         |
-| `Eq`           | `Eq[F[Either[E, A]]]`          | Equality comparison                            |
-| `PartialOrder` | `PartialOrder[F[Either[E,A]]]` | Partial ordering                               |
-| `Foldable`     | `Foldable[F]`                  | Fold over success channel; errors fold empty   |
-| `Traverse`     | `Traverse[F]`                  | Traverse success channel                       |
-| `Bifoldable`   | `Foldable[F]`                  | Fold over both channels                        |
-| `Bitraverse`   | `Traverse[F]`                  | Traverse both channels                         |
+| Typeclass      | Requirement on `F`   | Behaviour                                 |
+|----------------|----------------------|-------------------------------------------|
+| `Show`         | `Show[F[A]]`         | Textual representation (delegates to base)|
+| `Eq`           | `Eq[F[A]]`           | Equality comparison                       |
+| `PartialOrder` | `PartialOrder[F[A]]` | Partial ordering                          |
+
+Because the error is a `Throwable` in `F`'s channel rather than a foldable value, the `Bifunctor`,
+`Foldable`, `Traverse`, `Bifoldable`, and `Bitraverse` instances are intentionally dropped - mapping
+the error to a non-`Throwable` would be unsound, and `Show`/`Eq`/`PartialOrder` now delegate straight
+to the base `F[A]`.
 
 </details>
 
-With `cats.syntax.all.*` in scope, standard cats syntax is available:
+With `cats.syntax.all.*` in scope, standard cats syntax is available on the typed `MonadError[_, E]`:
 
 | Source             | Methods                                                |
 |--------------------|--------------------------------------------------------|
-| `Bifunctor`        | `bimap`, `leftMap`                                     |
 | `ApplicativeError` | `recover`, `recoverWith`, `onError`, `adaptError`      |
 | `MonadError`       | `ensure`, `ensureOr`, `rethrow`, `redeem`, `redeemWith`|
 
 ### EffIO
 
-`EffIO[E, A]` is a covariant, `cats.effect.IO`-specialised sibling of `Eff`, represented as
-`IO[Either[E, A]]`. `IO` and `Either` are both covariant, so `EffIO` is **covariant in `E` and
-`A`**: a value of `EffIO[Narrow, A]` is usable wherever `EffIO[Wide, A]` is expected, with no
-call-site method.
+`EffIO[E, A]` is the `cats.effect.IO`-specialised sibling of `Eff`, a **phantom over `IO`'s own
+error channel**, represented as `IO[A]`. `IO` is covariant and `E` is a phantom absent from the
+representation, so `EffIO` is **covariant in both `E` and `A`**: a value of `EffIO[Narrow, A]` is
+usable wherever `EffIO[Wide, A]` is expected when `Narrow <: Wide`, with no call-site method.
 
 ```scala
-def findUser(id: String): EffIO[NotFound, User] =
+def findUser(id: String): EffIO[AppError.NotFound, User] =
   if id == "1" then EffIO.succeed(User("1", "Alice"))
-  else EffIO.fail(NotFound(id))
+  else EffIO.fail(AppError.NotFound(id))
 
-def validateUser(user: User): EffIO[InvalidInput, User] =
+def validateUser(user: User): EffIO[AppError.Invalid, User] =
   if user.name.nonEmpty then EffIO.succeed(user)
-  else EffIO.fail(InvalidInput("name required"))
+  else EffIO.fail(AppError.Invalid("name required"))
 
-// Distinct error types unify automatically - no widenError
+// Distinct error types unify into their union automatically
 val workflow: EffIO[AppError, User] = for
   user      <- findUser("1")
   validated <- validateUser(user)
 yield validated
 ```
 
-`Eff` is invariant in `E` - it stays `F`-polymorphic, so `F[Either[E, A]]` cannot be proven
-covariant - and needs an explicit `widenError[AppError]` on each step (compare the quick start
-above). Fixing `F = IO` removes that obstacle.
-
-`EffIO` mirrors `Eff`'s constructor and combinator surface with `F` fixed to `IO`, so call sites
-need neither `using` clauses nor an `[IO]` type argument:
+`Eff[IO, E, A]` behaves identically here: it too is covariant in `E`, so distinct error steps unify
+without a call-site cast (the quick start above needs no `widenError`). `EffIO` adds two things over
+the generic `Eff`: it fixes `F = IO`, so call sites need neither `using` clauses nor an `[IO]` type
+argument, and it is additionally covariant in `A`.
 
 ```scala
 EffIO.succeed(42)               // UEffIO[Int]
-EffIO.fail("boom")              // EffIO[String, Nothing]
+EffIO.fail(AppError.Timeout)    // EffIO[AppError.Timeout.type, Nothing]
 EffIO.liftF(IO.pure(42))        // UEffIO[Int]
 
 workflow.map(user => user.name) // EffIO[AppError, String]
-workflow.mapError(translate)    // EffIO[E2, User]
 workflow.either                 // IO[Either[AppError, User]]
 ```
 
-Covariance subsumes error widening, so `EffIO` has no `widen`/`widenError`; the trusted narrowing
-casts `assume`/`assumeError` remain. The flip side: a `flatMap`/for-comprehension over steps with
-distinct error types silently infers their union (`E1 | E2 | ...`), which can grow wider than
-intended with no compile error - ascribe the result type, or `mapError`/`catchOnly`, to contain it.
+Covariance subsumes error widening, so neither `EffIO` nor `Eff` has `widen`/`widenError`; the
+trusted narrowing casts `assume`/`assumeError` remain on both. The flip side is shared too: a
+`flatMap`/for-comprehension over steps with distinct error types silently infers their union
+(`E1 | E2 | ...`), which can grow wider than intended with no compile error - ascribe the result
+type, or use `mapError`/`catchOnly`, to contain it.
 
-**Narrowing partial recovery (`catchOnly`).** Covariance also enables handling one arm of a union
-error while keeping the rest typed. Given `EffIO[LibError | AppError, A]`, recover the `AppError`
-arm and the residual `LibError` is inferred - no annotation needed:
+**Narrowing partial recovery (`catchOnly`).** Covariance lets you handle one arm of a union error
+while keeping the rest typed. Given `EffIO[IoError | AppError, A]`, recover the `AppError` arm and the
+residual `IoError` is inferred - no annotation needed:
 
 ```scala
-val consumed: EffIO[LibError | AppError, Unit] = ...
-val handled: EffIO[LibError, Unit] = consumed.catchOnly((app: AppError) => log(app))
+val consumed: EffIO[IoError | AppError, Unit] = ...
+val handled: EffIO[IoError, Unit] = consumed.catchOnly((app: AppError) => log(app))
 ```
 
 The handler may itself fail into the residual channel. The handled arm must be runtime-testable; an
-erasure-ambiguous choice is rejected at the call site. `Eff`'s invariance cannot infer the residual,
-so `catchOnly` is `EffIO`-only.
+erasure-ambiguous choice is rejected at the call site. `catchOnly` is available on both `Eff` and
+`EffIO` - covariance in `E` drives the residual inference on each.
 
 **Conversion to and from `Eff`.** `EffIO[E, A]` and `Eff[IO, E, A]` share the runtime
-representation `IO[Either[E, A]]`, so conversion is a zero-cost identity:
+representation `IO[A]`, so conversion is a zero-cost identity:
 
 ```scala
 val asEff: Eff[IO, AppError, User] = workflow.toEff
@@ -522,8 +548,8 @@ class instances as `Eff.Of[IO, E]`. Natural transformations bridge invariant pos
 `Resource`:
 
 ```scala
-val widen: EffIO.Of[NotFound] ~> EffIO.Of[AppError] = EffIO.widenK[NotFound, AppError]
-val liftK: IO ~> EffIO.Of[Nothing]                  = EffIO.liftK
+val widen: EffIO.Of[AppError.NotFound] ~> EffIO.Of[AppError] = EffIO.widenK[AppError.NotFound, AppError]
+val liftK: IO ~> EffIO.Of[Nothing]                           = EffIO.liftK
 ```
 
 `.effIO` lifting extensions mirror `.eff`, specialised to `IO`:
@@ -543,11 +569,6 @@ val liftK: IO ~> EffIO.Of[Nothing]                  = EffIO.liftK
 
 `Deferred`, `Queue`, `Semaphore`, `CountDownLatch`, `CyclicBarrier`, `AtomicCell`, and `Supervisor`
 lift the same way.
-
-> **Known limitation.** Observing the outcome or fibre of an *infallible* `EffIO` (error type
-> `Nothing`) via `start`, `guaranteeCase`, `background`, or `bracketCase` triggers a Scala 3.8
-> pickler bug. Ascribe a concrete error type at the call site - `(eff: EffIO[MyError, A]).start` -
-> as a workaround.
 
 ### Cats-effect primitive interop
 
@@ -592,16 +613,16 @@ Eff.liftBarrier(barrier)     // CyclicBarrier[Eff.Of[IO, E]]
 Eff.liftCell(cell)           // AtomicCell[Eff.Of[IO, E], A]
 Eff.liftSupervisor(sup)      // Supervisor[Eff.Of[IO, E]]
 
-// .eff[E] extension syntax (equivalent)
-resource.eff[MyError]
-ref.eff[MyError]
-deferred.eff[MyError]
-queue.eff[MyError]
-semaphore.eff[MyError]
+// .eff[E] extension syntax (equivalent) - E must be a Throwable subtype
+resource.eff[AppError]
+ref.eff[AppError]
+deferred.eff[AppError]
+queue.eff[AppError]
+semaphore.eff[AppError]
 
 // Natural transformations for mapK
-val fk: IO ~> Eff.Of[IO, MyError]                      = Eff.functionK[IO, MyError]
-val widen: Eff.Of[IO, MyError] ~> Eff.Of[IO, AppError] = Eff.widenK[IO, MyError, AppError]
+val fk: IO ~> Eff.Of[IO, AppError]                              = Eff.functionK[IO, AppError]
+val widen: Eff.Of[IO, AppError.NotFound] ~> Eff.Of[IO, AppError] = Eff.widenK[IO, AppError.NotFound, AppError]
 ```
 
 ### Syntax extensions
@@ -626,7 +647,9 @@ Importing `boilerplate.effect.*` provides lifting extensions:
 
 ### Fibre join extensions
 
-When working with `Fiber[Eff.Of[F, E], Throwable, A]` (e.g. from `Supervisor.supervise`):
+When working with `Fiber[Eff.Of[F, E], Throwable, A]` (e.g. from `Supervisor.supervise`). A fibre
+that failed with a typed error completes as `Outcome.Errored(e)`; the join re-raises `e` on the
+effect's channel, while a `Succeeded` returns its value:
 
 | Extension               | Result Type     | On Cancellation        |
 |-------------------------|-----------------|------------------------|
@@ -643,37 +666,40 @@ import cats.effect.IO
 import cats.effect.kernel.{GenConcurrent, Outcome}
 import cats.syntax.all.*
 import scala.concurrent.duration.*
+import scala.util.control.NoStackTrace
 
-sealed trait AppError
-case class NotFound(id: String) extends AppError
-case class ValidationError(msg: String) extends AppError
-case object Cancelled extends AppError
-case object Timeout extends AppError
+sealed abstract class AppError(msg: String) extends Exception(msg) with NoStackTrace derives CanEqual
+object AppError:
+  final case class NotFound(id: String) extends AppError(s"not found: $id")
+  final case class ValidationError(reason: String) extends AppError(s"invalid: $reason")
+  case object Cancelled extends AppError("cancelled")
+  case object Timeout extends AppError("timed out")
 
 case class User(id: String, name: String)
 
 given C: GenConcurrent[Eff.Of[IO, AppError], Throwable] =
   summon[GenConcurrent[Eff.Of[IO, AppError], Throwable]]
 
-def fetchUser(id: String): Eff[IO, NotFound, User] =
+def fetchUser(id: String): Eff[IO, AppError.NotFound, User] =
   if id == "1" then Eff.succeed(User("1", "Alice"))
-  else Eff.fail(NotFound(id))
+  else Eff.fail(AppError.NotFound(id))
 
-def validateUser(user: User): Eff[IO, ValidationError, User] =
+def validateUser(user: User): Eff[IO, AppError.ValidationError, User] =
   if user.name.nonEmpty then Eff.succeed(user)
-  else Eff.fail(ValidationError("name required"))
+  else Eff.fail(AppError.ValidationError("name required"))
 
+// Distinct typed errors unify into their union automatically - no widenError
 val workflow: Eff[IO, AppError, User] = for
-  user      <- fetchUser("1").widenError[AppError]
-  validated <- validateUser(user).widenError[AppError]
+  user      <- fetchUser("1")
+  validated <- validateUser(user)
 yield validated
 
-// Concurrency with typed errors
+// Concurrency with typed errors; a fibre's typed failure is Outcome.Errored
 val concurrent: Eff[IO, AppError, User] = for
   ref    <- C.ref(0)
   _      <- ref.update(_ + 1)
   fiber  <- workflow.start
-  result <- fiber.joinOrFail(Cancelled)
+  result <- fiber.joinOrFail(AppError.Cancelled)
 yield result
 
 // Racing, parallel composition, and timeout
@@ -684,9 +710,9 @@ val parallel: Eff[IO, AppError, (User, User)] =
   workflow.both(workflow)
 
 val withTimeout: Eff[IO, AppError, User] =
-  workflow.timeout(5.seconds, Timeout)
+  workflow.timeout(5.seconds, AppError.Timeout)
 
-// Guaranteed cleanup
+// Guaranteed cleanup - a typed failure surfaces as Outcome.Errored
 val withCleanup: Eff[IO, AppError, User] =
   workflow.guaranteeCase {
     case Outcome.Succeeded(_) => Eff.liftF(IO.println("success"))

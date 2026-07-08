@@ -27,8 +27,8 @@ import scala.concurrent.duration.FiniteDuration
 import scala.reflect.TypeTest
 import scala.util.Try
 
-import cats.Bifunctor
 import cats.Eq
+import cats.Monad
 import cats.MonadError
 import cats.Monoid
 import cats.Parallel
@@ -41,8 +41,6 @@ import cats.effect.IO
 import cats.effect.kernel.Async
 import cats.effect.kernel.Deferred
 import cats.effect.kernel.Fiber
-import cats.effect.kernel.GenSpawn
-import cats.effect.kernel.MonadCancel
 import cats.effect.kernel.Outcome
 import cats.effect.kernel.Ref
 import cats.effect.kernel.Resource
@@ -55,22 +53,32 @@ import cats.effect.std.Supervisor
 import cats.kernel.PartialOrder
 import cats.~>
 
-/** Covariant, `cats.effect.IO`-specialised typed-error effect, represented as `IO[Either[E, A]]`.
+/** Covariant, `cats.effect.IO`-specialised typed-error effect, represented as a PHANTOM over `IO`'s
+  * own error channel: `IO[A]`.
   *
-  * `EffIO` is covariant in both `E` and `A`: `IO` and `Either` are each covariant, so a value of
-  * `EffIO[Narrow, A]` is usable wherever `EffIO[Wide, A]` is expected when `Narrow <: Wide`, with
-  * no call-site method. It coexists with [[boilerplate.effect.Eff Eff]], shares its runtime
-  * representation with `Eff[IO, E, A]`, and converts to and from it at zero cost.
+  * `EffIO` is [[boilerplate.effect.Eff Eff]] with `F` fixed to `IO`. The typed error
+  * `E <: Throwable` is a compile-time phantom; a real failure rides `IO`'s native `Throwable`
+  * channel, so the happy path IS `IO` - no `Either` allocation - and `absolve` is O(0) identity. It
+  * shares its runtime representation with `Eff[IO, E, A]` (both are `IO[A]`) and converts to and
+  * from it at zero cost.
   *
-  * A consequence of the covariant `E`: a `flatMap`/for-comprehension over steps with distinct error
-  * types infers their union (`E1 | E2 | ...`), and that widening is silent - the channel can grow
-  * wider than intended with no compile error. Ascribe the result type, or `mapError`/`catchOnly`,
-  * to contain it.
+  * `EffIO` is covariant in both `E` and `A`: `IO` is covariant, and `E` is a phantom absent from
+  * the representation, so a value of `EffIO[Narrow, A]` is usable wherever `EffIO[Wide, A]` is
+  * expected when `Narrow <: Wide`, with no call-site method. A consequence: a
+  * `flatMap`/for-comprehension over steps with distinct error types infers their union (`E1 | E2 |
+  * ...`), and that widening is silent
+  *   - the channel can grow wider than intended with no compile error. Ascribe the result type, or
+  *     `mapError`/`catchOnly`, to contain it.
+  *
+  * Observing the typed channel (`either`, `catchAll`, `mapError`, `fold`, ...) filters the caught
+  * `Throwable` by `TypeTest[Throwable, E]`, re-raising any non-`E` defect unchanged. For a concrete
+  * `E` (a sealed `Throwable` root or a union of them) the `TypeTest` is synthesised by the
+  * compiler, so no `using` clause is written at the call site.
   *
   * Refer to [[boilerplate.effect.EffIO$ EffIO]] for constructors, combinators, and type class
   * instances.
   */
-opaque type EffIO[+E, +A] = IO[Either[E, A]]
+opaque type EffIO[+E <: Throwable, +A] = IO[A]
 
 /** Infallible `IO`-specialised effect: [[boilerplate.effect.EffIO EffIO]] with `Nothing` errors. */
 type UEffIO[+A] = EffIO[Nothing, A]
@@ -78,105 +86,133 @@ type UEffIO[+A] = EffIO[Nothing, A]
 /** Throwable-errored `IO`-specialised effect: [[boilerplate.effect.EffIO EffIO]] over `Throwable`. */
 type TEffIO[+A] = EffIO[Throwable, A]
 
+/** `TypeTest` for the empty typed channel. An infallible effect (`E = Nothing`) admits no typed
+  * error, so this test never matches - every `Throwable` on the channel is a defect. Supplying it
+  * lets the channel-observing combinators (`either`, `catchAll`, `fold`, ...) be summoned uniformly
+  * across `E`, including `E = Nothing`, where the compiler cannot otherwise synthesise a `TypeTest`
+  * for the uninhabited type.
+  */
+given TypeTest[Throwable, Nothing] with
+  def unapply(t: Throwable): Option[t.type & Nothing] = None
+
 /** Provides constructors, combinators, and type class instances for
   * [[boilerplate.effect.EffIO EffIO]].
   */
 object EffIO extends EffIOInstances:
   /** Partially applied alias enabling higher-kinded usage of [[boilerplate.effect.EffIO EffIO]]. */
-  type Of[E] = [A] =>> EffIO[E, A]
+  type Of[E <: Throwable] = [A] =>> EffIO[E, A]
+
+  /** Reifies the typed channel into an `Either`; a non-`E` defect propagates on `IO`'s channel. */
+  private def reify[E, A](io: IO[A])(using tt: TypeTest[Throwable, E]): IO[Either[E, A]] =
+    io.map(a => Right(a): Either[E, A]).handleErrorWith {
+      case tt(e) => IO.pure(Left(e))
+      case other => IO.raiseError(other)
+    }
 
   /** Views an `Eff[IO, E, A]` as an `EffIO[E, A]`. Identity at runtime; O(0). */
-  inline def fromEff[E, A](eff: Eff[IO, E, A]): EffIO[E, A] = Eff.unwrapUnsafe(eff)
+  inline def fromEff[E <: Throwable, A](eff: Eff[IO, E, A]): EffIO[E, A] = Eff.unwrapUnsafe(eff)
 
   /** Creates a successful computation. */
-  inline def succeed[A](a: A): UEffIO[A] = IO.pure(Right(a))
+  inline def succeed[A](a: A): UEffIO[A] = IO.pure(a)
 
   /** Creates a failed computation. */
-  inline def fail[E](e: E): EffIO[E, Nothing] = IO.pure(Left(e))
+  inline def fail[E <: Throwable](e: E): EffIO[E, Nothing] = IO.raiseError(e)
 
   /** Lifts a pure `Either` into the effect. */
-  inline def from[E, A](either: Either[E, A]): EffIO[E, A] = IO.pure(either)
+  inline def from[E <: Throwable, A](either: Either[E, A]): EffIO[E, A] =
+    either match
+      case Right(a) => IO.pure(a)
+      case Left(e)  => IO.raiseError(e)
 
   /** Converts an `Option`, supplying an error when empty. */
-  inline def from[E, A](opt: Option[A], ifNone: => E): EffIO[E, A] = IO.pure(opt.toRight(ifNone))
+  inline def from[E <: Throwable, A](opt: Option[A], ifNone: => E): EffIO[E, A] =
+    opt match
+      case Some(a) => IO.pure(a)
+      case None    => IO.raiseError(ifNone)
 
   /** Converts `Try`, mapping throwables into the domain-specific error. */
-  inline def from[E, A](result: Try[A], ifFailure: Throwable => E): EffIO[E, A] =
+  inline def from[E <: Throwable, A](result: Try[A], ifFailure: Throwable => E): EffIO[E, A] =
     result.fold(th => fail(ifFailure(th)), succeed(_))
 
   /** Extracts the underlying computation from `EitherT`. */
-  inline def from[E, A](et: EitherT[IO, E, A]): EffIO[E, A] = et.value
+  inline def from[E <: Throwable, A](et: EitherT[IO, E, A]): EffIO[E, A] = lift(et.value)
 
   /** Canonical successful unit value, interned and shared across call sites. */
-  val unit: UEffIO[Unit] = IO.pure(Right(()))
+  val unit: UEffIO[Unit] = IO.unit
 
-  /** Wraps an existing `IO[Either[E, A]]` without recomputation. */
-  inline def lift[E, A](io: IO[Either[E, A]]): EffIO[E, A] = io
+  /** Absorbs an existing `IO[Either[E, A]]` into the typed channel; a `Left` fails on `IO`'s
+    * channel.
+    */
+  inline def lift[E <: Throwable, A](io: IO[Either[E, A]]): EffIO[E, A] =
+    io.flatMap {
+      case Right(a) => IO.pure(a)
+      case Left(e)  => IO.raiseError(e)
+    }
 
   /** Converts an `IO[Option[A]]`, supplying an error when empty. */
-  inline def lift[E, A](io: IO[Option[A]], ifNone: => E): EffIO[E, A] =
-    io.map(_.toRight(ifNone))
+  inline def lift[E <: Throwable, A](io: IO[Option[A]], ifNone: => E): EffIO[E, A] =
+    io.flatMap {
+      case Some(a) => IO.pure(a)
+      case None    => IO.raiseError(ifNone)
+    }
 
-  /** Embeds any `IO[A]`, treating values as successes. */
-  inline def liftF[A](io: IO[A]): UEffIO[A] = io.map(Right(_))
+  /** Embeds any `IO[A]`, treating values as successes. Identity at runtime; O(0). */
+  inline def liftF[A](io: IO[A]): UEffIO[A] = io
 
   /** Captures throwables raised in `IO`, translating them via `ifFailure`. */
-  inline def attempt[E, A](io: IO[A], ifFailure: Throwable => E): EffIO[E, A] =
-    io.attempt.map(_.fold(th => Left(ifFailure(th)), Right(_)))
+  inline def attempt[E <: Throwable, A](io: IO[A], ifFailure: Throwable => E): EffIO[E, A] =
+    io.handleErrorWith(t => IO.raiseError(ifFailure(t)))
 
   /** Captures matching throwables as typed errors; unmatched throwables propagate as defects in
     * `IO`'s error channel.
     */
-  inline def attempt[E, A](io: IO[A])(pf: PartialFunction[Throwable, E]): EffIO[E, A] =
-    io.redeemWith(
-      t => if pf.isDefinedAt(t) then IO.pure(Left(pf(t))) else IO.raiseError(t),
-      a => IO.pure(Right(a))
-    )
+  inline def attempt[E <: Throwable, A](io: IO[A])(pf: PartialFunction[Throwable, E]): EffIO[E, A] =
+    io.handleErrorWith(t => if pf.isDefinedAt(t) then IO.raiseError(pf(t)) else IO.raiseError(t))
 
   /** Suspends evaluation until demanded. */
-  inline def defer[E, A](thunk: => EffIO[E, A]): EffIO[E, A] = IO.defer(thunk)
+  inline def defer[E <: Throwable, A](thunk: => EffIO[E, A]): EffIO[E, A] = IO.defer(thunk)
 
   /** Suspends a side-effecting computation that yields an `Either[E, A]`.
     *
     * For an already-evaluated `Either`, use [[from]]. For an infallible side effect, use
     * [[suspend]]. For unconditional success or failure, use [[succeed]] / [[fail]].
     */
-  inline def delay[E, A](ea: => Either[E, A]): EffIO[E, A] = IO.delay(ea)
+  inline def delay[E <: Throwable, A](ea: => Either[E, A]): EffIO[E, A] = lift(IO.delay(ea))
 
   /** Suspends a synchronous side effect as a success value.
     *
     * For side effects that may produce typed errors, use [[delay]].
     */
-  inline def suspend[A](thunk: => A): UEffIO[A] = IO.delay(thunk).map(Right(_))
+  inline def suspend[A](thunk: => A): UEffIO[A] = IO.delay(thunk)
 
   /** As [[delay]], on the blocking thread pool - for synchronous work that blocks a thread. */
-  inline def blocking[E, A](ea: => Either[E, A]): EffIO[E, A] = IO.blocking(ea)
+  inline def blocking[E <: Throwable, A](ea: => Either[E, A]): EffIO[E, A] = lift(IO.blocking(ea))
 
   /** As [[suspend]], on the blocking thread pool - for synchronous work that blocks a thread. */
-  inline def suspendBlocking[A](thunk: => A): UEffIO[A] = IO.blocking(thunk).map(Right(_))
+  inline def suspendBlocking[A](thunk: => A): UEffIO[A] = IO.blocking(thunk)
 
   /** Suspends execution for the specified duration. */
-  inline def sleep(duration: FiniteDuration): UEffIO[Unit] = liftF(IO.sleep(duration))
+  inline def sleep(duration: FiniteDuration): UEffIO[Unit] = IO.sleep(duration)
 
   /** Returns the current monotonic time as a `FiniteDuration`. */
-  inline def monotonic: UEffIO[FiniteDuration] = liftF(IO.monotonic)
+  inline def monotonic: UEffIO[FiniteDuration] = IO.monotonic
 
   /** Returns the current wall-clock time as a `FiniteDuration` since the epoch. */
-  inline def realTime: UEffIO[FiniteDuration] = liftF(IO.realTime)
+  inline def realTime: UEffIO[FiniteDuration] = IO.realTime
 
   /** Creates a new `Ref` initialised with `a`, operating in the `EffIO` context. */
-  inline def ref[E, A](a: A): EffIO[E, Ref[Of[E], A]] =
-    liftF(IO.ref(a).map(_.mapK(new LiftK[E])))
+  inline def ref[E <: Throwable, A](a: A): EffIO[E, Ref[Of[E], A]] =
+    IO.ref(a).map(_.asInstanceOf[Ref[Of[E], A]]) // scalafix:ok DisableSyntax.asInstanceOf
 
   /** Creates an empty `Deferred` operating in the `EffIO` context. */
-  inline def deferred[E, A]: EffIO[E, Deferred[Of[E], A]] =
-    liftF(IO.deferred[A].map(_.mapK(new LiftK[E])))
+  inline def deferred[E <: Throwable, A]: EffIO[E, Deferred[Of[E], A]] =
+    IO.deferred[A].map(_.asInstanceOf[Deferred[Of[E], A]]) // scalafix:ok DisableSyntax.asInstanceOf
 
   /** Introduces a self-cancellation point, immediately cancelling the current fibre. */
-  val canceled: UEffIO[Unit] = liftF(IO.canceled)
+  val canceled: UEffIO[Unit] = IO.canceled
 
   /** Introduces a cooperative yielding point. */
-  val cede: UEffIO[Unit] = liftF(IO.cede)
+  val cede: UEffIO[Unit] = IO.cede
 
   /** A computation that never completes. Useful for representing timeouts or blocking operations
     * that should never produce a value on their own.
@@ -187,14 +223,14 @@ object EffIO extends EffIOInstances:
     *
     * The `Future` is evaluated lazily when the effect is run.
     */
-  inline def fromFuture[E, A](future: IO[Future[A]], ifFailure: Throwable => E): EffIO[E, A] =
-    fromEff(Eff.fromFuture[IO, E, A](future, ifFailure))
+  inline def fromFuture[E <: Throwable, A](future: IO[Future[A]], ifFailure: Throwable => E): EffIO[E, A] =
+    IO.fromFuture(future).handleErrorWith(t => IO.raiseError(ifFailure(t)))
 
   /** Converts a `Future` into an `EffIO`, catching matching throwables as typed errors; unmatched
     * throwables propagate as defects in `IO`'s error channel.
     */
-  inline def fromFuture[E, A](future: IO[Future[A]])(pf: PartialFunction[Throwable, E]): EffIO[E, A] =
-    fromEff(Eff.fromFuture[IO, E, A](future)(pf))
+  inline def fromFuture[E <: Throwable, A](future: IO[Future[A]])(pf: PartialFunction[Throwable, E]): EffIO[E, A] =
+    IO.fromFuture(future).handleErrorWith(t => if pf.isDefinedAt(t) then IO.raiseError(pf(t)) else IO.raiseError(t))
 
   /** Suspends an asynchronous callback-driven computation completing with a typed `Either[E, A]`.
     *
@@ -203,80 +239,86 @@ object EffIO extends EffIOInstances:
     * use [[asyncAttempt]] to fold it into a typed error instead. The returned
     * `IO[Option[IO[Unit]]]` optionally yields a finaliser run on cancellation.
     */
-  inline def async[E, A](k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]): EffIO[E, A] =
-    fromEff(Eff.async[IO, E, A](k))
+  inline def async[E <: Throwable, A](k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]): EffIO[E, A] =
+    IO.async[A](cb => k(ea => cb(ea)))
 
-  /** As [[async]], additionally folding a raised throwable into a typed error via `ifDefect`.
-    * Cancellation is never folded.
+  /** As [[async]], additionally folding a raised throwable into a typed error via `ifDefect`. A
+    * typed error delivered through the callback passes through unchanged; cancellation is never
+    * folded.
     */
-  inline def asyncAttempt[E, A](ifDefect: Throwable => E)(k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]): EffIO[E, A] =
-    fromEff(Eff.asyncAttempt[IO, E, A](ifDefect)(k))
+  inline def asyncAttempt[E <: Throwable, A](ifDefect: Throwable => E)(
+    k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]
+  )(using tt: TypeTest[Throwable, E]): EffIO[E, A] =
+    IO.async[A](cb => k(ea => cb(ea))).handleErrorWith {
+      case tt(e) => IO.raiseError(e)
+      case other => IO.raiseError(ifDefect(other))
+    }
 
   /** Executes `eff` only when `cond` is true, otherwise succeeds with `Unit`. */
-  inline def when[E](cond: Boolean)(eff: => EffIO[E, Unit]): EffIO[E, Unit] =
+  inline def when[E <: Throwable](cond: Boolean)(eff: => EffIO[E, Unit]): EffIO[E, Unit] =
     if cond then eff else unit
 
   /** Executes `eff` only when `cond` is false, otherwise succeeds with `Unit`. */
-  inline def unless[E](cond: Boolean)(eff: => EffIO[E, Unit]): EffIO[E, Unit] =
+  inline def unless[E <: Throwable](cond: Boolean)(eff: => EffIO[E, Unit]): EffIO[E, Unit] =
     if cond then unit else eff
 
   /** Raises an error when `cond` is true, otherwise succeeds with `Unit`. */
-  inline def raiseWhen[E](cond: Boolean)(e: => E): EffIO[E, Unit] =
+  inline def raiseWhen[E <: Throwable](cond: Boolean)(e: => E): EffIO[E, Unit] =
     if cond then fail(e) else unit
 
   /** Raises an error when `cond` is false, otherwise succeeds with `Unit`. */
-  inline def raiseUnless[E](cond: Boolean)(e: => E): EffIO[E, Unit] =
+  inline def raiseUnless[E <: Throwable](cond: Boolean)(e: => E): EffIO[E, Unit] =
     if cond then unit else fail(e)
 
   /** Lifts a Boolean predicate into a typed-error effect. Both branches are evaluated lazily; the
     * unselected branch is never run.
     */
-  inline def cond[E, A](pred: Boolean, ifTrue: => A, ifFalse: => E): EffIO[E, A] =
+  inline def cond[E <: Throwable, A](pred: Boolean, ifTrue: => A, ifFalse: => E): EffIO[E, A] =
     if pred then succeed(ifTrue) else fail(ifFalse)
 
   /** Traverses a collection, short-circuiting on first error. */
-  inline def traverse[E, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, List[B]] =
+  inline def traverse[E <: Throwable, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, List[B]] =
     fromEff(Eff.traverse[IO, E, A, B](as)(a => f(a).toEff))
 
   /** Sequences a collection of effects, short-circuiting on first error. */
-  inline def sequence[E, A](effs: Iterable[EffIO[E, A]]): EffIO[E, List[A]] =
+  inline def sequence[E <: Throwable, A](effs: Iterable[EffIO[E, A]]): EffIO[E, List[A]] =
     traverse(effs)(identity)
 
   /** Traverses a collection for effect only, discarding results and short-circuiting on first
     * error.
     */
   @targetName("traverseUnit")
-  inline def traverse_[E, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, Unit] =
+  inline def traverse_[E <: Throwable, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, Unit] =
     fromEff(Eff.traverse_[IO, E, A, B](as)(a => f(a).toEff))
 
   /** Runs a collection of effects for effect only, discarding results and short-circuiting on first
     * error.
     */
   @targetName("sequenceUnit")
-  inline def sequence_[E, A](effs: Iterable[EffIO[E, A]]): EffIO[E, Unit] =
+  inline def sequence_[E <: Throwable, A](effs: Iterable[EffIO[E, A]]): EffIO[E, Unit] =
     traverse_(effs)(identity)
 
   /** Traverses a collection in parallel. */
-  inline def parTraverse[E, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, List[B]] =
+  inline def parTraverse[E <: Throwable, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, List[B]] =
     fromEff(Eff.parTraverse[IO, E, A, B](as)(a => f(a).toEff))
 
   /** Sequences a collection of effects in parallel. */
-  inline def parSequence[E, A](effs: Iterable[EffIO[E, A]]): EffIO[E, List[A]] =
+  inline def parSequence[E <: Throwable, A](effs: Iterable[EffIO[E, A]]): EffIO[E, List[A]] =
     parTraverse(effs)(identity)
 
   /** Traverses a collection in parallel for effect only, discarding results. */
   @targetName("parTraverseUnit")
-  inline def parTraverse_[E, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, Unit] =
+  inline def parTraverse_[E <: Throwable, A, B](as: Iterable[A])(f: A => EffIO[E, B]): EffIO[E, Unit] =
     fromEff(Eff.parTraverse_[IO, E, A, B](as)(a => f(a).toEff))
 
   /** Sequences a collection of effects in parallel for effect only, discarding results. */
   @targetName("parSequenceUnit")
-  inline def parSequence_[E, A](effs: Iterable[EffIO[E, A]]): EffIO[E, Unit] =
+  inline def parSequence_[E <: Throwable, A](effs: Iterable[EffIO[E, A]]): EffIO[E, Unit] =
     parTraverse_(effs)(identity)
 
   /** Retries the effect up to `maxRetries` times on failure. */
-  inline def retry[E, A](eff: EffIO[E, A], maxRetries: Int): EffIO[E, A] =
-    fromEff(Eff.retry(eff.toEff, maxRetries))
+  inline def retry[E <: Throwable, A](eff: EffIO[E, A], maxRetries: Int)(using TypeTest[Throwable, E]): EffIO[E, A] =
+    fromEff(Eff.retry[IO, E, A](eff.toEff, maxRetries))
 
   /** Retries the effect with exponential backoff between attempts.
     *
@@ -285,37 +327,66 @@ object EffIO extends EffIOInstances:
     * @param initialDelay delay before first retry
     * @param maxDelay optional cap on delay duration
     */
-  inline def retryWithBackoff[E, A](
+  inline def retryWithBackoff[E <: Throwable, A](
     eff: EffIO[E, A],
     maxRetries: Int,
     initialDelay: FiniteDuration,
     maxDelay: Option[FiniteDuration]
-  ): EffIO[E, A] =
-    fromEff(Eff.retryWithBackoff(eff.toEff, maxRetries, initialDelay, maxDelay))
+  )(using TypeTest[Throwable, E]): EffIO[E, A] =
+    fromEff(Eff.retryWithBackoff[IO, E, A](eff.toEff, maxRetries, initialDelay, maxDelay))
 
-  extension [E, A](self: EffIO[E, A])
+  extension [E <: Throwable, A](self: EffIO[E, A])
     /** Views this effect as an invariant `Eff[IO, E, A]`. Identity at runtime; O(0). */
     inline def toEff: Eff[IO, E, A] = Eff.wrapUnsafe(self)
 
-    /** Unwraps to the underlying `IO[Either[E, A]]`. */
-    inline def either: IO[Either[E, A]] = self
+    /** Reifies to `IO[Either[E, A]]`; a non-`E` defect propagates on `IO`'s channel. */
+    inline def either(using TypeTest[Throwable, E]): IO[Either[E, A]] = reify[E, A](self)
+
+    /** Absorbs the typed error into `IO`. O(0) identity - the failure is already there. */
+    inline def absolve: IO[A] = self
 
     /** Maps the success channel while preserving the error type. */
-    inline def map[B](f: A => B): EffIO[E, B] = fromEff(self.toEff.map(f))
+    inline def map[B](f: A => B): EffIO[E, B] = (self: IO[A]).map(f)
 
     /** Sequences computations, widening the error channel on demand. */
-    inline def flatMap[E2 >: E, B](f: A => EffIO[E2, B]): EffIO[E2, B] =
-      fromEff(self.toEff.flatMap(a => f(a).toEff))
+    inline def flatMap[E2 <: Throwable, B](f: A => EffIO[E2, B]): EffIO[E2, B] =
+      (self: IO[A]).flatMap(a => f(a))
+
+    /** Maps the success value through an effectful function. */
+    inline def semiflatMap[B](f: A => IO[B]): EffIO[E, B] = (self: IO[A]).flatMap(f)
+
+    /** Flat-maps the success through a pure `Either`-returning function; a `Left` fails. */
+    inline def subflatMap[E2 <: Throwable, B](f: A => Either[E2, B]): EffIO[E2, B] =
+      (self: IO[A]).flatMap(a =>
+        f(a) match
+          case Right(b) => IO.pure(b)
+          case Left(e)  => IO.raiseError(e)
+      )
+
+    /** Transforms the entire reified `Either` structure. */
+    inline def transform[E2 <: Throwable, B](f: Either[E, A] => Either[E2, B])(using TypeTest[Throwable, E]): EffIO[E2, B] =
+      reify[E, A](self).flatMap(ea =>
+        f(ea) match
+          case Right(b) => IO.pure(b)
+          case Left(e)  => IO.raiseError(e)
+      )
 
     /** Handles any failure by switching to an alternative computation. */
-    inline def catchAll[E2, B >: A](f: E => EffIO[E2, B]): EffIO[E2, B] =
-      fromEff(self.toEff.catchAll(e => f(e).toEff))
+    inline def catchAll[E2 <: Throwable, B >: A](f: E => EffIO[E2, B])(using tt: TypeTest[Throwable, E]): EffIO[E2, B] =
+      (self: IO[B]).handleErrorWith {
+        case tt(e) => f(e)
+        case other => IO.raiseError(other)
+      }
 
     /** Recovers the errors `pf` handles with an effect; unmatched errors pass through, widening to
       * `E2`. The effectful sibling of [[mapErrorPartial]], pairing with [[catchAll]].
       */
-    inline def catchSome[E2 >: E, B >: A](pf: PartialFunction[E, EffIO[E2, B]]): EffIO[E2, B] =
-      fromEff(self.toEff.catchSome(pf.andThen(_.toEff)))
+    inline def catchSome[E2 >: E <: Throwable, B >: A](pf: PartialFunction[E, EffIO[E2, B]])(using
+      tt: TypeTest[Throwable, E]): EffIO[E2, B] =
+      (self: IO[B]).handleErrorWith {
+        case tt(e) if pf.isDefinedAt(e) => pf(e)
+        case other                      => IO.raiseError(other)
+      }
 
     /** Recovers the `H` arm of a union error with an effect, narrowing the channel to the residual
       * `R` (where `E <: R | H`); unmatched errors stay typed as `R`, and `f` may itself fail into
@@ -328,216 +399,229 @@ object EffIO extends EffIOInstances:
       *
       * `H` must be runtime-testable; an erasure-ambiguous `H` is rejected at the call site.
       */
-    inline def catchOnly[H, R, B >: A](f: H => EffIO[R, B])(using
+    inline def catchOnly[H, R <: Throwable, B >: A](f: H => EffIO[R, B])(using
       ev: E <:< (R | H),
-      tt: TypeTest[E, H]
+      tt: TypeTest[Throwable, H]
     ): EffIO[R, B] =
-      self.either.flatMap {
-        case Right(a) => IO.pure(Right(a))
-        case Left(e)  =>
-          e match
-            case tt(h) => f(h).either
-            case _     => IO.pure(Left(ev(e).asInstanceOf[R])) // scalafix:ok DisableSyntax.asInstanceOf
+      val _ = ev
+      (self: IO[B]).handleErrorWith {
+        case tt(h) => f(h)
+        case other => IO.raiseError(other)
       }
 
     /** Handles both error and success with effectful functions, allowing error type change. */
-    inline def redeemAll[E2, B](fe: E => EffIO[E2, B], fa: A => EffIO[E2, B]): EffIO[E2, B] =
-      fromEff(self.toEff.redeemAll(e => fe(e).toEff, a => fa(a).toEff))
+    inline def redeemAll[E2 <: Throwable, B](fe: E => EffIO[E2, B], fa: A => EffIO[E2, B])(using TypeTest[Throwable, E]): EffIO[E2, B] =
+      reify[E, A](self).flatMap {
+        case Left(e)  => fe(e)
+        case Right(a) => fa(a)
+      }
 
     /** Folds over both channels, returning to the base `IO`. */
-    inline def fold[B](fe: E => B, fa: A => B): IO[B] = self.toEff.fold(fe, fa)
+    inline def fold[B](fe: E => B, fa: A => B)(using TypeTest[Throwable, E]): IO[B] =
+      reify[E, A](self).map(_.fold(fe, fa))
 
     /** Effectfully folds both channels, allowing different continuations. */
-    inline def foldF[B](fe: E => IO[B], fa: A => IO[B]): IO[B] = self.toEff.foldF(fe, fa)
+    inline def foldF[B](fe: E => IO[B], fa: A => IO[B])(using TypeTest[Throwable, E]): IO[B] =
+      reify[E, A](self).flatMap(_.fold(fe, fa))
 
-    /** Observes failures without altering the result.
+    /** Transforms the error channel. */
+    inline def mapError[E2 <: Throwable](f: E => E2)(using tt: TypeTest[Throwable, E]): EffIO[E2, A] =
+      (self: IO[A]).handleErrorWith {
+        case tt(e) => IO.raiseError(f(e))
+        case other => IO.raiseError(other)
+      }
+
+    /** Transforms the error channel partially; unmatched errors pass through. */
+    inline def mapErrorPartial[E2 >: E <: Throwable](pf: PartialFunction[E, E2])(using tt: TypeTest[Throwable, E]): EffIO[E2, A] =
+      (self: IO[A]).handleErrorWith {
+        case tt(e) => IO.raiseError(pf.applyOrElse(e, (x: E) => x))
+        case other => IO.raiseError(other)
+      }
+
+    /** Fallback to an alternative computation when this one fails with a typed error. */
+    inline def alt[E2 <: Throwable, B >: A](that: => EffIO[E2, B])(using tt: TypeTest[Throwable, E]): EffIO[E2, B] =
+      (self: IO[B]).handleErrorWith {
+        case tt(_) => that
+        case other => IO.raiseError(other)
+      }
+
+    /** Recovers from any typed failure with a constant success value. */
+    inline def orElseSucceed[B >: A](value: => B)(using tt: TypeTest[Throwable, E]): UEffIO[B] =
+      (self: IO[B]).handleErrorWith {
+        case tt(_) => IO.pure(value)
+        case other => IO.raiseError(other)
+      }
+
+    /** Replaces any typed failure with a different error. */
+    inline def orElseFail[E2 <: Throwable](error: => E2)(using tt: TypeTest[Throwable, E]): EffIO[E2, A] =
+      (self: IO[A]).handleErrorWith {
+        case tt(_) => IO.raiseError(error)
+        case other => IO.raiseError(other)
+      }
+
+    /** Recovers from all typed errors by mapping them to a success value. */
+    inline def valueOr(f: E => A)(using tt: TypeTest[Throwable, E]): UEffIO[A] =
+      (self: IO[A]).handleErrorWith {
+        case tt(e) => IO.pure(f(e))
+        case other => IO.raiseError(other)
+      }
+
+    /** Observes typed failures without altering the result.
       *
       * The side effect is a raw `IO[Unit]` that cannot itself produce typed errors. For fallible
       * side effects, use [[flatTapError]].
       */
-    inline def tapError(f: E => IO[Unit]): EffIO[E, A] = fromEff(self.toEff.tapError(f))
+    inline def tapError(f: E => IO[Unit])(using tt: TypeTest[Throwable, E]): EffIO[E, A] =
+      (self: IO[A]).handleErrorWith {
+        case tt(e) => f(e).flatMap(_ => IO.raiseError(e))
+        case other => IO.raiseError(other)
+      }
 
-    /** Observes failures via an effectful action that can also fail.
+    /** Observes typed failures via an effectful action that can also fail.
       *
       * If the side effect fails, that failure propagates and replaces the original error. For
       * infallible side effects, use [[tapError]].
       */
-    inline def flatTapError(f: E => EffIO[E, Unit]): EffIO[E, A] =
-      fromEff(self.toEff.flatTapError(e => f(e).toEff))
+    inline def flatTapError(f: E => EffIO[E, Unit])(using tt: TypeTest[Throwable, E]): EffIO[E, A] =
+      (self: IO[A]).handleErrorWith {
+        case tt(e) => f(e).flatMap(_ => IO.raiseError(e))
+        case other => IO.raiseError(other)
+      }
 
     /** Observes success values without altering the result. */
-    inline def tap(f: A => IO[Unit]): EffIO[E, A] = fromEff(self.toEff.tap(f))
+    inline def tap(f: A => IO[Unit]): EffIO[E, A] = (self: IO[A]).flatMap(a => f(a).map(_ => a))
 
-    /** Observes the attempt result without altering the outcome.
-      *
-      * The observation function receives `Right(a)` on success or `Left(e)` on typed error. Defects
-      * propagate through without observation.
+    /** Observes the reified attempt result without altering the outcome. Defects propagate through
+      * without observation.
       */
-    inline def attemptTap(f: Either[E, A] => EffIO[E, Unit]): EffIO[E, A] =
-      fromEff(self.toEff.attemptTap(ea => f(ea).toEff))
+    inline def attemptTap(f: Either[E, A] => EffIO[E, Unit])(using TypeTest[Throwable, E]): EffIO[E, A] =
+      reify[E, A](self).flatMap { ea =>
+        f(ea).flatMap { _ =>
+          ea match
+            case Right(a) => IO.pure(a)
+            case Left(e)  => IO.raiseError(e)
+        }
+      }
 
-    /** Fallback to an alternative computation when this one fails. */
-    inline def alt[E2, B >: A](that: => EffIO[E2, B]): EffIO[E2, B] =
-      fromEff(self.toEff.alt(that.toEff))
-
-    /** Recovers from any failure with a constant success value. */
-    inline def orElseSucceed[B >: A](value: => B): UEffIO[B] =
-      fromEff(self.toEff.orElseSucceed(value))
-
-    /** Replaces any failure with a different error. */
-    inline def orElseFail[E2](error: => E2): EffIO[E2, A] =
-      fromEff(self.toEff.orElseFail(error))
-
-    /** Recovers from all errors by mapping them to a success value. */
-    inline def valueOr(f: E => A): UEffIO[A] = fromEff(self.toEff.valueOr(f))
-
-    /** Transforms the error channel. */
-    inline def mapError[E2](f: E => E2): EffIO[E2, A] = fromEff(self.toEff.mapError(f))
-
-    /** Transforms the error channel partially; unmatched errors pass through. */
-    inline def mapErrorPartial[E2 >: E](pf: PartialFunction[E, E2]): EffIO[E2, A] =
-      fromEff(self.toEff.mapErrorPartial(pf))
-
-    /** Maps the success value through an effectful function. */
-    inline def semiflatMap[B](f: A => IO[B]): EffIO[E, B] = fromEff(self.toEff.semiflatMap(f))
-
-    /** Flat-maps the success through a pure `Either`-returning function. */
-    inline def subflatMap[E2 >: E, B](f: A => Either[E2, B]): EffIO[E2, B] =
-      fromEff(self.toEff.subflatMap(f))
-
-    /** Transforms the entire `Either` structure. */
-    inline def transform[E2, B](f: Either[E, A] => Either[E2, B]): EffIO[E2, B] =
-      fromEff(self.toEff.transform(f))
-
-    /** Absorbs the typed error into `IO` when `E` is a `Throwable`. */
-    inline def absolve(using E <:< Throwable): IO[A] = self.toEff.absolve[Throwable]
-
-    /** Converts to `EitherT` for ecosystem interop. */
-    inline def eitherT: EitherT[IO, E, A] = EitherT(self)
-
-    /** Converts to an infallible effect returning `Option[A]`, treating errors as `None`. */
-    inline def option: UEffIO[Option[A]] = fromEff(self.toEff.option)
+    /** Converts to an infallible effect returning `Option[A]`, treating typed errors as `None`. */
+    inline def option(using TypeTest[Throwable, E]): UEffIO[Option[A]] =
+      reify[E, A](self).map(_.toOption)
 
     /** Extracts an inner `Option[B]` value, failing with `ifNone` when absent. */
-    inline def collectSome[B](ifNone: => E)(using A <:< Option[B]): EffIO[E, B] =
-      fromEff(self.toEff.collectSome(ifNone))
+    inline def collectSome[B](ifNone: => E)(using ev: A <:< Option[B]): EffIO[E, B] =
+      (self: IO[A]).flatMap(a =>
+        ev(a) match
+          case Some(b) => IO.pure(b)
+          case None    => IO.raiseError(ifNone)
+      )
 
     /** Extracts an inner `Either[L, B]` value, mapping left to error via `ifLeft`. */
-    inline def collectRight[L, B](ifLeft: L => E)(using A <:< Either[L, B]): EffIO[E, B] =
-      fromEff(self.toEff.collectRight(ifLeft))
+    inline def collectRight[L, B](ifLeft: L => E)(using ev: A <:< Either[L, B]): EffIO[E, B] =
+      (self: IO[A]).flatMap(a =>
+        ev(a) match
+          case Right(b) => IO.pure(b)
+          case Left(l)  => IO.raiseError(ifLeft(l))
+      )
+
+    /** Converts to `EitherT` for ecosystem interop. */
+    inline def eitherT(using TypeTest[Throwable, E]): EitherT[IO, E, A] = EitherT(reify[E, A](self))
 
     // scalafix:off DisableSyntax.asInstanceOf
     /** Treats the error type as a subtype, for trusted casts. */
-    transparent inline def assumeError[E2 <: E]: EffIO[E2, A] =
-      self.either.asInstanceOf[IO[Either[E2, A]]]
+    transparent inline def assumeError[E2 <: E]: EffIO[E2, A] = (self: IO[A]).asInstanceOf[EffIO[E2, A]]
 
     /** Treats the success channel as a subtype, for trusted casts. */
-    transparent inline def assume[B <: A]: EffIO[E, B] =
-      self.either.asInstanceOf[IO[Either[E, B]]]
+    transparent inline def assume[B <: A]: EffIO[E, B] = (self: IO[A]).asInstanceOf[EffIO[E, B]]
     // scalafix:on
 
     /** Sequences this computation with `that`, discarding the result of `this`. */
     @targetName("productR")
-    inline def *>[B](that: => EffIO[E, B]): EffIO[E, B] = fromEff(self.toEff.productR(that.toEff))
+    inline def *>[B](that: => EffIO[E, B]): EffIO[E, B] = (self: IO[A]).flatMap(_ => that)
 
     /** Sequences this computation with `that`, discarding the result of `that`. */
     @targetName("productL")
-    inline def <*[B](that: => EffIO[E, B]): EffIO[E, A] = fromEff(self.toEff.productL(that.toEff))
+    inline def <*[B](that: => EffIO[E, B]): EffIO[E, A] = (self: IO[A]).flatMap(a => (that: IO[B]).map(_ => a))
 
     /** Sequences this computation with `that`, discarding the result of `this`. */
-    inline def productR[B](that: => EffIO[E, B]): EffIO[E, B] =
-      fromEff(self.toEff.productR(that.toEff))
+    inline def productR[B](that: => EffIO[E, B]): EffIO[E, B] = (self: IO[A]).flatMap(_ => that)
 
     /** Sequences this computation with `that`, discarding the result of `that`. */
-    inline def productL[B](that: => EffIO[E, B]): EffIO[E, A] =
-      fromEff(self.toEff.productL(that.toEff))
+    inline def productL[B](that: => EffIO[E, B]): EffIO[E, A] = (self: IO[A]).flatMap(a => (that: IO[B]).map(_ => a))
 
     /** Combines this computation with `that` into a tuple. */
     inline def product[B](that: EffIO[E, B]): EffIO[E, (A, B)] =
-      fromEff(self.toEff.product(that.toEff))
+      (self: IO[A]).flatMap(a => (that: IO[B]).map(b => (a, b)))
 
     /** Applies an effectful function to the success value, discarding its result. */
     inline def flatTap[B](f: A => EffIO[E, B]): EffIO[E, A] =
-      fromEff(self.toEff.flatTap(a => f(a).toEff))
+      (self: IO[A]).flatMap(a => (f(a): IO[B]).map(_ => a))
 
     /** Discards the success value, returning `Unit`. */
-    inline def void: EffIO[E, Unit] = fromEff(self.toEff.void)
+    inline def void: EffIO[E, Unit] = (self: IO[A]).map(_ => ())
 
     /** Replaces the success value with `b`. */
-    inline def as[B](b: B): EffIO[E, B] = fromEff(self.toEff.as(b))
+    inline def as[B](b: B): EffIO[E, B] = (self: IO[A]).map(_ => b)
 
     /** Acquires a resource, uses it, and ensures release even on failure. */
     inline def bracket[B](use: A => EffIO[E, B])(release: A => IO[Unit]): EffIO[E, B] =
-      fromEff(self.toEff.bracket(a => use(a).toEff)(release))
+      (self: IO[A]).bracket(a => use(a))(release)
 
     /** Acquires a resource, uses it, and ensures release with outcome information. */
     inline def bracketCase[B](use: A => EffIO[E, B])(
-      release: (A, Outcome[IO, Throwable, Either[E, B]]) => IO[Unit]
+      release: (A, Outcome[Of[E], Throwable, B]) => IO[Unit]
     ): EffIO[E, B] =
-      fromEff(self.toEff.bracketCase(a => use(a).toEff)(release))
+      (self: IO[A]).bracketCase(a => use(a))((a, oc) => release(a, oc.asInstanceOf[Outcome[Of[E], Throwable, B]])) // scalafix:ok DisableSyntax.asInstanceOf
 
-    /** Starts this computation as a fibre, returning immediately. */
+    /** Starts this computation as a fibre, returning immediately. A fibre completing with a typed
+      * error is an `Outcome.Errored`.
+      */
     inline def start: EffIO[E, Fiber[Of[E], Throwable, A]] =
-      summon[GenSpawn[Of[E], Throwable]].start(self)
+      (self: IO[A]).start.map(_.asInstanceOf[Fiber[Of[E], Throwable, A]]) // scalafix:ok DisableSyntax.asInstanceOf
 
-    /** Runs this computation as a background fibre, cancelling it on scope exit.
-      *
-      * The outcome is reported in the base `IO` context: a typed error surfaces as a `Succeeded`
-      * holding `Left(e)`.
-      */
-    inline def background: Resource[IO, IO[Outcome[IO, Throwable, Either[E, A]]]] =
-      summon[GenSpawn[IO, Throwable]].background(self.either)
+    /** Runs this computation as a background fibre, cancelling it on scope exit. */
+    inline def background: Resource[IO, IO[Outcome[Of[E], Throwable, A]]] =
+      (self: IO[A]).background.asInstanceOf[Resource[IO, IO[Outcome[Of[E], Throwable, A]]]] // scalafix:ok DisableSyntax.asInstanceOf
 
-    /** Ensures `fin` runs with the completion outcome after this computation.
-      *
-      * The finaliser observes the base `IO` outcome: a `Succeeded` carries `Either[E, A]`, so a
-      * typed error appears as `Succeeded(Left(e))` and a defect as `Errored`.
-      */
-    inline def guaranteeCase(fin: Outcome[IO, Throwable, Either[E, A]] => IO[Unit]): EffIO[E, A] =
-      summon[MonadCancel[IO, Throwable]].guaranteeCase(self.either)(fin)
+    /** Ensures `fin` runs with the completion outcome after this computation. */
+    inline def guaranteeCase(fin: Outcome[Of[E], Throwable, A] => IO[Unit]): EffIO[E, A] =
+      (self: IO[A]).guaranteeCase(oc => fin(oc.asInstanceOf[Outcome[Of[E], Throwable, A]])) // scalafix:ok DisableSyntax.asInstanceOf
 
     /** Races this computation against `that`, returning the winner's result. */
-    inline def race[B](that: EffIO[E, B]): EffIO[E, Either[A, B]] =
-      fromEff(self.toEff.race(that.toEff))
+    inline def race[B](that: EffIO[E, B]): EffIO[E, Either[A, B]] = IO.race(self, that)
 
     /** Runs this computation and `that` concurrently, returning both results. */
-    inline def both[B](that: EffIO[E, B]): EffIO[E, (A, B)] =
-      fromEff(self.toEff.both(that.toEff))
+    inline def both[B](that: EffIO[E, B]): EffIO[E, (A, B)] = IO.both(self, that)
 
     /** Runs this computation and `that` in parallel, discarding the result of `this`. */
     @targetName("parProductR")
-    inline def &>[B](that: EffIO[E, B]): EffIO[E, B] = fromEff(self.toEff &> that.toEff)
+    inline def &>[B](that: EffIO[E, B]): EffIO[E, B] = IO.both(self, that).map(_._2)
 
     /** Runs this computation and `that` in parallel, discarding the result of `that`. */
     @targetName("parProductL")
-    inline def <&[B](that: EffIO[E, B]): EffIO[E, A] = fromEff(self.toEff <& that.toEff)
+    inline def <&[B](that: EffIO[E, B]): EffIO[E, A] = IO.both(self, that).map(_._1)
 
     /** Registers a finaliser to run if this computation is cancelled. */
-    inline def onCancel(fin: EffIO[E, Unit]): EffIO[E, A] =
-      fromEff(self.toEff.onCancel(fin.toEff))
+    inline def onCancel(fin: EffIO[E, Unit]): EffIO[E, A] = (self: IO[A]).onCancel(fin)
 
     /** Ensures `fin` runs after this computation regardless of outcome. */
-    inline def guarantee(fin: EffIO[E, Unit]): EffIO[E, A] =
-      fromEff(self.toEff.guarantee(fin.toEff))
+    inline def guarantee(fin: EffIO[E, Unit]): EffIO[E, A] = (self: IO[A]).guarantee(fin)
 
     /** Delays execution of this computation by `duration`. */
-    inline def delayBy(duration: FiniteDuration): EffIO[E, A] =
-      fromEff(self.toEff.delayBy(duration))
+    inline def delayBy(duration: FiniteDuration): EffIO[E, A] = (self: IO[A]).delayBy(duration)
 
     /** Executes this computation, then waits for `duration` before returning. */
-    inline def andWait(duration: FiniteDuration): EffIO[E, A] =
-      fromEff(self.toEff.andWait(duration))
+    inline def andWait(duration: FiniteDuration): EffIO[E, A] = (self: IO[A]).andWait(duration)
 
     /** Returns the result paired with the execution duration. */
-    inline def timed: EffIO[E, (FiniteDuration, A)] = fromEff(self.toEff.timed)
+    inline def timed: EffIO[E, (FiniteDuration, A)] = (self: IO[A]).timed
 
     /** Fails with `onTimeout` if the computation does not complete within `duration`. */
     inline def timeout(duration: FiniteDuration, onTimeout: => E): EffIO[E, A] =
-      fromEff(self.toEff.timeout(duration, onTimeout))
+      (self: IO[A]).timeoutTo(duration, IO.raiseError(onTimeout))
 
     /** Returns `fallback` if this computation does not complete within `duration`. */
     inline def timeoutTo[B >: A](duration: FiniteDuration, fallback: => EffIO[E, B]): EffIO[E, B] =
-      fromEff(self.toEff.timeoutTo(duration, fallback.toEff))
+      (self: IO[B]).timeoutTo(duration, fallback)
   end extension
 
   /** Error-widening natural transformation. Identity at runtime - `EffIO` is covariant in `E`.
@@ -545,7 +629,7 @@ object EffIO extends EffIOInstances:
     * The `~>` value is still required for invariant positions: `Resource`, `Stream`, and `Pipe`
     * cannot widen their effect parameter by subtyping.
     */
-  inline def widenK[E1, E2 >: E1]: Of[E1] ~> Of[E2] = new WidenK
+  inline def widenK[E1 <: Throwable, E2 >: E1 <: Throwable]: Of[E1] ~> Of[E2] = new WidenK[E1, E2]
 
   /** Lifts plain `IO` into the infallible `EffIO` context.
     *
@@ -555,132 +639,112 @@ object EffIO extends EffIOInstances:
   val liftK: IO ~> Of[Nothing] = new LiftK[Nothing]
 
   /** Identity error-widening natural transformation for [[boilerplate.effect.EffIO EffIO]]. */
-  private[effect] class WidenK[E1, E2 >: E1] @publicInBinary private[EffIO] () extends FunctionK[Of[E1], Of[E2]]:
+  private[effect] class WidenK[E1 <: Throwable, E2 >: E1 <: Throwable] @publicInBinary private[EffIO] () extends FunctionK[Of[E1], Of[E2]]:
     def apply[A](fa: EffIO[E1, A]): EffIO[E2, A] = fa
 
   /** Lifts `IO` into [[boilerplate.effect.EffIO EffIO]] as an infallible computation. */
-  private[effect] class LiftK[E] @publicInBinary private[EffIO] () extends FunctionK[IO, Of[E]]:
+  private[effect] class LiftK[E <: Throwable] @publicInBinary private[EffIO] () extends FunctionK[IO, Of[E]]:
     def apply[A](io: IO[A]): EffIO[E, A] = liftF(io)
 
-  /** Transforms a `Resource[IO, A]` to `Resource[EffIO.Of[E], A]`. */
-  inline def liftResource[E, A](resource: Resource[IO, A]): Resource[Of[E], A] =
-    resource.mapK(new LiftK[E])
+  // scalafix:off DisableSyntax.asInstanceOf
+  /** Transforms a `Resource[IO, A]` to `Resource[EffIO.Of[E], A]`. O(0) - `Of[E]` is `IO`. */
+  inline def liftResource[E <: Throwable, A](resource: Resource[IO, A]): Resource[Of[E], A] =
+    resource.asInstanceOf[Resource[Of[E], A]]
 
   /** Transforms a `Ref[IO, A]` to `Ref[EffIO.Of[E], A]`. */
-  inline def liftRef[E, A](ref: Ref[IO, A]): Ref[Of[E], A] =
-    ref.mapK(new LiftK[E])
+  inline def liftRef[E <: Throwable, A](ref: Ref[IO, A]): Ref[Of[E], A] =
+    ref.asInstanceOf[Ref[Of[E], A]]
 
   /** Transforms a `Deferred[IO, A]` to `Deferred[EffIO.Of[E], A]`. */
-  inline def liftDeferred[E, A](deferred: Deferred[IO, A]): Deferred[Of[E], A] =
-    deferred.mapK(new LiftK[E])
+  inline def liftDeferred[E <: Throwable, A](deferred: Deferred[IO, A]): Deferred[Of[E], A] =
+    deferred.asInstanceOf[Deferred[Of[E], A]]
 
   /** Transforms a `Queue[IO, A]` to `Queue[EffIO.Of[E], A]`. */
-  inline def liftQueue[E, A](queue: Queue[IO, A]): Queue[Of[E], A] =
-    queue.mapK(new LiftK[E])
+  inline def liftQueue[E <: Throwable, A](queue: Queue[IO, A]): Queue[Of[E], A] =
+    queue.asInstanceOf[Queue[Of[E], A]]
 
   /** Transforms a `Semaphore[IO]` to `Semaphore[EffIO.Of[E]]`. */
-  inline def liftSemaphore[E](semaphore: Semaphore[IO]): Semaphore[Of[E]] =
-    semaphore.mapK(new LiftK[E])
+  inline def liftSemaphore[E <: Throwable](semaphore: Semaphore[IO]): Semaphore[Of[E]] =
+    semaphore.asInstanceOf[Semaphore[Of[E]]]
 
   /** Transforms a `CountDownLatch[IO]` to `CountDownLatch[EffIO.Of[E]]`. */
-  inline def liftLatch[E](latch: CountDownLatch[IO]): CountDownLatch[Of[E]] =
-    latch.mapK(new LiftK[E])
+  inline def liftLatch[E <: Throwable](latch: CountDownLatch[IO]): CountDownLatch[Of[E]] =
+    latch.asInstanceOf[CountDownLatch[Of[E]]]
 
   /** Transforms a `CyclicBarrier[IO]` to `CyclicBarrier[EffIO.Of[E]]`. */
-  inline def liftBarrier[E](barrier: CyclicBarrier[IO]): CyclicBarrier[Of[E]] =
-    barrier.mapK(new LiftK[E])
+  inline def liftBarrier[E <: Throwable](barrier: CyclicBarrier[IO]): CyclicBarrier[Of[E]] =
+    barrier.asInstanceOf[CyclicBarrier[Of[E]]]
 
   /** Transforms an `AtomicCell[IO, A]` to `AtomicCell[EffIO.Of[E], A]`. */
-  def liftCell[E, A](cell: AtomicCell[IO, A]): AtomicCell[Of[E], A] =
-    new AtomicCellImpl[E, A](cell)
+  inline def liftCell[E <: Throwable, A](cell: AtomicCell[IO, A]): AtomicCell[Of[E], A] =
+    cell.asInstanceOf[AtomicCell[Of[E], A]]
 
   /** Transforms a `Supervisor[IO]` to `Supervisor[EffIO.Of[E]]`. */
-  def liftSupervisor[E](supervisor: Supervisor[IO]): Supervisor[Of[E]] =
-    new SupervisorImpl[E](supervisor)
+  inline def liftSupervisor[E <: Throwable](supervisor: Supervisor[IO]): Supervisor[Of[E]] =
+    supervisor.asInstanceOf[Supervisor[Of[E]]]
 
-  /** `Fiber` operating in the `EffIO` context, wrapping a base-`IO` fibre. */
-  private[effect] class FiberImpl[E, A] @publicInBinary private[EffIO] (
-    fiber: Fiber[IO, Throwable, Either[E, A]]
-  ) extends Fiber[Of[E], Throwable, A]:
-    def cancel: EffIO[E, Unit] = liftF(fiber.cancel)
-    def join: EffIO[E, Outcome[Of[E], Throwable, A]] =
-      liftF(fiber.join.map {
-        case Outcome.Succeeded(fea) => Outcome.succeeded[Of[E], Throwable, A](lift(fea))
-        case Outcome.Errored(e)     => Outcome.errored[Of[E], Throwable, A](e)
-        case Outcome.Canceled()     => Outcome.canceled[Of[E], Throwable, A]
-      })
-
-  /** `Supervisor` operating in the `EffIO` context. */
-  private[effect] class SupervisorImpl[E] @publicInBinary private[EffIO] (
-    supervisor: Supervisor[IO]
-  ) extends Supervisor[Of[E]]:
-    def supervise[A](fa: EffIO[E, A]): EffIO[E, Fiber[Of[E], Throwable, A]] =
-      liftF(supervisor.supervise(fa.either).map(new FiberImpl[E, A](_)))
-
-  /** `AtomicCell` operating in the `EffIO` context.
-    *
-    * An `evalModify` whose function yields a typed error leaves the cell state unchanged.
+  /** Plain `Monad` (hence `Functor`/`Invariant`), sourced from `IO` without a `TypeTest`. Mirrors
+    * `Eff`'s fallback so that `Functor`/`Monad`/`Invariant[EffIO.Of[E]]` resolve even for an
+    * abstract `E`, where the typed `MonadError` below cannot synthesise its `TypeTest`. For a
+    * concrete `E` the more specific `MonadError` still wins.
     */
-  private[effect] class AtomicCellImpl[E, A] @publicInBinary private[EffIO] (
-    cell: AtomicCell[IO, A]
-  ) extends AtomicCell[Of[E], A]:
-    def get: EffIO[E, A] = liftF(cell.get)
-    def set(a: A): EffIO[E, Unit] = liftF(cell.set(a))
-    def modify[B](f: A => (A, B)): EffIO[E, B] = liftF(cell.modify(f))
-    def evalModify[B](f: A => EffIO[E, (A, B)]): EffIO[E, B] =
-      cell.get.flatMap { a =>
-        f(a).flatMap {
-          case Right((updated, b)) => cell.set(updated).as(Right(b))
-          case Left(e)             => IO.pure(Left(e))
-        }
-      }
-    def evalUpdate(f: A => EffIO[E, A]): EffIO[E, Unit] =
-      evalModify(a => fromEff(f(a).toEff.map(updated => (updated, ()))))
-    def evalGetAndUpdate(f: A => EffIO[E, A]): EffIO[E, A] =
-      evalModify(a => fromEff(f(a).toEff.map(updated => (updated, a))))
-    def evalUpdateAndGet(f: A => EffIO[E, A]): EffIO[E, A] =
-      evalModify(a => fromEff(f(a).toEff.map(updated => (updated, updated))))
-  end AtomicCellImpl
+  given [E <: Throwable] => Monad[Of[E]] =
+    IO.asyncForIO.asInstanceOf[Monad[Of[E]]]
 
-  // scalafix:off DisableSyntax.asInstanceOf
   /** Canonical `MonadError` for the typed error channel `E`. */
-  given [E] => MonadError[Of[E], E] =
-    summon[MonadError[Eff.Of[IO, E], E]].asInstanceOf[MonadError[Of[E], E]]
-
-  /** `Bifunctor` enabling `bimap` and `leftMap` on both channels. */
-  given Bifunctor[[E, A] =>> EffIO[E, A]] =
-    summon[Bifunctor[[E, A] =>> Eff[IO, E, A]]].asInstanceOf[Bifunctor[[E, A] =>> EffIO[E, A]]]
+  given [E <: Throwable] => (tt: TypeTest[Throwable, E]) => MonadError[Of[E], E]:
+    def pure[A](a: A): EffIO[E, A] = IO.pure(a)
+    def flatMap[A, B](fa: EffIO[E, A])(f: A => EffIO[E, B]): EffIO[E, B] = (fa: IO[A]).flatMap(a => f(a))
+    // Reference `IO`'s instance by name, not `summon[Monad[IO]]`: inside this object `EffIO.Of[E]` is
+    // structurally `IO`, so a summon would resolve back to this very given and loop.
+    def tailRecM[A, B](a: A)(f: A => EffIO[E, Either[A, B]]): EffIO[E, B] =
+      IO.asyncForIO.tailRecM(a)(x => f(x): IO[Either[A, B]])
+    def raiseError[A](e: E): EffIO[E, A] = IO.raiseError(e)
+    def handleErrorWith[A](fa: EffIO[E, A])(f: E => EffIO[E, A]): EffIO[E, A] =
+      (fa: IO[A]).handleErrorWith {
+        case tt(e) => f(e)
+        case other => IO.raiseError(other)
+      }
+  end given
 
   /** `Parallel` enabling `parMapN`, `parTraverse`, and related parallel composition. */
-  given [E] => Parallel[Of[E]] =
-    summon[Parallel[Eff.Of[IO, E]]].asInstanceOf[Parallel[Of[E]]]
+  given [E <: Throwable] => Parallel[Of[E]] =
+    IO.parallelForIO.asInstanceOf[Parallel[Of[E]]]
 
   /** Choice semantics: `combineK` falls back to the second computation on typed error. */
-  given [E] => SemigroupK[Of[E]] =
-    summon[SemigroupK[Eff.Of[IO, E]]].asInstanceOf[SemigroupK[Of[E]]]
+  given [E <: Throwable] => (tt: TypeTest[Throwable, E]) => SemigroupK[Of[E]]:
+    def combineK[A](x: EffIO[E, A], y: EffIO[E, A]): EffIO[E, A] =
+      (x: IO[A]).handleErrorWith {
+        case tt(_) => y
+        case other => IO.raiseError(other)
+      }
 
   /** Combines two successful computations using `Semigroup` on their values. */
-  given [E, A] => Semigroup[A] => Semigroup[EffIO[E, A]] =
-    summon[Semigroup[Eff[IO, E, A]]].asInstanceOf[Semigroup[EffIO[E, A]]]
+  given [E <: Throwable, A] => (S: Semigroup[A]) => Semigroup[EffIO[E, A]]:
+    def combine(x: EffIO[E, A], y: EffIO[E, A]): EffIO[E, A] =
+      (x: IO[A]).flatMap(a => (y: IO[A]).map(b => S.combine(a, b)))
 
   /** Combines `EffIO` computations with an identity element from `Monoid`. */
-  given [E, A] => Monoid[A] => Monoid[EffIO[E, A]] =
-    summon[Monoid[Eff[IO, E, A]]].asInstanceOf[Monoid[EffIO[E, A]]]
+  given [E <: Throwable, A] => (M: Monoid[A]) => Monoid[EffIO[E, A]]:
+    def empty: EffIO[E, A] = IO.pure(M.empty)
+    def combine(x: EffIO[E, A], y: EffIO[E, A]): EffIO[E, A] =
+      (x: IO[A]).flatMap(a => (y: IO[A]).map(b => M.combine(a, b)))
+
+  /** `Show` delegating to the underlying `IO[A]`. */
+  given [E <: Throwable, A] => (S: Show[IO[A]]) => Show[EffIO[E, A]] = S.asInstanceOf[Show[EffIO[E, A]]]
+
+  /** `Eq` delegating to the underlying `IO[A]`. */
+  given [E <: Throwable, A] => (E0: Eq[IO[A]]) => Eq[EffIO[E, A]] = E0.asInstanceOf[Eq[EffIO[E, A]]]
+
+  /** `PartialOrder` delegating to the underlying `IO[A]`. */
+  given [E <: Throwable, A] => (P: PartialOrder[IO[A]]) => PartialOrder[EffIO[E, A]] = P.asInstanceOf[PartialOrder[EffIO[E, A]]]
   // scalafix:on
-
-  /** `Show` delegating to the underlying `IO[Either[E, A]]`. */
-  given [E, A] => (S: Show[IO[Either[E, A]]]) => Show[EffIO[E, A]] = S
-
-  /** `Eq` delegating to the underlying `IO[Either[E, A]]`. */
-  given [E, A] => (E0: Eq[IO[Either[E, A]]]) => Eq[EffIO[E, A]] = E0
-
-  /** `PartialOrder` delegating to the underlying `IO[Either[E, A]]`. */
-  given [E, A] => (P: PartialOrder[IO[Either[E, A]]]) => PartialOrder[EffIO[E, A]] = P
 end EffIO
 
 /** Lower-priority instance scope for [[boilerplate.effect.EffIO EffIO]]. */
 private[effect] trait EffIOInstances:
-  /** `Async` for `EffIO`, and by subtyping every effect type class it extends. */
-  given [E] => Async[EffIO.Of[E]] =
-    summon[Async[Eff.Of[IO, E]]]
-      .asInstanceOf[Async[EffIO.Of[E]]] // scalafix:ok DisableSyntax.asInstanceOf
+  /** `Async` for `EffIO`, and by subtyping every effect type class it extends. Reference `IO`'s
+    * instance by name: inside `EffIO`'s scope `EffIO.Of[E]` is `IO`, so a summon could loop.
+    */
+  given [E <: Throwable] => Async[EffIO.Of[E]] =
+    IO.asyncForIO.asInstanceOf[Async[EffIO.Of[E]]] // scalafix:ok DisableSyntax.asInstanceOf

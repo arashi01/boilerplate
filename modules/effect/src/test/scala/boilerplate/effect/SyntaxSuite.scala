@@ -20,201 +20,216 @@
  */
 package boilerplate.effect
 
+import scala.reflect.TypeTest
 import scala.util.Failure
 import scala.util.Try
 
-import cats.*
-import cats.effect.*
-import cats.syntax.all.*
+import cats.effect.IO
 import munit.CatsEffectSuite
 
+import boilerplate.effect.AppError.*
+import boilerplate.effect.IoError.*
+
+/** Behavioural tests for the `.eff` / `.effIO` conversion extensions in `syntax.scala` and the
+  * fibre `joinNever` / `joinOrFail` join helpers.
+  *
+  * Under the phantom redesign `E <: Throwable` is a hard bound, so every conversion is exercised
+  * with a real `Throwable` error taxonomy (`AppError` / `IoError`) rather than a plain `String`.
+  * The fallible conversions require `ApplicativeError[F, Throwable]` / `MonadThrow[F]`, which `Id`
+  * does not provide, so `F = IO` fixes the effect throughout; the infallible no-argument lifts
+  * (`F[A].eff`, `IO.effIO`) keep no constraint and are observed with `absolve`. The fibre helpers
+  * are tested "under the Errored flip": a typed failure now rides `F`'s native `Throwable` channel
+  * as `Outcome.Errored` and is re-raised on join, rather than being reified as an `Either` success.
+  *
+  * Data-structure lifting extensions (`Resource`/`Ref`/`Queue`/`Semaphore`/... `.eff`/`.effIO`) are
+  * covered by `EffInteropSuite`.
+  */
 class SyntaxSuite extends CatsEffectSuite:
-  import boilerplate.effect.*
 
-  private def runEff[E, A](eff: Eff[IO, E, A]): IO[Either[E, A]] = eff.either
+  /** Reifies a fallible `Eff[IO, E, A]` to `IO[Either[E, A]]` for observation. */
+  private def runEff[E <: Throwable, A](eff: Eff[IO, E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =
+    eff.either
 
-  test("Either.eff mirrors Eff.from"):
-    val either: Either[String, Int] = Right(42)
-    runEff(either.eff[IO]).map(result => assertEquals(result, Right(42)))
+  /** Reifies a fallible `EffIO[E, A]` to `IO[Either[E, A]]` for observation. */
+  private def run[E <: Throwable, A](eff: EffIO[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =
+    eff.either
 
-  test("F[Either].eff preserves structure"):
-    val fea = IO.pure[Either[String, Int]](Right(7))
-    runEff(fea.eff).map(result => assertEquals(result, Right(7)))
+  // --- Eff conversions (F = IO) -----------------------------------------------------------------
 
-  test("F[A].eff lifts an infallible effect as a success"):
-    val lifted: UEff[IO, Int] = IO.pure(42).eff
-    runEff(lifted).map(result => assertEquals(result, Right(42)))
-
-  test("Eff.from with Id is unambiguous"):
-    val value: Eff[Id, String, Int] = Eff.from[Id, String, Int](Right(9))
-    val failure: Eff[Id, String, Int] = Eff.from[Id, String, Int](Left("err"))
-    assertEquals(value.either, Right(9))
-    assertEquals(failure.either, Left("err"))
-
-  test("Eff.from(Option) with Id lifts missing values"):
-    val none: Option[Int] = None
-    val some: Option[Int] = Some(3)
-    val missing: Eff[Id, String, Int] = Eff.from[Id, String, Int](none, "missing")
-    val present: Eff[Id, String, Int] = Eff.from[Id, String, Int](some, "missing")
-    assertEquals(missing.either, Left("missing"))
-    assertEquals(present.either, Right(3))
-
-  test("Try.eff translates failure"):
-    val boom = new RuntimeException("boom")
-    runEff(Try(throw boom).eff[IO, String](_.getMessage)).map(result => assertEquals(result, Left("boom"))) // scalafix:ok DisableSyntax.throw
-
-  test("Try.eff converts success"):
-    runEff(Try(42).eff[IO, String](_.getMessage)).map(result => assertEquals(result, Right(42)))
-
-  test("F[A].eff captures throwable failures"):
-    val failing = IO.raiseError[Int](new RuntimeException("boom"))
-    runEff(failing.eff[String](_.getMessage)).map(result => assertEquals(result, Left("boom")))
-
-  test("F[A].eff passes through success"):
-    val success = IO.pure(42)
-    runEff(success.eff[String](_.getMessage)).map(result => assertEquals(result, Right(42)))
-
-  test("Option.eff converts present values"):
-    val some: Option[Int] = Some(42)
-    runEff(some.eff[IO, String]("missing")).map(result => assertEquals(result, Right(42)))
-
-  test("F[Option].eff converts present values"):
-    val fo = IO.pure(Some(42))
-    runEff(fo.eff[String]("missing")).map(result => assertEquals(result, Right(42)))
-
-  test("F[Option].eff converts missing values to error"):
-    val fo = IO.pure(Option.empty[Int])
-    runEff(fo.eff[String]("missing")).map(result => assertEquals(result, Left("missing")))
-
-  test("Fiber.joinNever returns value on success"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(42)
+  test("Either.eff lifts a Right to success and a Left to a typed error"):
     for
-      fiber <- GenSpawn[IO].start(eff.either)
-      liftedFiber = Eff.fiber[IO, String, Int](fiber, Functor[IO])
-      result <- liftedFiber.joinNever.either
-    yield assertEquals(result, Right(42))
+      ok <- runEff((Right(42): Either[AppError, Int]).eff[IO])
+      ko <- runEff((Left(NotFound("u1")): Either[AppError, Int]).eff[IO])
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(NotFound("u1")))
 
-  test("Fiber.joinNever propagates typed error"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
+  test("F[Either].eff absorbs a Left into the typed channel"):
     for
-      fiber <- GenSpawn[IO].start(eff.either)
-      liftedFiber = Eff.fiber[IO, String, Int](fiber, Functor[IO])
-      result <- liftedFiber.joinNever.either
-    yield assertEquals(result, Left("boom"))
+      ok <- runEff(IO.pure(Right(7): Either[IoError, Int]).eff)
+      ko <- runEff(IO.pure(Left(Closed): Either[IoError, Int]).eff)
+    yield
+      assertEquals(ok, Right(7))
+      assertEquals(ko, Left(Closed))
 
-  test("Fiber.joinOrFail returns value on success"):
-    val eff: Eff[IO, String, Int] = Eff.succeed(42)
+  test("Option.eff lifts a Some and supplies the error for None"):
     for
-      fiber <- GenSpawn[IO].start(eff.either)
-      liftedFiber = Eff.fiber[IO, String, Int](fiber, Functor[IO])
-      result <- liftedFiber.joinOrFail("canceled").either
-    yield assertEquals(result, Right(42))
+      ok <- runEff((Some(42): Option[Int]).eff[IO, AppError](NotFound("u1")))
+      ko <- runEff((None: Option[Int]).eff[IO, AppError](NotFound("u1")))
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(NotFound("u1")))
 
-  test("Fiber.joinOrFail propagates typed error"):
-    val eff: Eff[IO, String, Int] = Eff.fail("boom")
+  test("F[Option].eff lifts a Some and supplies the error for None"):
     for
-      fiber <- GenSpawn[IO].start(eff.either)
-      liftedFiber = Eff.fiber[IO, String, Int](fiber, Functor[IO])
-      result <- liftedFiber.joinOrFail("canceled").either
-    yield assertEquals(result, Left("boom"))
+      ok <- runEff(IO.pure(Some(42): Option[Int]).eff[IoError](Closed))
+      ko <- runEff(IO.pure(None: Option[Int]).eff[IoError](Closed))
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(Closed))
 
-  test("Fiber.joinOrFail returns error on cancellation"):
+  test("Try.eff converts a Success and translates a Failure"):
     for
-      deferred <- Deferred[IO, Unit]
-      eff: Eff[IO, String, Int] = Eff.liftF(deferred.get *> IO.pure(42))
-      fiber <- GenSpawn[IO].start(eff.either)
-      liftedFiber = Eff.fiber[IO, String, Int](fiber, Functor[IO])
-      _ <- fiber.cancel
-      result <- liftedFiber.joinOrFail("was canceled").either
-    yield assertEquals(result, Left("was canceled"))
+      ok <- runEff(Try(42).eff[IO, AppError](t => Invalid(t.getMessage)))
+      ko <- runEff(Failure[Int](RuntimeException("boom")).eff[IO, AppError](t => Invalid(t.getMessage)))
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(Invalid("boom")))
 
-  test("IO.effIO captures throwable failures into the typed error channel"):
+  test("F[A].eff captures a raised throwable as a typed error"):
     for
-      ok <- IO.pure(1).effIO(_.getMessage).either
-      ko <- IO.raiseError[Int](RuntimeException("boom")).effIO(_.getMessage).either
+      ok <- runEff(IO.pure(1).eff[AppError](t => Invalid(t.getMessage)))
+      ko <- runEff(IO.raiseError[Int](RuntimeException("boom")).eff[AppError](t => Invalid(t.getMessage)))
     yield
       assertEquals(ok, Right(1))
-      assertEquals(ko, Left("boom"))
+      assertEquals(ko, Left(Invalid("boom")))
 
-  test("IO.effIO lifts an infallible IO"):
-    IO.pure(42).effIO.either.map(result => assertEquals(result, Right(42)))
+  test("F[A].eff lifts an infallible effect as a success; absolve is O(0) identity"):
+    val lifted: UEff[IO, Int] = IO.pure(42).eff
+    lifted.absolve.map(value => assertEquals(value, 42))
 
-  test("IO[Either].effIO mirrors EffIO.lift"):
-    IO.pure(Right(7): Either[String, Int])
-      .effIO
-      .either
-      .map(result => assertEquals(result, Right(7)))
+  // --- EffIO conversions ------------------------------------------------------------------------
 
-  test("Either.effIO mirrors EffIO.from"):
-    (Left("boom"): Either[String, Int]).effIO.either
-      .map(result => assertEquals(result, Left("boom")))
-
-  test("Option.effIO injects the supplied error when empty"):
+  test("IO.effIO captures a raised throwable as a typed error"):
     for
-      some <- Some(1).effIO("none").either
-      none <- (None: Option[Int]).effIO("none").either
+      ok <- run(IO.pure(1).effIO[AppError](t => Invalid(t.getMessage)))
+      ko <- run(IO.raiseError[Int](RuntimeException("boom")).effIO[AppError](t => Invalid(t.getMessage)))
     yield
-      assertEquals(some, Right(1))
-      assertEquals(none, Left("none"))
+      assertEquals(ok, Right(1))
+      assertEquals(ko, Left(Invalid("boom")))
 
-  test("IO[Option].effIO injects the supplied error when empty"):
-    IO.pure(None: Option[Int])
-      .effIO("none")
-      .either
-      .map(result => assertEquals(result, Left("none")))
+  test("IO.effIO lifts an infallible IO as a success; absolve is O(0) identity"):
+    IO.pure(42).effIO.absolve.map(value => assertEquals(value, 42))
 
-  test("Try.effIO translates failures into the typed error channel"):
-    Failure[Int](RuntimeException("boom"))
-      .effIO(_.getMessage)
-      .either
-      .map(result => assertEquals(result, Left("boom")))
-
-  test("Resource.effIO operates the resource in the EffIO context"):
-    Resource
-      .pure[IO, Int](5)
-      .effIO[String]
-      .use(n => EffIO.succeed(n))
-      .either
-      .map(result => assertEquals(result, Right(5)))
-
-  test("Ref, Deferred, and Queue effIO extensions operate in the EffIO context"):
+  test("IO[Either].effIO absorbs a Left into the typed channel"):
     for
-      ref <- IO.ref(0)
-      _ <- ref.effIO[String].set(9).either
-      refValue <- ref.get
-      deferred <- Deferred[IO, Int]
-      _ <- deferred.effIO[String].complete(1).either
-      deferredValue <- deferred.get
-      queue <- cats.effect.std.Queue.unbounded[IO, Int]
-      _ <- queue.effIO[String].offer(2).either
-      queueValue <- queue.take
+      ok <- run(IO.pure(Right(7): Either[IoError, Int]).effIO)
+      ko <- run(IO.pure(Left(Closed): Either[IoError, Int]).effIO)
     yield
-      assertEquals(refValue, 9)
-      assertEquals(deferredValue, 1)
-      assertEquals(queueValue, 2)
+      assertEquals(ok, Right(7))
+      assertEquals(ko, Left(Closed))
 
-  test("Semaphore and AtomicCell effIO extensions operate in the EffIO context"):
+  test("Either.effIO lifts a Right to success and a Left to a typed error"):
     for
-      semaphore <- cats.effect.std.Semaphore[IO](1)
-      available <- semaphore.effIO[String].available.either
-      cell <- cats.effect.std.AtomicCell[IO].of(3)
-      cellValue <- cell.effIO[String].get.either
+      ok <- run((Right(42): Either[AppError, Int]).effIO)
+      ko <- run((Left(NotFound("u1")): Either[AppError, Int]).effIO)
     yield
-      assertEquals(available, Right(1L))
-      assertEquals(cellValue, Right(3))
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(NotFound("u1")))
 
-  test("CountDownLatch, CyclicBarrier, and Supervisor effIO extensions operate in the EffIO context"):
-    cats.effect.std.Supervisor[IO](await = true).use { supervisor =>
+  test("Option.effIO lifts a Some and supplies the error for None"):
+    for
+      ok <- run((Some(42): Option[Int]).effIO[IoError](Closed))
+      ko <- run((None: Option[Int]).effIO[IoError](Closed))
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(Closed))
+
+  test("IO[Option].effIO lifts a Some and supplies the error for None"):
+    for
+      ok <- run(IO.pure(Some(42): Option[Int]).effIO[IoError](Closed))
+      ko <- run(IO.pure(None: Option[Int]).effIO[IoError](Closed))
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(Closed))
+
+  test("Try.effIO converts a Success and translates a Failure"):
+    for
+      ok <- run(Try(42).effIO[AppError](t => Invalid(t.getMessage)))
+      ko <- run(Failure[Int](RuntimeException("boom")).effIO[AppError](t => Invalid(t.getMessage)))
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(Invalid("boom")))
+
+  // --- Fibre joins under the Errored flip -------------------------------------------------------
+
+  test("Eff Fiber.joinNever returns a success and re-raises a typed failure as Errored"):
+    def joined(eff: Eff[IO, AppError, Int]): Eff[IO, AppError, Int] =
       for
-        latch <- cats.effect.std.CountDownLatch[IO](1)
-        _ <- latch.effIO[String].release.either
-        latchAwait <- latch.effIO[String].await.either
-        barrier <- cats.effect.std.CyclicBarrier[IO](1)
-        barrierAwait <- barrier.effIO[String].await.either
-        supervised <- supervisor.effIO[String].supervise(EffIO.succeed(7)).either
-      yield
-        assertEquals(latchAwait, Right(()))
-        assertEquals(barrierAwait, Right(()))
-        assert(supervised.isRight)
-    }
+        fiber <- eff.start
+        value <- fiber.joinNever
+      yield value
+    for
+      ok <- runEff(joined(Eff.succeed[IO, AppError, Int](42)))
+      ko <- runEff(joined(Eff.fail[IO, AppError, Int](Timeout)))
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(Timeout))
+
+  test("Eff Fiber.joinOrFail returns a success and re-raises a typed failure as Errored"):
+    def joined(eff: Eff[IO, AppError, Int]): Eff[IO, AppError, Int] =
+      for
+        fiber <- eff.start
+        value <- fiber.joinOrFail(Timeout)
+      yield value
+    for
+      ok <- runEff(joined(Eff.succeed[IO, AppError, Int](42)))
+      ko <- runEff(joined(Eff.fail[IO, AppError, Int](Invalid("boom"))))
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(Invalid("boom")))
+
+  test("Eff Fiber.joinOrFail fails with onCanceled when the fibre is cancelled"):
+    val program: Eff[IO, AppError, Int] =
+      for
+        fiber <- Eff.never[IO, AppError, Int].start
+        _ <- fiber.cancel
+        value <- fiber.joinOrFail(Timeout)
+      yield value
+    runEff(program).map(result => assertEquals(result, Left(Timeout)))
+
+  test("EffIO Fiber.joinNever returns a success and re-raises a typed failure as Errored"):
+    def joined(eff: EffIO[IoError, Int]): EffIO[IoError, Int] =
+      for
+        fiber <- eff.start
+        value <- fiber.joinNever
+      yield value
+    for
+      ok <- run(joined(EffIO.succeed(42)))
+      ko <- run(joined(EffIO.fail(Closed)))
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(Closed))
+
+  test("EffIO Fiber.joinOrFail returns a success and re-raises a typed failure as Errored"):
+    def joined(eff: EffIO[IoError, Int]): EffIO[IoError, Int] =
+      for
+        fiber <- eff.start
+        value <- fiber.joinOrFail(Closed)
+      yield value
+    for
+      ok <- run(joined(EffIO.succeed(42)))
+      ko <- run(joined(EffIO.fail(Failed(500))))
+    yield
+      assertEquals(ok, Right(42))
+      assertEquals(ko, Left(Failed(500)))
+
+  test("EffIO Fiber.joinOrFail fails with onCanceled when the fibre is cancelled"):
+    val program: EffIO[IoError, Int] =
+      for
+        fiber <- (EffIO.never: EffIO[IoError, Int]).start
+        _ <- fiber.cancel
+        value <- fiber.joinOrFail(Closed)
+      yield value
+    run(program).map(result => assertEquals(result, Left(Closed)))
 end SyntaxSuite

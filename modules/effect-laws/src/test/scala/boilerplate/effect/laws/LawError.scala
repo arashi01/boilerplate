@@ -20,20 +20,20 @@
  */
 package boilerplate.effect.laws
 
-import cats.effect.*
+import scala.util.control.NoStackTrace
+
+import cats.Eq
 import org.scalacheck.Arbitrary
+import org.scalacheck.Cogen
 
-import boilerplate.effect.Eff
+/** The typed-error root for the discipline law suites. Under the beta model `E <: Throwable`, so
+  * the law tests exercise a genuine `Throwable` error (following the ecosystem `EmileError` DNA)
+  * rather than an arbitrary type. Carries the scalacheck/cats instances the discipline machinery
+  * needs.
+  */
+final case class LawError(code: Int) extends Exception(s"law error $code") with NoStackTrace derives CanEqual
 
-/** Generators for [[boilerplate.effect.Eff Eff]] types used in law testing. */
-trait EffGenerators:
-
-  /** Generates `Eff[IO, E, A]` from an arbitrary `IO[Either[E, A]]`: a `Right` succeeds, a `Left`
-    * fails on `IO`'s channel - covering both the success and typed-failure space.
-    */
-  implicit def arbitraryEff[E <: Throwable, A](using
-    arbIO: Arbitrary[IO[Either[E, A]]]
-  ): Arbitrary[Eff[IO, E, A]] =
-    Arbitrary(arbIO.arbitrary.map(Eff.lift(_)))
-
-object EffGenerators extends EffGenerators
+object LawError:
+  given Arbitrary[LawError] = Arbitrary(Arbitrary.arbitrary[Int].map(LawError(_)))
+  given Cogen[LawError] = Cogen[Int].contramap(_.code)
+  given Eq[LawError] = Eq.by(_.code)
