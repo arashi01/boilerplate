@@ -24,13 +24,6 @@ package boilerplate.codec
   *
   * Supports both the standard alphabet (section 4: `+`, `/`, `=` padding) and the URL-safe alphabet
   * (section 5: `-`, `_`, no padding).
-  *
-  * {{{
-  * Base64.encode("foobar".getBytes)                   // "Zm9vYmFy"
-  * Base64.decode("Zm9vYmFy")                          // Right(Array[Byte](...))
-  * Base64.encode(Array(0x3b, 0xff).map(_.toByte), urlSafe = true)  // "O_8"
-  * Base64.decode("O_8", urlSafe = true)               // Right(Array[Byte](0x3b, 0xff))
-  * }}}
   */
 object Base64:
 
@@ -44,9 +37,7 @@ object Base64:
     val standard = PlatformBase64.encode(data)
     if urlSafe then toUrlSafe(standard) else standard
 
-  /** Decodes a standard Base64 string (RFC 4648 section 4) to binary data. Returns `Left(Error)`
-    * for invalid input.
-    */
+  /** Decodes a standard Base64 string (RFC 4648 section 4) to binary data. */
   inline def decode(input: String): Either[Error, Array[Byte]] = decode(input, false)
 
   /** Decodes a Base64 string to binary data. When `urlSafe` is `true`, expects the URL-safe
@@ -54,11 +45,10 @@ object Base64:
     * decoding.
     */
   def decode(input: String, urlSafe: Boolean): Either[Error, Array[Byte]] =
-    val normalized = if urlSafe then fromUrlSafe(input) else input
-    PlatformBase64.decode(normalized)
+    val normalised = if urlSafe then fromUrlSafe(input) else input
+    PlatformBase64.decode(normalised)
 
-  // Single pass over a preallocated array sized to drop padding; avoids the intermediate
-  // collection String.map/filter would allocate.
+  // On the base64 encode path; a single preallocated pass rather than `String.map`/`filter`.
   private def toUrlSafe(s: String): String =
     val len = s.length
     val end =
@@ -76,8 +66,7 @@ object Base64:
     new String(chars)
   end toUrlSafe
 
-  // Single pass over a preallocated padded array; avoids the intermediate collection String.map
-  // would allocate.
+  // On the base64 decode path; a single preallocated pass rather than `String.map`.
   private def fromUrlSafe(s: String): String =
     val pad = (4 - s.length % 4) % 4
     val chars = new Array[Char](s.length + pad)

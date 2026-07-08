@@ -22,10 +22,8 @@ package boilerplate.effect
 
 import scala.util.control.NoStackTrace
 
-/** Shared typed-error taxonomies for the effect test suites. Since `E <: Throwable`, every error a
-  * test raises is a `Throwable`; these two independent sealed roots exercise the subtype lattice
-  * (covariance) and the union channel (`AppError | IoError`).
-  */
+// Two independent roots so the suites can exercise both the subtype lattice (covariance) and the
+// union channel (`AppError | IoError`).
 sealed abstract class AppError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
 object AppError:
   final case class NotFound(id: String) extends AppError(s"not found: $id")

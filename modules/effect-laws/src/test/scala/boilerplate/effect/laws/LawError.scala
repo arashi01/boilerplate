@@ -26,10 +26,6 @@ import cats.Eq
 import org.scalacheck.Arbitrary
 import org.scalacheck.Cogen
 
-/** The typed-error root for the discipline law suites. Since `E <: Throwable`, the law tests
-  * exercise a genuine `Throwable` error; carries the scalacheck/cats instances the discipline
-  * machinery needs.
-  */
 final case class LawError(code: Int) extends Exception(s"law error $code") with NoStackTrace derives CanEqual
 
 object LawError:

@@ -64,11 +64,10 @@ import cats.~>
   *
   * `EffIO` is covariant in both `E` and `A`: `IO` is covariant, and `E` is a phantom absent from
   * the representation, so a value of `EffIO[Narrow, A]` is usable wherever `EffIO[Wide, A]` is
-  * expected when `Narrow <: Wide`, with no call-site method. A consequence: a
-  * `flatMap`/for-comprehension over steps with distinct error types infers their union (`E1 | E2 |
-  * ...`), and that widening is silent
-  *   - the channel can grow wider than intended with no compile error. Ascribe the result type, or
-  *     `mapError`/`catchOnly`, to contain it.
+  * expected when `Narrow <: Wide`, with no call-site method. A `flatMap`/for-comprehension over
+  * steps with distinct error types therefore infers their union (`E1 | E2 | ...`); that widening is
+  * silent - the channel can grow wider than intended with no compile error, so ascribe the result
+  * type, or `mapError`/`catchOnly`, to contain it.
   *
   * Observing the typed channel (`either`, `catchAll`, `mapError`, `fold`, ...) filters the caught
   * `Throwable` by `TypeTest[Throwable, E]`, re-raising any non-`E` defect unchanged. For a concrete
@@ -172,17 +171,12 @@ object EffIO extends EffIOInstances:
   /** Suspends evaluation until demanded. */
   inline def defer[E <: Throwable, A](thunk: => EffIO[E, A]): EffIO[E, A] = IO.defer(thunk)
 
-  /** Suspends a side-effecting computation that yields an `Either[E, A]`.
-    *
-    * For an already-evaluated `Either`, use [[from]]. For an infallible side effect, use
-    * [[suspend]]. For unconditional success or failure, use [[succeed]] / [[fail]].
+  /** Suspends a side-effecting computation that yields an `Either[E, A]`; for an infallible side
+    * effect use [[suspend]].
     */
   inline def delay[E <: Throwable, A](ea: => Either[E, A]): EffIO[E, A] = lift(IO.delay(ea))
 
-  /** Suspends a synchronous side effect as a success value.
-    *
-    * For side effects that may produce typed errors, use [[delay]].
-    */
+  /** Suspends a synchronous side effect as a success value; for typed errors use [[delay]]. */
   inline def suspend[A](thunk: => A): UEffIO[A] = IO.delay(thunk)
 
   /** As [[delay]], on the blocking thread pool - for synchronous work that blocks a thread. */
@@ -214,15 +208,10 @@ object EffIO extends EffIOInstances:
   /** Introduces a cooperative yielding point. */
   val cede: UEffIO[Unit] = IO.cede
 
-  /** A computation that never completes. Useful for representing timeouts or blocking operations
-    * that should never produce a value on their own.
-    */
+  /** A computation that never completes. */
   val never: UEffIO[Nothing] = IO.never
 
-  /** Converts a `Future` into an `EffIO`, translating failures via `ifFailure`.
-    *
-    * The `Future` is evaluated lazily when the effect is run.
-    */
+  /** Converts a `Future` into an `EffIO`, translating failures via `ifFailure`. */
   inline def fromFuture[E <: Throwable, A](future: IO[Future[A]], ifFailure: Throwable => E): EffIO[E, A] =
     IO.fromFuture(future).handleErrorWith(t => IO.raiseError(ifFailure(t)))
 
@@ -320,13 +309,7 @@ object EffIO extends EffIOInstances:
   inline def retry[E <: Throwable, A](eff: EffIO[E, A], maxRetries: Int)(using TypeTest[Throwable, E]): EffIO[E, A] =
     fromEff(Eff.retry[IO, E, A](eff.toEff, maxRetries))
 
-  /** Retries the effect with exponential backoff between attempts.
-    *
-    * @param eff the effect to retry
-    * @param maxRetries maximum number of retry attempts
-    * @param initialDelay delay before first retry
-    * @param maxDelay optional cap on delay duration
-    */
+  /** Retries the effect with exponential backoff, capping each delay at `maxDelay`. */
   inline def retryWithBackoff[E <: Throwable, A](
     eff: EffIO[E, A],
     maxRetries: Int,

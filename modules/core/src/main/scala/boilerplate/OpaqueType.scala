@@ -89,16 +89,13 @@ package boilerplate
   * object SecretToken extends OpaqueType[SecretToken, String]:
   *   // No OpaqueType.Eq - comparing tokens with == is a compile error
   * }}}
-  *
-  * @tparam A The opaque type.
-  * @tparam Repr The underlying representation type.
   */
 transparent trait OpaqueType[A, Repr]:
 
-  /** The typed error produced on validation failure. Must extend `Throwable`. */
+  /** The typed error produced on validation failure. */
   type Error <: Throwable
 
-  /** Wraps a raw value as the opaque type. No validation is performed. */
+  /** Wraps a raw value without validation. */
   def wrap(value: Repr): A
 
   /** Extracts the underlying value from the opaque type. */

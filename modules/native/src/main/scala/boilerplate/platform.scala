@@ -20,16 +20,10 @@
  */
 package boilerplate
 
-/** Build-target operating system, resolved at compile time for Scala Native targets.
-  *
-  * See [[Platform$ Platform]] for the compile-time constants that select between these.
-  */
+/** Operating system of the build target; see [[Platform$ Platform]] for the value. */
 enum Os derives CanEqual:
   case Linux, Mac, Windows
 
-/** Build-target CPU architecture, resolved at compile time for Scala Native targets.
-  *
-  * See [[Platform$ Platform]] for the compile-time constants that select between these.
-  */
+/** CPU architecture of the build target; see [[Platform$ Platform]] for the value. */
 enum Arch derives CanEqual:
   case X86_64, Aarch64

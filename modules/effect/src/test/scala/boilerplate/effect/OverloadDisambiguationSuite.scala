@@ -29,23 +29,9 @@ import munit.CatsEffectSuite
 import boilerplate.effect.AppError.*
 import boilerplate.effect.IoError.*
 
-/** Test suite verifying correct method resolution when cats/cats-effect syntax is in scope.
-  *
-  * This suite does NOT test general functionality - it verifies that, with
-  * `import cats.syntax.all.*` active, an infix call such as `eff.map(...)`, `.flatMap`, `.void`,
-  * `.product`, `.catchAll`, ... resolves to the boilerplate `Eff` EXTENSION (typed-error semantics)
-  * and NOT to cats' generic syntax. Under the phantom-error model the typed channel
-  * `E <: Throwable`, so every error here is a `Throwable` drawn from `AppError` / `IoError`.
-  *
-  * Test naming convention:
-  *   - "[method] on Eff selects Eff extension" - our extension wins over cats syntax
-  *   - "[method] on Eff is unique to boilerplate-effect" - no collision possible, still typed
-  *   - "[method] on IO selects cats when Eff syntax in scope" - cats IO methods stay unaffected
-  *
-  * Each infix call is paired with a CONTROL call via the expanded `Eff.method(eff)(...)` form (an
-  * extension method invoked through its enclosing object) to confirm our implementation is
-  * reachable and agrees with the infix resolution.
-  */
+// With `import cats.syntax.all.*` in scope, this checks that an infix `eff.map`/`.flatMap`/... binds
+// to the `Eff` extension rather than to cats' generic syntax. Each test pairs the infix call with an
+// expanded `Eff.method(eff)(...)` control call and asserts they agree.
 class OverloadDisambiguationSuite extends CatsEffectSuite:
 
   test("map on Eff selects Eff extension over Functor syntax"):

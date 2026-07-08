@@ -30,31 +30,18 @@ import munit.CatsEffectSuite
 import boilerplate.effect.AppError.*
 import boilerplate.effect.IoError.*
 
-/** Behavioural tests for the `.eff` / `.effIO` conversion extensions in `syntax.scala` and the
-  * fibre `joinNever` / `joinOrFail` join helpers.
-  *
-  * Under the phantom redesign `E <: Throwable` is a hard bound, so every conversion is exercised
-  * with a real `Throwable` error taxonomy (`AppError` / `IoError`) rather than a plain `String`.
-  * The fallible conversions require `ApplicativeError[F, Throwable]` / `MonadThrow[F]`, which `Id`
-  * does not provide, so `F = IO` fixes the effect throughout; the infallible no-argument lifts
-  * (`F[A].eff`, `IO.effIO`) keep no constraint and are observed with `absolve`. The fibre helpers
-  * are tested "under the Errored flip": a typed failure now rides `F`'s native `Throwable` channel
-  * as `Outcome.Errored` and is re-raised on join, rather than being reified as an `Either` success.
-  *
-  * Data-structure lifting extensions (`Resource`/`Ref`/`Queue`/`Semaphore`/... `.eff`/`.effIO`) are
-  * covered by `EffInteropSuite`.
-  */
+// The fallible conversions need `MonadThrow[F]`, which `Id` lacks, so `F = IO` throughout; the
+// infallible no-argument lifts carry no constraint and are observed with `absolve`. Data-structure
+// lifting extensions (`Resource`/`Ref`/`Queue`/...) are covered by `EffInteropSuite`.
 class SyntaxSuite extends CatsEffectSuite:
 
-  /** Reifies a fallible `Eff[IO, E, A]` to `IO[Either[E, A]]` for observation. */
   private def runEff[E <: Throwable, A](eff: Eff[IO, E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =
     eff.either
 
-  /** Reifies a fallible `EffIO[E, A]` to `IO[Either[E, A]]` for observation. */
   private def run[E <: Throwable, A](eff: EffIO[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =
     eff.either
 
-  // --- Eff conversions (F = IO) -----------------------------------------------------------------
+  // Eff conversions (F = IO)
 
   test("Either.eff lifts a Right to success and a Left to a typed error"):
     for
@@ -108,7 +95,7 @@ class SyntaxSuite extends CatsEffectSuite:
     val lifted: UEff[IO, Int] = IO.pure(42).eff
     lifted.absolve.map(value => assertEquals(value, 42))
 
-  // --- EffIO conversions ------------------------------------------------------------------------
+  // EffIO conversions
 
   test("IO.effIO captures a raised throwable as a typed error"):
     for
@@ -161,7 +148,7 @@ class SyntaxSuite extends CatsEffectSuite:
       assertEquals(ok, Right(42))
       assertEquals(ko, Left(Invalid("boom")))
 
-  // --- Fibre joins under the Errored flip -------------------------------------------------------
+  // Fibre joins under the Errored flip
 
   test("Eff Fiber.joinNever returns a success and re-raises a typed failure as Errored"):
     def joined(eff: Eff[IO, AppError, Int]): Eff[IO, AppError, Int] =

@@ -24,7 +24,7 @@ import scala.scalajs.js
 
 import boilerplate.nullable.getOrElse
 
-/** JS Base64 implementation backed by `globalThis.atob`/`globalThis.btoa`. */
+// JS base64 backend: globalThis.atob/btoa.
 private[codec] object PlatformBase64:
 
   inline def encode(data: Array[Byte]): String =

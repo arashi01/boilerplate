@@ -20,43 +20,30 @@
  */
 package boilerplate
 
-/** Compile-time platform constants for the Scala Native build target.
+/** Compile-time constants identifying the Scala Native build target.
   *
   * Exactly one of [[linux]]/[[mac]]/[[windows]] and one of [[x86_64]]/[[aarch64]] is `true` per
-  * build, determined by the OS/arch-specific source directory selected at compile time.
-  *
-  * {{{
-  * import boilerplate.Platform
-  *
-  * inline if Platform.linux then linuxImpl()
-  * else inline if Platform.mac then macImpl()
-  * else windowsImpl()
-  * }}}
+  * build.
   */
 object Platform:
 
-  /** `true` when the build-target operating system is Linux. */
   inline val linux = false
 
-  /** `true` when the build-target operating system is macOS. */
   inline val mac = false
 
-  /** `true` when the build-target operating system is Windows. */
   inline val windows = true
 
-  /** `true` when the build-target architecture is x86-64. */
   inline val x86_64 = false
 
-  /** `true` when the build-target architecture is AArch64. */
   inline val aarch64 = true
 
-  /** The [[Os]] for the current build target. Reduced to a single constant at compile time. */
+  /** The [[Os]] of the build target, as a compile-time constant. */
   inline def os: Os =
     inline if linux then Os.Linux
     else inline if mac then Os.Mac
     else Os.Windows
 
-  /** The [[Arch]] for the current build target. Reduced to a single constant at compile time. */
+  /** The [[Arch]] of the build target, as a compile-time constant. */
   inline def arch: Arch =
     inline if x86_64 then Arch.X86_64
     else Arch.Aarch64
