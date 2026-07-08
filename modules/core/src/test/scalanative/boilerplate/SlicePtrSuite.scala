@@ -65,4 +65,20 @@ class SlicePtrSuite extends munit.FunSuite:
     val _ = Slice.of(Array[Byte](1, 2, 3)).copyInto(Slice.of(buf, 3))
     assert(Slice.of(buf, 3).constantTimeEquals(Slice.of(Array[Byte](1, 2, 3))))
     assert(!Slice.of(buf, 3).constantTimeEquals(Slice.of(Array[Byte](1, 2, 9))))
+
+  test("writeBE / writeLE encode into pointer-backed memory"):
+    val buf = stackalloc[Byte](4)
+    val s = Slice.of(buf, 4)
+    s.writeBE[Int](0, 0x01020304)
+    assertEquals(s.toArray.toList, List[Byte](1, 2, 3, 4))
+    s.writeLE[Int](0, 0x01020304)
+    assertEquals(s.toArray.toList, List[Byte](4, 3, 2, 1))
+
+  test("update writes a byte into pointer-backed memory via s(i) = b"):
+    val buf = stackalloc[Byte](3)
+    val s = Slice.of(buf, 3)
+    s(0) = 1.toByte
+    s(1) = 2.toByte
+    s(2) = 3.toByte
+    assertEquals(s.toArray.toList, List[Byte](1, 2, 3))
 end SlicePtrSuite

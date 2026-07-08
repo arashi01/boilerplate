@@ -201,17 +201,18 @@ val owned  = header.toArray             // copy out to an owned Array[Byte]
 Re-slicing (`take`/`drop`/`slice`) allocates only a small header over the same memory; `toArray` and
 `copyInto` copy out.
 
-**Reading.** `apply(i)` reads a byte; `readBE`/`readLE` decode a `Short`, `Int`, or `Long` at an
-offset without sub-slicing - allocation-free, so prefer them in hot decoders over re-slicing per
-byte. `contentEquals` compares bytes but is **not** constant-time; use `constantTimeEquals` for
-secret-dependent comparison (MACs, tags). These operations trust their bounds: an out-of-range
-access raises.
+**Reading and writing scalars.** `apply(i)` reads a byte and `s(i) = b` writes one; `readBE`/`readLE`
+decode a `Short`, `Int`, or `Long` at an offset without sub-slicing, and `writeBE`/`writeLE` encode
+one back in place - allocation-free, so prefer them in hot codecs over re-slicing per byte. `contentEquals` compares
+bytes but is **not** constant-time; use `constantTimeEquals` for secret-dependent comparison (MACs,
+tags). These operations trust their bounds: an out-of-range access raises.
 
 ```scala
-val s = Slice.of(Array[Byte](0, 0, 1, 0))
-s(2)                // 1: Byte
-s.readBE[Int](0)    // 256
-s.readLE[Int](0)    // 65536
+val s = Slice.of(new Array[Byte](4))
+s.writeBE[Int](0, 256)  // bytes now 00 00 01 00
+s(2)                    // 1: Byte
+s.readBE[Int](0)        // 256
+s.readLE[Int](0)        // 65536
 ```
 
 **Erasing secrets.** `wipe` zeros the viewed bytes in place once a secret is no longer needed. On
@@ -239,8 +240,9 @@ lifetime the caller owns; `Slice.borrowing(ptr, len) { s => ... }` scopes that v
 | `Slice.empty`                  | The zero-length view                                   |
 | `length` / `isEmpty`           | Size of the view                                       |
 | `take(n)` / `drop(n)` / `slice(from, until)` | Bounds-checked sub-views, no copy (raise) |
-| `apply(i)`                     | Byte at `i` (raises out of range)                      |
+| `apply(i)` / `s(i) = b`        | Read / write the byte at `i` (raises out of range)     |
 | `readBE[A](o)` / `readLE[A](o)`| Decode `A` = `Short`/`Int`/`Long`, allocation-free (raise) |
+| `writeBE[A](o, v)` / `writeLE[A](o, v)` | Encode `A` = `Short`/`Int`/`Long` in place (raise) |
 | `contentEquals(that)`          | Byte equality (not constant-time)                      |
 | `constantTimeEquals(that)`     | Constant-time byte equality (secrets, MACs, tags)      |
 | `sliceOrError(from, until)`    | Typed sub-view for untrusted bounds                    |

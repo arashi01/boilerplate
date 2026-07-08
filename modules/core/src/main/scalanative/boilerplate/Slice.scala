@@ -39,10 +39,10 @@ import scala.scalanative.unsigned.*
   *
   * The class is a bare carrier; every operation lives as an extension in [[Slice$]]. Construct with
   * [[Slice$.of]] (bounds-checked); re-slice with `take`/`drop`/`slice` (each a fresh header over
-  * the same memory, no copy); read with `apply`/`readBE`/`readLE`/`contentEquals`; copy out with
-  * `toArray`/`copyInto`; erase in place with `wipe`. The `unsafe*` accessors are the seam for
-  * library-author backends and are platform-specific (an array and offset on JVM/JS, an interior
-  * pointer on Native); ordinary users never need them.
+  * the same memory, no copy); read with `apply`/`readBE`/`readLE`/`contentEquals`; write with
+  * `update`/`writeBE`/`writeLE`; copy out with `toArray`/`copyInto`; erase in place with `wipe`.
+  * The `unsafe*` accessors are the seam for library-author backends and are platform-specific (an
+  * array and offset on JVM/JS, an interior pointer on Native); ordinary users never need them.
   *
   * Every slice is lowered at construction to an interior pointer plus an `anchor` that keeps a
   * GC-managed backing array reachable; array- and pointer-backed memory then share one branch-free
@@ -133,6 +133,13 @@ object Slice:
       require(0 <= i && i < s.length, "index out of range")
       s.unsafePtr(i)
 
+    /** Writes `value` as the byte at `i`, enabling `s(i) = value` - the write mirror of [[apply]].
+      * Requires `0 <= i < length`.
+      */
+    def update(i: Int, value: Byte): Unit =
+      require(0 <= i && i < s.length, "index out of range")
+      s.unsafePtr(i) = value
+
     /** Compares content for equality via `memcmp`. NOT constant-time - use [[constantTimeEquals]]
       * where comparison timing could leak a secret.
       */
@@ -165,6 +172,24 @@ object Slice:
         case _: Int   => leInt(s, offset).asInstanceOf[A] // scalafix:ok DisableSyntax.asInstanceOf
         case _: Long  => leLong(s, offset).asInstanceOf[A] // scalafix:ok DisableSyntax.asInstanceOf
         case _        => error("Slice.readLE reads a Short, Int, or Long")
+
+    /** Writes `value` - a `Short`, `Int`, or `Long`, per `A` - big-endian at `offset`, without
+      * sub-slicing; an out-of-range write raises. The write-side mirror of [[readBE]].
+      */
+    inline def writeBE[A](offset: Int, value: A): Unit =
+      inline erasedValue[A] match
+        case _: Short => putBeShort(s, offset, value.asInstanceOf[Short]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _: Int   => putBeInt(s, offset, value.asInstanceOf[Int]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _: Long  => putBeLong(s, offset, value.asInstanceOf[Long]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _        => error("Slice.writeBE writes a Short, Int, or Long")
+
+    /** Writes a little-endian scalar; see [[writeBE]]. */
+    inline def writeLE[A](offset: Int, value: A): Unit =
+      inline erasedValue[A] match
+        case _: Short => putLeShort(s, offset, value.asInstanceOf[Short]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _: Int   => putLeInt(s, offset, value.asInstanceOf[Int]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _: Long  => putLeLong(s, offset, value.asInstanceOf[Long]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _        => error("Slice.writeLE writes a Short, Int, or Long")
   end extension
 
   // No early-out is deliberate: OR-accumulating every byte keeps the timing independent of where the
@@ -209,6 +234,60 @@ object Slice:
     ((p(o + 7) & 0xffL) << 56) | ((p(o + 6) & 0xffL) << 48) | ((p(o + 5) & 0xffL) << 40) |
       ((p(o + 4) & 0xffL) << 32) | ((p(o + 3) & 0xffL) << 24) | ((p(o + 2) & 0xffL) << 16) |
       ((p(o + 1) & 0xffL) << 8) | (p(o) & 0xffL)
+
+  // Concrete scalar writers. `@publicInBinary` so the `inline` writeBE/writeLE may reference them
+  // from an expanded call site; kept private so the public surface is just writeBE/writeLE.
+  @publicInBinary private[Slice] def putBeShort(s: Slice, o: Int, v: Short): Unit =
+    require(o >= 0 && o + 2 <= s.length, "writeBE out of range")
+    val p = s.unsafePtr
+    p(o) = (v >>> 8).toByte
+    p(o + 1) = v.toByte
+
+  @publicInBinary private[Slice] def putBeInt(s: Slice, o: Int, v: Int): Unit =
+    require(o >= 0 && o + 4 <= s.length, "writeBE out of range")
+    val p = s.unsafePtr
+    p(o) = (v >>> 24).toByte
+    p(o + 1) = (v >>> 16).toByte
+    p(o + 2) = (v >>> 8).toByte
+    p(o + 3) = v.toByte
+
+  @publicInBinary private[Slice] def putBeLong(s: Slice, o: Int, v: Long): Unit =
+    require(o >= 0 && o + 8 <= s.length, "writeBE out of range")
+    val p = s.unsafePtr
+    p(o) = (v >>> 56).toByte
+    p(o + 1) = (v >>> 48).toByte
+    p(o + 2) = (v >>> 40).toByte
+    p(o + 3) = (v >>> 32).toByte
+    p(o + 4) = (v >>> 24).toByte
+    p(o + 5) = (v >>> 16).toByte
+    p(o + 6) = (v >>> 8).toByte
+    p(o + 7) = v.toByte
+
+  @publicInBinary private[Slice] def putLeShort(s: Slice, o: Int, v: Short): Unit =
+    require(o >= 0 && o + 2 <= s.length, "writeLE out of range")
+    val p = s.unsafePtr
+    p(o) = v.toByte
+    p(o + 1) = (v >>> 8).toByte
+
+  @publicInBinary private[Slice] def putLeInt(s: Slice, o: Int, v: Int): Unit =
+    require(o >= 0 && o + 4 <= s.length, "writeLE out of range")
+    val p = s.unsafePtr
+    p(o) = v.toByte
+    p(o + 1) = (v >>> 8).toByte
+    p(o + 2) = (v >>> 16).toByte
+    p(o + 3) = (v >>> 24).toByte
+
+  @publicInBinary private[Slice] def putLeLong(s: Slice, o: Int, v: Long): Unit =
+    require(o >= 0 && o + 8 <= s.length, "writeLE out of range")
+    val p = s.unsafePtr
+    p(o) = v.toByte
+    p(o + 1) = (v >>> 8).toByte
+    p(o + 2) = (v >>> 16).toByte
+    p(o + 3) = (v >>> 24).toByte
+    p(o + 4) = (v >>> 32).toByte
+    p(o + 5) = (v >>> 40).toByte
+    p(o + 6) = (v >>> 48).toByte
+    p(o + 7) = (v >>> 56).toByte
 end Slice
 
 // Scala Native has no volatile store to a raw pointer, so a dead-store-resistant erase lives in

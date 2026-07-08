@@ -31,10 +31,10 @@ import scala.compiletime.error
   *
   * The class is a bare carrier; every operation lives as an extension in [[Slice$]]. Construct with
   * [[Slice$.of]] (bounds-checked); re-slice with `take`/`drop`/`slice` (each a fresh header over
-  * the same memory, no copy); read with `apply`/`readBE`/`readLE`/`contentEquals`; copy out with
-  * `toArray`/`copyInto`; erase in place with `wipe`. The `unsafe*` accessors are the seam for
-  * library-author backends and are platform-specific (an array and offset on JVM/JS, an interior
-  * pointer on Native); ordinary users never need them.
+  * the same memory, no copy); read with `apply`/`readBE`/`readLE`/`contentEquals`; write with
+  * `update`/`writeBE`/`writeLE`; copy out with `toArray`/`copyInto`; erase in place with `wipe`.
+  * The `unsafe*` accessors are the seam for library-author backends and are platform-specific (an
+  * array and offset on JVM/JS, an interior pointer on Native); ordinary users never need them.
   */
 final class Slice private (val unsafeArray: Array[Byte], val unsafeOffset: Int, val length: Int)
 
@@ -98,6 +98,13 @@ object Slice:
       require(0 <= i && i < s.length, "index out of range")
       s.unsafeArray(s.unsafeOffset + i)
 
+    /** Writes `value` as the byte at `i`, enabling `s(i) = value` - the write mirror of [[apply]].
+      * Requires `0 <= i < length`.
+      */
+    def update(i: Int, value: Byte): Unit =
+      require(0 <= i && i < s.length, "index out of range")
+      s.unsafeArray(s.unsafeOffset + i) = value
+
     /** Compares content for equality. NOT constant-time - use [[constantTimeEquals]] where
       * comparison timing could leak a secret.
       */
@@ -138,6 +145,24 @@ object Slice:
         case _: Int   => leInt(s, offset).asInstanceOf[A] // scalafix:ok DisableSyntax.asInstanceOf
         case _: Long  => leLong(s, offset).asInstanceOf[A] // scalafix:ok DisableSyntax.asInstanceOf
         case _        => error("Slice.readLE reads a Short, Int, or Long")
+
+    /** Writes `value` - a `Short`, `Int`, or `Long`, per `A` - big-endian at `offset`, without
+      * sub-slicing; an out-of-range write raises. The write-side mirror of [[readBE]].
+      */
+    inline def writeBE[A](offset: Int, value: A): Unit =
+      inline erasedValue[A] match
+        case _: Short => putBeShort(s, offset, value.asInstanceOf[Short]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _: Int   => putBeInt(s, offset, value.asInstanceOf[Int]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _: Long  => putBeLong(s, offset, value.asInstanceOf[Long]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _        => error("Slice.writeBE writes a Short, Int, or Long")
+
+    /** Writes a little-endian scalar; see [[writeBE]]. */
+    inline def writeLE[A](offset: Int, value: A): Unit =
+      inline erasedValue[A] match
+        case _: Short => putLeShort(s, offset, value.asInstanceOf[Short]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _: Int   => putLeInt(s, offset, value.asInstanceOf[Int]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _: Long  => putLeLong(s, offset, value.asInstanceOf[Long]) // scalafix:ok DisableSyntax.asInstanceOf
+        case _        => error("Slice.writeLE writes a Short, Int, or Long")
   end extension
 
   // No early-out is deliberate: OR-accumulating every byte keeps the timing independent of where the
@@ -188,4 +213,66 @@ object Slice:
     ((b(i + 7) & 0xffL) << 56) | ((b(i + 6) & 0xffL) << 48) | ((b(i + 5) & 0xffL) << 40) |
       ((b(i + 4) & 0xffL) << 32) | ((b(i + 3) & 0xffL) << 24) | ((b(i + 2) & 0xffL) << 16) |
       ((b(i + 1) & 0xffL) << 8) | (b(i) & 0xffL)
+
+  // Concrete scalar writers. `@publicInBinary` so the `inline` writeBE/writeLE may reference them
+  // from an expanded call site; kept private so the public surface is just writeBE/writeLE.
+  @publicInBinary private[Slice] def putBeShort(s: Slice, o: Int, v: Short): Unit =
+    require(o >= 0 && o + 2 <= s.length, "writeBE out of range")
+    val b = s.unsafeArray
+    val i = s.unsafeOffset + o
+    b(i) = (v >>> 8).toByte
+    b(i + 1) = v.toByte
+
+  @publicInBinary private[Slice] def putBeInt(s: Slice, o: Int, v: Int): Unit =
+    require(o >= 0 && o + 4 <= s.length, "writeBE out of range")
+    val b = s.unsafeArray
+    val i = s.unsafeOffset + o
+    b(i) = (v >>> 24).toByte
+    b(i + 1) = (v >>> 16).toByte
+    b(i + 2) = (v >>> 8).toByte
+    b(i + 3) = v.toByte
+
+  @publicInBinary private[Slice] def putBeLong(s: Slice, o: Int, v: Long): Unit =
+    require(o >= 0 && o + 8 <= s.length, "writeBE out of range")
+    val b = s.unsafeArray
+    val i = s.unsafeOffset + o
+    b(i) = (v >>> 56).toByte
+    b(i + 1) = (v >>> 48).toByte
+    b(i + 2) = (v >>> 40).toByte
+    b(i + 3) = (v >>> 32).toByte
+    b(i + 4) = (v >>> 24).toByte
+    b(i + 5) = (v >>> 16).toByte
+    b(i + 6) = (v >>> 8).toByte
+    b(i + 7) = v.toByte
+  end putBeLong
+
+  @publicInBinary private[Slice] def putLeShort(s: Slice, o: Int, v: Short): Unit =
+    require(o >= 0 && o + 2 <= s.length, "writeLE out of range")
+    val b = s.unsafeArray
+    val i = s.unsafeOffset + o
+    b(i) = v.toByte
+    b(i + 1) = (v >>> 8).toByte
+
+  @publicInBinary private[Slice] def putLeInt(s: Slice, o: Int, v: Int): Unit =
+    require(o >= 0 && o + 4 <= s.length, "writeLE out of range")
+    val b = s.unsafeArray
+    val i = s.unsafeOffset + o
+    b(i) = v.toByte
+    b(i + 1) = (v >>> 8).toByte
+    b(i + 2) = (v >>> 16).toByte
+    b(i + 3) = (v >>> 24).toByte
+
+  @publicInBinary private[Slice] def putLeLong(s: Slice, o: Int, v: Long): Unit =
+    require(o >= 0 && o + 8 <= s.length, "writeLE out of range")
+    val b = s.unsafeArray
+    val i = s.unsafeOffset + o
+    b(i) = v.toByte
+    b(i + 1) = (v >>> 8).toByte
+    b(i + 2) = (v >>> 16).toByte
+    b(i + 3) = (v >>> 24).toByte
+    b(i + 4) = (v >>> 32).toByte
+    b(i + 5) = (v >>> 40).toByte
+    b(i + 6) = (v >>> 48).toByte
+    b(i + 7) = (v >>> 56).toByte
+  end putLeLong
 end Slice
