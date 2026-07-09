@@ -22,6 +22,7 @@ package boilerplate.effect
 
 import scala.annotation.publicInBinary
 import scala.annotation.targetName
+import scala.annotation.unused
 import scala.concurrent.Future
 import scala.concurrent.duration.FiniteDuration
 import scala.reflect.TypeTest
@@ -72,7 +73,9 @@ import cats.~>
   * Observing the typed channel (`either`, `catchAll`, `mapError`, `fold`, ...) filters the caught
   * `Throwable` by `TypeTest[Throwable, E]`, re-raising any non-`E` defect unchanged. For a concrete
   * `E` (a sealed `Throwable` root or a union of them) the `TypeTest` is synthesised by the
-  * compiler, so no `using` clause is written at the call site.
+  * compiler, so no `using` clause is written at the call site. On the infallible channel (`UEffIO`,
+  * `E = Nothing`) the typed error is uninhabited, so these observers are degenerate - a defect
+  * always propagates and any handler is dead code.
   *
   * Refer to [[boilerplate.effect.EffIO$ EffIO]] for constructors, combinators, and type class
   * instances.
@@ -231,17 +234,15 @@ object EffIO extends EffIOInstances:
   inline def async[E <: Throwable, A](k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]): EffIO[E, A] =
     IO.async[A](cb => k(ea => cb(ea)))
 
-  /** As [[async]], additionally folding a raised throwable into a typed error via `ifDefect`. A
-    * typed error delivered through the callback passes through unchanged; cancellation is never
-    * folded.
+  /** As [[async]], additionally folding a throwable raised while registering the callback into a
+    * typed error via `ifDefect`. A typed error delivered through the callback (`Left(e)`) passes
+    * through unchanged, and cancellation is never folded. Needs no `TypeTest`, so it works for an
+    * abstract `E` - a registration-time failure is a defect by construction.
     */
   inline def asyncAttempt[E <: Throwable, A](ifDefect: Throwable => E)(
     k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]
-  )(using tt: TypeTest[Throwable, E]): EffIO[E, A] =
-    IO.async[A](cb => k(ea => cb(ea))).handleErrorWith {
-      case tt(e) => IO.raiseError(e)
-      case other => IO.raiseError(ifDefect(other))
-    }
+  ): EffIO[E, A] =
+    IO.async[A](cb => k(ea => cb(ea)).handleErrorWith(t => IO.raiseError(ifDefect(t))))
 
   /** Executes `eff` only when `cond` is true, otherwise succeeds with `Unit`. */
   inline def when[E <: Throwable](cond: Boolean)(eff: => EffIO[E, Unit]): EffIO[E, Unit] =
@@ -605,6 +606,79 @@ object EffIO extends EffIOInstances:
     /** Returns `fallback` if this computation does not complete within `duration`. */
     inline def timeoutTo[B >: A](duration: FiniteDuration, fallback: => EffIO[E, B]): EffIO[E, B] =
       (self: IO[B]).timeoutTo(duration, fallback)
+  end extension
+
+  // Channel-observers on the infallible (`Nothing`) channel. The typed error is uninhabited, but the
+  // general observers' `TypeTest[Throwable, E]` widens `E` to `Throwable` here - the covariant
+  // receiver admits any `E`, and resolving the test pins `E := Throwable` - turning the test into the
+  // identity and capturing defects. These overloads pin `E = Nothing` via a more specific receiver;
+  // each is degenerate and correct by construction - an error handler can never fire, so it is
+  // dropped and the effect passes through `self` (defects included), while a success observer maps
+  // the value. No `TypeTest`, no `reify`.
+  extension [A](self: EffIO[Nothing, A])
+    /** The success reified as `Right`; a defect propagates. */
+    inline def either: IO[Either[Nothing, A]] = (self: IO[A]).map(Right(_))
+
+    /** Applies `f` to the (always-`Right`) success; a `Left` result fails, a defect propagates. */
+    inline def transform[E2 <: Throwable, B](f: Either[Nothing, A] => Either[E2, B]): EffIO[E2, B] =
+      (self: IO[A]).flatMap(a =>
+        f(Right(a)) match
+          case Right(b) => IO.pure(b)
+          case Left(e)  => IO.raiseError(e)
+      )
+
+    /** No typed error to catch; identity. */
+    inline def catchAll[E2 <: Throwable, B >: A](@unused f: Nothing => EffIO[E2, B]): EffIO[E2, B] = self
+
+    /** No typed error to catch; identity. */
+    inline def catchSome[E2 <: Throwable, B >: A](@unused pf: PartialFunction[Nothing, EffIO[E2, B]]): EffIO[E2, B] = self
+
+    /** No typed error to catch; identity. */
+    inline def catchOnly[H, R <: Throwable, B >: A](@unused f: H => EffIO[R, B]): EffIO[R, B] = self
+
+    /** No typed error; `fa` folds the success. */
+    inline def redeemAll[E2 <: Throwable, B](@unused fe: Nothing => EffIO[E2, B], fa: A => EffIO[E2, B]): EffIO[E2, B] =
+      (self: IO[A]).flatMap(a => fa(a))
+
+    /** No typed error; `fa` folds the success. */
+    inline def fold[B](@unused fe: Nothing => B, fa: A => B): IO[B] = (self: IO[A]).map(fa)
+
+    /** No typed error; `fa` folds the success. */
+    inline def foldF[B](@unused fe: Nothing => IO[B], fa: A => IO[B]): IO[B] = (self: IO[A]).flatMap(fa)
+
+    /** No typed error to map; identity. */
+    inline def mapError[E2 <: Throwable](@unused f: Nothing => E2): EffIO[E2, A] = self
+
+    /** No typed error to map; identity. */
+    inline def mapErrorPartial[E2 <: Throwable](@unused pf: PartialFunction[Nothing, E2]): EffIO[E2, A] = self
+
+    /** Never fails typed; identity. */
+    inline def alt[E2 <: Throwable, B >: A](@unused that: => EffIO[E2, B]): EffIO[E2, B] = self
+
+    /** Never fails typed; identity. */
+    inline def orElseSucceed[B >: A](@unused value: => B): UEffIO[B] = self
+
+    /** Never fails typed; identity. */
+    inline def orElseFail[E2 <: Throwable](@unused error: => E2): EffIO[E2, A] = self
+
+    /** Never fails typed; identity. */
+    inline def valueOr(@unused f: Nothing => A): UEffIO[A] = self
+
+    /** No typed error to observe; identity. */
+    inline def tapError(@unused f: Nothing => IO[Unit]): EffIO[Nothing, A] = self
+
+    /** No typed error to observe; identity. */
+    inline def flatTapError(@unused f: Nothing => EffIO[Nothing, Unit]): EffIO[Nothing, A] = self
+
+    /** The attempt is always `Right`; `f` observes it, then the value passes through. */
+    inline def attemptTap(f: Either[Nothing, A] => EffIO[Nothing, Unit]): EffIO[Nothing, A] =
+      (self: IO[A]).flatMap(a => (f(Right(a)): IO[Unit]).flatMap(_ => IO.pure(a)))
+
+    /** The success wrapped as `Some`; a defect propagates. */
+    inline def option: UEffIO[Option[A]] = (self: IO[A]).map(Some(_))
+
+    /** The success reified as `Right`; a defect propagates. */
+    inline def eitherT: EitherT[IO, Nothing, A] = EitherT((self: IO[A]).map(Right(_)))
   end extension
 
   /** Error-widening natural transformation. Identity at runtime - `EffIO` is covariant in `E`.
