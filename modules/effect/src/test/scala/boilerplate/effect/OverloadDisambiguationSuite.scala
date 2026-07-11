@@ -474,4 +474,29 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(r, 42)
       assertEquals(observed, Some(42))
 
+  // `retry`/`retryWithBackoff` gained parameter-pinned `Nothing` twins. Abstract-`E` generic code
+  // must keep resolving the general overload (the twin selects only when `E` is statically
+  // `Nothing`); if the twin ever shadowed the general form, this helper would not compile.
+  private def retryGeneric[E <: Throwable, A](eff: EffIO[E, A], n: Int)(using
+    scala.reflect.TypeTest[Throwable, E]
+  ): EffIO[E, A] =
+    EffIO.retryWithBackoff(EffIO.retry(eff, n), n, 1.milli, None)
+
+  private def retryGenericEff[F[_], E <: Throwable, A](eff: Eff[F, E, A], n: Int)(using
+    cats.effect.kernel.GenTemporal[F, Throwable],
+    scala.reflect.TypeTest[Throwable, E]
+  ): Eff[F, E, A] =
+    Eff.retryWithBackoff(Eff.retry(eff, n), n, 1.milli, None)
+
+  test("retry on an abstract E resolves the general overload without ambiguity"):
+    val eff: EffIO[AppError, Int] = EffIO.fail(Invalid("boom"))
+    val control: Eff[IO, AppError, Int] = Eff.fail(Invalid("boom"))
+
+    for
+      r <- retryGeneric(eff, 2).either
+      c <- retryGenericEff(control, 2).either
+    yield
+      assertEquals(r, Left(Invalid("boom")))
+      assertEquals(c, Left(Invalid("boom")))
+
 end OverloadDisambiguationSuite

@@ -292,8 +292,8 @@ jobs:
       - name: Publish Snapshot
         run: sbt --server "publish"
         env:
-          SONATYPE_USERNAME: ${{ secrets.PUBLISH_USER }}
-          SONATYPE_PASSWORD: ${{ secrets.PUBLISH_USER_PASSPHRASE }}
+          SONATYPE_USERNAME: ${{ secrets.OSS_PUBLISH_USER }}
+          SONATYPE_PASSWORD: ${{ secrets.OSS_PUBLISH_USER_PASSPHRASE }}
 
   release:
     name: Publish Release
@@ -346,7 +346,7 @@ jobs:
       - name: Import Signing Key
         uses: crazy-max/ghaction-import-gpg@v7
         with:
-          gpg_private_key: ${{ secrets.SIGNING_KEY }}
+          gpg_private_key: ${{ secrets.OSS_PUBLISH_USER_SIGNING_KEY }}
           trust_level: 5
 
       # Sign the merged staging tree and checksum everything in for Central deployment.
@@ -367,18 +367,28 @@ jobs:
       - name: Release to Central Portal
         run: sbt --server "sonaRelease"
         env:
-          SONATYPE_USERNAME: ${{ secrets.PUBLISH_USER }}
-          SONATYPE_PASSWORD: ${{ secrets.PUBLISH_USER_PASSPHRASE }}
+          SONATYPE_USERNAME: ${{ secrets.OSS_PUBLISH_USER }}
+          SONATYPE_PASSWORD: ${{ secrets.OSS_PUBLISH_USER_PASSPHRASE }}
+
+      # Mint an org release-bot token so the GitHub Release is created under the Shuwari Africa app
+      # identity (org-scoped provenance and permissions), not the ephemeral default GITHUB_TOKEN actor.
+      - name: Mint Release Bot Token
+        id: release-bot
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
 
       - name: Create GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.release-bot.outputs.token }}
         run: |
           prerelease_flag=""
           if [[ "${{ github.ref_name }}" == *-* ]]; then
             prerelease_flag="--prerelease"
           fi
           gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes \
             --verify-tag \

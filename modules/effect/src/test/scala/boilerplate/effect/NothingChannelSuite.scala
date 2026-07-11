@@ -20,8 +20,13 @@
  */
 package boilerplate.effect
 
+import scala.concurrent.duration.*
+
 import cats.effect.IO
+import cats.effect.Ref
 import munit.CatsEffectSuite
+
+import boilerplate.effect.AppError.*
 
 // A defect raised on an infallible (`Nothing`) channel must PROPAGATE - it is not a typed error, so
 // no channel-observing combinator may capture, recover, or swallow it. Each observer's `Nothing`
@@ -45,6 +50,11 @@ class NothingChannelSuite extends CatsEffectSuite:
     val _ = eff.mapError(identity)
     val _ = eff.fold(_ => 0, _ => 1)
     val _ = eff.orElseSucceed(())
+    // `retry`/`retryWithBackoff` are companion functions, not observers, but they take the same
+    // `TypeTest`; abstract `E` must resolve the general overload, never the `Nothing` twin.
+    val _ = EffIO.retry(eff, 3)
+    val _ = EffIO.retryWithBackoff(eff, 3, 1.milli, None)
+  end genericObservers
 
   // The same for the generic `Eff` surface (the handler ignores its argument - the shape that broke
   // `retry` internally; a consumer must still be able to write it).
@@ -57,6 +67,16 @@ class NothingChannelSuite extends CatsEffectSuite:
     val _ = eff.option
     val _ = eff.catchAll(_ => eff)
     val _ = eff.mapError(identity)
+    val _ = Eff.retry(eff, 3)
+
+  // As above but with `GenTemporal` in scope, exercising the `retryWithBackoff` general overload
+  // under an abstract `E` (its `Nothing` twin must not shadow it).
+  @annotation.nowarn("msg=unused")
+  private def genericEffBackoff[F[_], E <: Throwable, A](eff: Eff[F, E, A])(using
+    cats.effect.kernel.GenTemporal[F, Throwable],
+    scala.reflect.TypeTest[Throwable, E]
+  ): Unit =
+    val _ = Eff.retryWithBackoff(eff, 3, 1.milli, None)
 
   test("either propagates")(propagates(defect.either))
   test("option propagates")(propagates(defect.option.absolve))
@@ -90,4 +110,62 @@ class NothingChannelSuite extends CatsEffectSuite:
       assertEquals(o, Some(2))
       assertEquals(f, 13)
       assertEquals(c, 4)
+
+  // A defect on an infallible channel counts as a programmer error, never a typed failure, so
+  // `retry`/`retryWithBackoff` must run the effect exactly once. Before the `Nothing` twin, the
+  // call-site solver widened `E := Throwable`, making the observer's `TypeTest` the identity and
+  // re-running the defect `maxRetries` times.
+  private def failing(counter: Ref[IO, Int], e: Throwable): IO[Int] =
+    counter.update(_ + 1).flatMap(_ => IO.raiseError[Int](e))
+
+  test("EffIO.retry does not re-run a defect (executes exactly once)"):
+    for
+      counter <- IO.ref(0)
+      defect = EffIO.liftF(failing(counter, new RuntimeException("DEFECT")))
+      outcome <- EffIO.retry(defect, 3).absolve.attempt
+      count <- counter.get
+    yield
+      assert(outcome.isLeft, s"defect not propagated: $outcome")
+      assertEquals(count, 1)
+
+  test("EffIO.retryWithBackoff does not re-run a defect (executes exactly once)"):
+    for
+      counter <- IO.ref(0)
+      defect = EffIO.liftF(failing(counter, new RuntimeException("DEFECT")))
+      outcome <- EffIO.retryWithBackoff(defect, 3, 1.milli, None).absolve.attempt
+      count <- counter.get
+    yield
+      assert(outcome.isLeft, s"defect not propagated: $outcome")
+      assertEquals(count, 1)
+
+  test("Eff.retry does not re-run a defect (executes exactly once)"):
+    for
+      counter <- IO.ref(0)
+      defect = Eff[IO].liftF(failing(counter, new RuntimeException("DEFECT")))
+      outcome <- Eff.retry(defect, 3).absolve.attempt
+      count <- counter.get
+    yield
+      assert(outcome.isLeft, s"defect not propagated: $outcome")
+      assertEquals(count, 1)
+
+  // The dual: a genuine typed error still retries the full count (1 initial + `maxRetries`).
+  test("EffIO.retry still retries a typed error the full count"):
+    for
+      counter <- IO.ref(0)
+      typed: EffIO[AppError, Int] = EffIO.liftF(counter.update(_ + 1)).flatMap(_ => EffIO.fail(Invalid("boom")))
+      outcome <- EffIO.retry(typed, 3).either
+      count <- counter.get
+    yield
+      assertEquals(outcome, Left(Invalid("boom")))
+      assertEquals(count, 4)
+
+  test("EffIO.retryWithBackoff still retries a typed error the full count"):
+    for
+      counter <- IO.ref(0)
+      typed: EffIO[AppError, Int] = EffIO.liftF(counter.update(_ + 1)).flatMap(_ => EffIO.fail(Invalid("boom")))
+      outcome <- EffIO.retryWithBackoff(typed, 3, 1.milli, None).either
+      count <- counter.get
+    yield
+      assertEquals(outcome, Left(Invalid("boom")))
+      assertEquals(count, 4)
 end NothingChannelSuite

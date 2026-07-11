@@ -1,18 +1,20 @@
 scalaVersion := scala3
-organization := "io.github.arashi01"
+organization := "africa.shuwari"
 description := "Collection of utilities and common patterns useful across Scala 3 projects."
 startYear := Some(2025)
-homepage := Some(url("https://github.com/arashi01/boilerplate"))
+homepage := Some(url("https://github.com/shuwariafrica/boilerplate"))
 semanticdbEnabled := true
-versionScheme := Some("semver-spec")
 licenses := List("MIT" -> url("https://opensource.org/licenses/MIT"))
 scmInfo := Some(
   ScmInfo(
-    url("https://github.com/arashi01/boilerplate"),
-    "scm:git:https://github.com/arashi01/boilerplate.git",
-    Some("scm:git:git@github.com:arashi01/boilerplate.git")
+    url("https://github.com/shuwariafrica/boilerplate"),
+    "scm:git:https://github.com/shuwariafrica/boilerplate.git",
+    Some("scm:git:git@github.com:shuwariafrica/boilerplate.git")
   )
 )
+
+// Shuwari org POM defaults: organizationName, organizationHomepage, developers, versionScheme.
+Shuwari.organisationSettings
 
 formattingSettings
 nativeSettings
@@ -187,15 +189,7 @@ def publishSettings: List[Setting[?]] = List(
     else localStaging.value
   },
   pomIncludeRepository := (_ => false),
-  publishMavenStyle := true,
-  developers := List(
-    Developer(
-      "arashi01",
-      "Ali Rashid",
-      "https://github.com/arashi01",
-      url("https://github.com/arashi01")
-    )
-  )
+  publishMavenStyle := true
 )
 
 addCommandAlias("format", "scalafixAll; scalafmtAll; scalafmtSbt; headerCreateAll")

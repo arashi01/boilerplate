@@ -8,13 +8,13 @@ Each module is published independently. Add the ones you need:
 
 ```scala
 // Core: opaque types, nullable extensions
-libraryDependencies += "io.github.arashi01" %% "boilerplate" % "<version>"
+libraryDependencies += "africa.shuwari" %% "boilerplate" % "<version>"
 
 // Codecs: Base64 (JVM, JS, Native)
-libraryDependencies += "io.github.arashi01" %% "boilerplate-codecs" % "<version>"
+libraryDependencies += "africa.shuwari" %% "boilerplate-codecs" % "<version>"
 
 // Effect: typed-error effects atop cats-effect
-libraryDependencies += "io.github.arashi01" %% "boilerplate-effect" % "<version>"
+libraryDependencies += "africa.shuwari" %% "boilerplate-effect" % "<version>"
 ```
 
 On Scala.js and Scala Native, `%%` resolves the platform-specific artefact (the sbt 2.x replacement for `%%%`).
@@ -22,7 +22,7 @@ On Scala.js and Scala Native, `%%` resolves the platform-specific artefact (the 
 `boilerplate-native` (compile-time OS/architecture detection) is Native-only and published as a per-OS/arch classified NIR library. Consume it through [sbt-snx](https://github.com/shuwariafrica/sbt-snx) so the classifier for your build target resolves automatically:
 
 ```scala
-SNX.dependencies += "io.github.arashi01" %% "boilerplate-native" % "<version>" % NativeClassifier
+SNX.dependencies += "africa.shuwari" %% "boilerplate-native" % "<version>" % NativeClassifier
 ```
 
 ---
@@ -459,6 +459,14 @@ val overOption: Eff[Option, Nothing, Int] = for
 yield a + b
 // overOption.absolve == Some(42)
 ```
+
+**Writing your own error-observing API generic in `E`.** Threading `using TypeTest[Throwable, E]`
+sets a trap: where `E` would infer as `Nothing`, the solver silently widens it to `Throwable` (whose
+test is the identity, so every defect is captured) instead of committing to the shipped
+`given TypeTest[Throwable, Nothing]` - it happens during inference, so importing the given does not
+prevent it. Pin `E` from a covariant parameter (order the parameter lists so an effect or handler
+argument fixes `E` first) and add a `Nothing`-pinned overload for the infallible case - the shape the
+built-in observers and `retry` use.
 
 ### cats interop
 

@@ -473,4 +473,27 @@ class EffIOSuite extends CatsEffectSuite:
   test("toEff then fromEff is a zero-cost identity round-trip"):
     val eff = EffIO.succeed(42)
     run(EffIO.fromEff(eff.toEff)).map(r => assertEquals(r, Right(42)))
+
+  test("flatMap and subflatMap widen - never drop - the receiver's typed error"):
+    // Both sequence, so the receiver's `E` must survive into the result. Without the `E2 >: E` lower
+    // bound the error silently vanishes from the type and escapes as a defect.
+    val viaFlatMap: EffIO[IoError, Int] = EffIO.fail(Closed).flatMap(_ => EffIO.succeed(1))
+    val viaSubflatMap: EffIO[IoError, Int] = EffIO.fail(Closed).subflatMap(_ => Right(1))
+
+    // Narrowing the receiver's `IoError` away to an infallible channel must NOT typecheck.
+    val flatMapDrop = scala.compiletime.testing.typeCheckErrors(
+      "val bad: boilerplate.effect.UEffIO[Int] = boilerplate.effect.EffIO.fail(boilerplate.effect.IoError.Closed).flatMap(_ => boilerplate.effect.EffIO.succeed(1))"
+    )
+    val subflatMapDrop = scala.compiletime.testing.typeCheckErrors(
+      "val bad: boilerplate.effect.UEffIO[Int] = boilerplate.effect.EffIO.fail(boilerplate.effect.IoError.Closed).subflatMap(_ => Right(1))"
+    )
+    assert(flatMapDrop.nonEmpty, "flatMap must not drop the receiver's typed error to an infallible channel")
+    assert(subflatMapDrop.nonEmpty, "subflatMap must not drop the receiver's typed error to an infallible channel")
+
+    for
+      a <- viaFlatMap.either
+      b <- viaSubflatMap.either
+    yield
+      assertEquals(a, Left(Closed))
+      assertEquals(b, Left(Closed))
 end EffIOSuite

@@ -50,4 +50,34 @@ class PlatformSuite extends FunSuite:
     val expected = if Platform.x86_64 then Arch.X86_64 else Arch.Aarch64
     assertEquals(Platform.arch, expected)
 
+  test("Platform constants are compile-time - reduce in inline if / inline match"):
+    // These reduce only on compile-time constants, and the `inline val` bindings are not
+    // branch-discarded, so all five are checked regardless of host. A downgrade to link-time
+    // (LinktimeInfo) would fail to compile here - the runtime assertions above would not catch it.
+    inline val linux = Platform.linux
+    inline val mac = Platform.mac
+    inline val windows = Platform.windows
+    inline val x86_64 = Platform.x86_64
+    inline val aarch64 = Platform.aarch64
+
+    inline def osTag: String =
+      inline if linux then "linux"
+      else inline if mac then "mac"
+      else "windows"
+
+    inline def archTag: String =
+      inline x86_64 match
+        case true  => "x86_64"
+        case false => "aarch64"
+
+    val runtimeOs =
+      if scala.scalanative.runtime.Platform.isLinux() then "linux"
+      else if scala.scalanative.runtime.Platform.isMac() then "mac"
+      else "windows"
+
+    assertEquals(List(linux, mac, windows).count(identity), 1)
+    assertEquals(List(x86_64, aarch64).count(identity), 1)
+    assertEquals(osTag, runtimeOs)
+    assertEquals(archTag, if x86_64 then "x86_64" else "aarch64")
+
 end PlatformSuite

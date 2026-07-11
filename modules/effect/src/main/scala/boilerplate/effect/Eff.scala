@@ -846,7 +846,16 @@ object Eff extends EffInstances5:
     parTraverse_(effs)(identity)
 
   /** Retries the effect up to `maxRetries` times on a typed failure; a defect propagates. */
-  inline def retry[F[_], E <: Throwable, A](eff: Eff[F, E, A], maxRetries: Int)(using
+  inline def retry[F[_], E <: Throwable, A](eff: Eff[F, E, A], maxRetries: Int)(using MonadThrow[F], TypeTest[Throwable, E]): Eff[F, E, A] =
+    retryImpl(eff, maxRetries)
+
+  /** Retries an infallible effect: a defect is never a typed error, so it propagates on the first
+    * execution - zero retries.
+    */
+  inline def retry[F[_], A](eff: Eff[F, Nothing, A], @unused maxRetries: Int): Eff[F, Nothing, A] =
+    eff
+
+  private def retryImpl[F[_], E <: Throwable, A](eff: Eff[F, E, A], maxRetries: Int)(using
     F: MonadThrow[F],
     tt: TypeTest[Throwable, E]): Eff[F, E, A] =
     if maxRetries <= 0 then eff
@@ -854,12 +863,30 @@ object Eff extends EffInstances5:
       // Not `eff.catchAll`: `E` is abstract here, so the general/`Nothing` observer overloads are
       // ambiguous - inline the typed-vs-defect split directly on `F`.
       F.handleErrorWith(eff) {
-        case tt(_) => retry(eff, maxRetries - 1)
+        case tt(_) => retryImpl(eff, maxRetries - 1)
         case other => F.raiseError(other)
       }
 
   /** Retries the effect with exponential backoff, capping each delay at `maxDelay`. */
   inline def retryWithBackoff[F[_], E <: Throwable, A](
+    eff: Eff[F, E, A],
+    maxRetries: Int,
+    initialDelay: FiniteDuration,
+    maxDelay: Option[FiniteDuration]
+  )(using GenTemporal[F, Throwable], TypeTest[Throwable, E]): Eff[F, E, A] =
+    retryWithBackoffImpl(eff, maxRetries, initialDelay, maxDelay)
+
+  /** Retries an infallible effect with backoff: a defect propagates on the first execution - zero
+    * retries, no delay.
+    */
+  inline def retryWithBackoff[F[_], A](
+    eff: Eff[F, Nothing, A],
+    @unused maxRetries: Int,
+    @unused initialDelay: FiniteDuration,
+    @unused maxDelay: Option[FiniteDuration]
+  ): Eff[F, Nothing, A] = eff
+
+  private def retryWithBackoffImpl[F[_], E <: Throwable, A](
     eff: Eff[F, E, A],
     maxRetries: Int,
     initialDelay: FiniteDuration,
@@ -875,7 +902,7 @@ object Eff extends EffInstances5:
           case other => T.raiseError(other)
         }
     loop(maxRetries, initialDelay)
-  end retryWithBackoff
+  end retryWithBackoffImpl
 
   /** The identity natural transformation lifting `F[A]` into `Eff[F, E, A]` (treating values as
     * successes). The canonical way to `mapK` `Resource[F, A]` and other primitives into `Eff`.
