@@ -306,9 +306,14 @@ object EffIO extends EffIOInstances:
   inline def parSequence_[E <: Throwable, A](effs: Iterable[EffIO[E, A]]): EffIO[E, Unit] =
     parTraverse_(effs)(identity)
 
-  /** Retries the effect up to `maxRetries` times on failure. */
+  /** Retries the effect up to `maxRetries` times on a typed failure; a defect propagates. */
   inline def retry[E <: Throwable, A](eff: EffIO[E, A], maxRetries: Int)(using TypeTest[Throwable, E]): EffIO[E, A] =
     fromEff(Eff.retry[IO, E, A](eff.toEff, maxRetries))
+
+  /** Retries an infallible effect: a defect is never a typed error, so it propagates on the first
+    * execution - zero retries.
+    */
+  inline def retry[A](eff: EffIO[Nothing, A], @unused maxRetries: Int): EffIO[Nothing, A] = eff
 
   /** Retries the effect with exponential backoff, capping each delay at `maxDelay`. */
   inline def retryWithBackoff[E <: Throwable, A](
@@ -318,6 +323,16 @@ object EffIO extends EffIOInstances:
     maxDelay: Option[FiniteDuration]
   )(using TypeTest[Throwable, E]): EffIO[E, A] =
     fromEff(Eff.retryWithBackoff[IO, E, A](eff.toEff, maxRetries, initialDelay, maxDelay))
+
+  /** Retries an infallible effect with backoff: a defect propagates on the first execution - zero
+    * retries, no delay.
+    */
+  inline def retryWithBackoff[A](
+    eff: EffIO[Nothing, A],
+    @unused maxRetries: Int,
+    @unused initialDelay: FiniteDuration,
+    @unused maxDelay: Option[FiniteDuration]
+  ): EffIO[Nothing, A] = eff
 
   extension [E <: Throwable, A](self: EffIO[E, A])
     /** Views this effect as an invariant `Eff[IO, E, A]`. Identity at runtime; O(0). */
@@ -333,14 +348,14 @@ object EffIO extends EffIOInstances:
     inline def map[B](f: A => B): EffIO[E, B] = (self: IO[A]).map(f)
 
     /** Sequences computations, widening the error channel on demand. */
-    inline def flatMap[E2 <: Throwable, B](f: A => EffIO[E2, B]): EffIO[E2, B] =
+    inline def flatMap[E2 >: E <: Throwable, B](f: A => EffIO[E2, B]): EffIO[E2, B] =
       (self: IO[A]).flatMap(a => f(a))
 
     /** Maps the success value through an effectful function. */
     inline def semiflatMap[B](f: A => IO[B]): EffIO[E, B] = (self: IO[A]).flatMap(f)
 
     /** Flat-maps the success through a pure `Either`-returning function; a `Left` fails. */
-    inline def subflatMap[E2 <: Throwable, B](f: A => Either[E2, B]): EffIO[E2, B] =
+    inline def subflatMap[E2 >: E <: Throwable, B](f: A => Either[E2, B]): EffIO[E2, B] =
       (self: IO[A]).flatMap(a =>
         f(a) match
           case Right(b) => IO.pure(b)

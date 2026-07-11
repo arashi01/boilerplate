@@ -1,18 +1,20 @@
 scalaVersion := scala3
-organization := "io.github.arashi01"
+organization := "africa.shuwari"
 description := "Collection of utilities and common patterns useful across Scala 3 projects."
 startYear := Some(2025)
-homepage := Some(url("https://github.com/arashi01/boilerplate"))
+homepage := Some(url("https://github.com/shuwariafrica/boilerplate"))
 semanticdbEnabled := true
-versionScheme := Some("semver-spec")
 licenses := List("MIT" -> url("https://opensource.org/licenses/MIT"))
 scmInfo := Some(
   ScmInfo(
-    url("https://github.com/arashi01/boilerplate"),
-    "scm:git:https://github.com/arashi01/boilerplate.git",
-    Some("scm:git:git@github.com:arashi01/boilerplate.git")
+    url("https://github.com/shuwariafrica/boilerplate"),
+    "scm:git:https://github.com/shuwariafrica/boilerplate.git",
+    Some("scm:git:git@github.com:shuwariafrica/boilerplate.git")
   )
 )
+
+// Shuwari org POM defaults: organizationName, organizationHomepage, developers, versionScheme.
+Shuwari.organisationSettings
 
 formattingSettings
 nativeSettings
@@ -30,18 +32,6 @@ val `scala-java-time` = Def.setting("io.github.cquiroz" %% "scala-java-time" % "
 val boilerplate =
   projectMatrix
     .in(file("modules/core"))
-    .settings(compilerSettings)
-    .settings(unitTestSettings)
-    .settings(fileHeaderSettings)
-    .settings(publishSettings)
-    .jvmPlatform(Seq(scala3))
-    .jsPlatform(Seq(scala3))
-    .snxPlatform(Seq(scala3))
-
-val `boilerplate-codecs` =
-  projectMatrix
-    .in(file("modules/codecs"))
-    .dependsOn(boilerplate)
     .settings(compilerSettings)
     .settings(unitTestSettings)
     .settings(fileHeaderSettings)
@@ -98,7 +88,6 @@ val `boilerplate-aggregate` =
     .jsPlatform(Seq(scala3))
     .snxPlatform(Seq(scala3), Seq.empty, _.aggregate(`boilerplate-native`))
     .aggregate(boilerplate)
-    .aggregate(`boilerplate-codecs`)
     .aggregate(`boilerplate-effect`)
     .aggregate(`boilerplate-effect-laws`)
 
@@ -187,15 +176,7 @@ def publishSettings: List[Setting[?]] = List(
     else localStaging.value
   },
   pomIncludeRepository := (_ => false),
-  publishMavenStyle := true,
-  developers := List(
-    Developer(
-      "arashi01",
-      "Ali Rashid",
-      "https://github.com/arashi01",
-      url("https://github.com/arashi01")
-    )
-  )
+  publishMavenStyle := true
 )
 
 addCommandAlias("format", "scalafixAll; scalafmtAll; scalafmtSbt; headerCreateAll")

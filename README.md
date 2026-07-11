@@ -1,6 +1,6 @@
 # Boilerplate
 
-Foundational Scala 3 utilities for opaque type construction, null-safe handling, native platform detection, cross-platform codecs, and zero-cost typed-error effects - targeting JVM, JS, and Native.
+Foundational Scala 3 utilities for opaque type construction, null-safe handling, native platform detection, and zero-cost typed-error effects - targeting JVM, JS, and Native.
 
 ## Installation
 
@@ -8,13 +8,10 @@ Each module is published independently. Add the ones you need:
 
 ```scala
 // Core: opaque types, nullable extensions
-libraryDependencies += "io.github.arashi01" %% "boilerplate" % "<version>"
-
-// Codecs: Base64 (JVM, JS, Native)
-libraryDependencies += "io.github.arashi01" %% "boilerplate-codecs" % "<version>"
+libraryDependencies += "africa.shuwari" %% "boilerplate" % "<version>"
 
 // Effect: typed-error effects atop cats-effect
-libraryDependencies += "io.github.arashi01" %% "boilerplate-effect" % "<version>"
+libraryDependencies += "africa.shuwari" %% "boilerplate-effect" % "<version>"
 ```
 
 On Scala.js and Scala Native, `%%` resolves the platform-specific artefact (the sbt 2.x replacement for `%%%`).
@@ -22,7 +19,7 @@ On Scala.js and Scala Native, `%%` resolves the platform-specific artefact (the 
 `boilerplate-native` (compile-time OS/architecture detection) is Native-only and published as a per-OS/arch classified NIR library. Consume it through [sbt-snx](https://github.com/shuwariafrica/sbt-snx) so the classifier for your build target resolves automatically:
 
 ```scala
-SNX.dependencies += "io.github.arashi01" %% "boilerplate-native" % "<version>" % NativeClassifier
+SNX.dependencies += "africa.shuwari" %% "boilerplate-native" % "<version>" % NativeClassifier
 ```
 
 ---
@@ -293,38 +290,6 @@ Platform.arch match
 
 ---
 
-## Codecs
-
-```scala
-import boilerplate.codec.Base64
-```
-
-### Base64
-
-Encoding and decoding per [RFC 4648](https://www.rfc-editor.org/rfc/rfc4648). Supports the standard alphabet
-(section 4: `+`, `/`, `=` padding) and the URL-safe alphabet (section 5: `-`, `_`, no padding).
-
-Decoding is strict - invalid characters and malformed padding produce `Left(Base64.Error)`.
-
-```scala
-// Standard (RFC 4648 section 4)
-val encoded: String                          = Base64.encode("foobar".getBytes("UTF-8"))
-val decoded: Either[Base64.Error, Array[Byte]] = Base64.decode("Zm9vYmFy")
-
-// URL-safe (RFC 4648 section 5) - suitable for JWT, URI parameters, filenames
-val urlEncoded: String                          = Base64.encode(data, urlSafe = true)
-val urlDecoded: Either[Base64.Error, Array[Byte]] = Base64.decode(urlEncoded, urlSafe = true)
-```
-
-| Method   | Signature                                                   | Description                        |
-|----------|-------------------------------------------------------------|------------------------------------|
-| `encode` | `(Array[Byte]): String`                                     | Standard encoding with padding     |
-| `encode` | `(Array[Byte], urlSafe: Boolean): String`                   | Standard or URL-safe encoding      |
-| `decode` | `(String): Either[Error, Array[Byte]]`                      | Standard decoding                  |
-| `decode` | `(String, urlSafe: Boolean): Either[Error, Array[Byte]]`    | Standard or URL-safe decoding      |
-
----
-
 ## Effect
 
 Zero-cost typed-error effects atop cats-effect. `Eff` and `EffIO` track a compile-time error type
@@ -459,6 +424,14 @@ val overOption: Eff[Option, Nothing, Int] = for
 yield a + b
 // overOption.absolve == Some(42)
 ```
+
+**Writing your own error-observing API generic in `E`.** Threading `using TypeTest[Throwable, E]`
+sets a trap: where `E` would infer as `Nothing`, the solver silently widens it to `Throwable` (whose
+test is the identity, so every defect is captured) instead of committing to the shipped
+`given TypeTest[Throwable, Nothing]` - it happens during inference, so importing the given does not
+prevent it. Pin `E` from a covariant parameter (order the parameter lists so an effect or handler
+argument fixes `E` first) and add a `Nothing`-pinned overload for the infallible case - the shape the
+built-in observers and `retry` use.
 
 ### cats interop
 
