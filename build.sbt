@@ -40,18 +40,6 @@ val boilerplate =
     .jsPlatform(Seq(scala3))
     .snxPlatform(Seq(scala3))
 
-val `boilerplate-codecs` =
-  projectMatrix
-    .in(file("modules/codecs"))
-    .dependsOn(boilerplate)
-    .settings(compilerSettings)
-    .settings(unitTestSettings)
-    .settings(fileHeaderSettings)
-    .settings(publishSettings)
-    .jvmPlatform(Seq(scala3))
-    .jsPlatform(Seq(scala3))
-    .snxPlatform(Seq(scala3))
-
 val `boilerplate-effect` =
   projectMatrix
     .in(file("modules/effect"))
@@ -100,7 +88,6 @@ val `boilerplate-aggregate` =
     .jsPlatform(Seq(scala3))
     .snxPlatform(Seq(scala3), Seq.empty, _.aggregate(`boilerplate-native`))
     .aggregate(boilerplate)
-    .aggregate(`boilerplate-codecs`)
     .aggregate(`boilerplate-effect`)
     .aggregate(`boilerplate-effect-laws`)
 

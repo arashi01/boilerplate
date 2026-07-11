@@ -1,6 +1,6 @@
 # Boilerplate
 
-Foundational Scala 3 utilities for opaque type construction, null-safe handling, native platform detection, cross-platform codecs, and zero-cost typed-error effects - targeting JVM, JS, and Native.
+Foundational Scala 3 utilities for opaque type construction, null-safe handling, native platform detection, and zero-cost typed-error effects - targeting JVM, JS, and Native.
 
 ## Installation
 
@@ -9,9 +9,6 @@ Each module is published independently. Add the ones you need:
 ```scala
 // Core: opaque types, nullable extensions
 libraryDependencies += "africa.shuwari" %% "boilerplate" % "<version>"
-
-// Codecs: Base64 (JVM, JS, Native)
-libraryDependencies += "africa.shuwari" %% "boilerplate-codecs" % "<version>"
 
 // Effect: typed-error effects atop cats-effect
 libraryDependencies += "africa.shuwari" %% "boilerplate-effect" % "<version>"
@@ -290,38 +287,6 @@ Platform.arch match
 | `arch`    | `Arch`    | Enum value for the build-target architecture   |
 
 `inline if` branches on these constants produce zero-overhead platform-specific code.
-
----
-
-## Codecs
-
-```scala
-import boilerplate.codec.Base64
-```
-
-### Base64
-
-Encoding and decoding per [RFC 4648](https://www.rfc-editor.org/rfc/rfc4648). Supports the standard alphabet
-(section 4: `+`, `/`, `=` padding) and the URL-safe alphabet (section 5: `-`, `_`, no padding).
-
-Decoding is strict - invalid characters and malformed padding produce `Left(Base64.Error)`.
-
-```scala
-// Standard (RFC 4648 section 4)
-val encoded: String                          = Base64.encode("foobar".getBytes("UTF-8"))
-val decoded: Either[Base64.Error, Array[Byte]] = Base64.decode("Zm9vYmFy")
-
-// URL-safe (RFC 4648 section 5) - suitable for JWT, URI parameters, filenames
-val urlEncoded: String                          = Base64.encode(data, urlSafe = true)
-val urlDecoded: Either[Base64.Error, Array[Byte]] = Base64.decode(urlEncoded, urlSafe = true)
-```
-
-| Method   | Signature                                                   | Description                        |
-|----------|-------------------------------------------------------------|------------------------------------|
-| `encode` | `(Array[Byte]): String`                                     | Standard encoding with padding     |
-| `encode` | `(Array[Byte], urlSafe: Boolean): String`                   | Standard or URL-safe encoding      |
-| `decode` | `(String): Either[Error, Array[Byte]]`                      | Standard decoding                  |
-| `decode` | `(String, urlSafe: Boolean): Either[Error, Array[Byte]]`    | Standard or URL-safe decoding      |
 
 ---
 
