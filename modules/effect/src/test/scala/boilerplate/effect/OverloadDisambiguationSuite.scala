@@ -29,9 +29,11 @@ import munit.CatsEffectSuite
 import boilerplate.effect.AppError.*
 import boilerplate.effect.IoError.*
 
-// With `import cats.syntax.all.*` in scope, this checks that an infix `eff.map`/`.flatMap`/... binds
-// to the `Eff` extension rather than to cats' generic syntax. Each test pairs the infix call with an
-// expanded `Eff.method(eff)(...)` control call and asserts they agree.
+// With `import cats.syntax.all.*` in scope, each test pairs an infix `eff.map`/`.flatMap`/... call
+// with an expanded `Eff.method(eff)(...)` control and asserts they agree - whichever of the `Eff`
+// extension or cats' generic syntax wins resolution, behaviour must be identical. Resolution itself
+// is not pinned here: cats' imported syntax CAN win, and on an error-widening flatMap it pins `E`
+// to the receiver's - the documented reason the README scopes cats syntax imports narrowly.
 class OverloadDisambiguationSuite extends CatsEffectSuite:
 
   test("map on Eff selects Eff extension over Functor syntax"):
@@ -474,19 +476,20 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(r, 42)
       assertEquals(observed, Some(42))
 
-  // `retry`/`retryWithBackoff` gained parameter-pinned `Nothing` twins. Abstract-`E` generic code
-  // must keep resolving the general overload (the twin selects only when `E` is statically
-  // `Nothing`); if the twin ever shadowed the general form, this helper would not compile.
+  // `retry`/`retryWithBackoff` (counted and policy-driven) ship parameter-pinned `Nothing` twins.
+  // Abstract-`E` generic code must keep resolving the general overloads (a twin selects only when
+  // `E` is statically `Nothing`); if a twin ever shadowed the general form, this helper would not
+  // compile.
   private def retryGeneric[E <: Throwable, A](eff: EffIO[E, A], n: Int)(using
     scala.reflect.TypeTest[Throwable, E]
   ): EffIO[E, A] =
-    EffIO.retryWithBackoff(EffIO.retry(eff, n), n, 1.milli, None)
+    EffIO.retry(EffIO.retryWithBackoff(EffIO.retry(eff, n), n, 1.milli, None), RetryPolicy.constant(1.milli).withMaxAttempts(n))
 
   private def retryGenericEff[F[_], E <: Throwable, A](eff: Eff[F, E, A], n: Int)(using
     cats.effect.kernel.GenTemporal[F, Throwable],
     scala.reflect.TypeTest[Throwable, E]
   ): Eff[F, E, A] =
-    Eff.retryWithBackoff(Eff.retry(eff, n), n, 1.milli, None)
+    Eff.retry(Eff.retryWithBackoff(Eff.retry(eff, n), n, 1.milli, None), RetryPolicy.constant(1.milli).withMaxAttempts(n))
 
   test("retry on an abstract E resolves the general overload without ambiguity"):
     val eff: EffIO[AppError, Int] = EffIO.fail(Invalid("boom"))
@@ -498,5 +501,40 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
     yield
       assertEquals(r, Left(Invalid("boom")))
       assertEquals(c, Left(Invalid("boom")))
+
+  test("policy retry disambiguates the retryOn and onRetry overloads by arity, twins included"):
+    val policy = RetryPolicy.constant(1.milli).withMaxAttempts(2)
+    val typed: EffIO[AppError, Int] = EffIO.fail(Invalid("boom"))
+    val infallible: UEffIO[Int] = EffIO.succeed(1)
+
+    // General overloads on a concrete typed channel: a one-arg lambda selects `retryOn`, a
+    // three-arg lambda selects `onRetry`, and both together select the full form.
+    val withPred = EffIO.retry(typed, policy, (_: AppError) => false)
+    val withHook = EffIO.retry(typed, policy, (_: Int, _: AppError, _: FiniteDuration) => IO.unit)
+    val withBoth = EffIO.retry(typed, policy, (_: AppError) => false, (_: Int, _: AppError, _: FiniteDuration) => IO.unit)
+
+    // The `Nothing` twins resolve for a statically infallible receiver - no TypeTest, no retries.
+    val twinPlain = EffIO.retry(infallible, policy)
+    val twinPred = EffIO.retry(infallible, policy, (_: Nothing) => true)
+    val twinHook = EffIO.retry(infallible, policy, (_: Int, _: Nothing, _: FiniteDuration) => IO.unit)
+    val twinBoth = EffIO.retry(infallible, policy, (_: Nothing) => true, (_: Int, _: Nothing, _: FiniteDuration) => IO.unit)
+
+    for
+      p <- withPred.either
+      h <- withHook.either
+      b <- withBoth.either
+      t1 <- twinPlain.either
+      t2 <- twinPred.either
+      t3 <- twinHook.either
+      t4 <- twinBoth.either
+    yield
+      assertEquals(p, Left(Invalid("boom")))
+      assertEquals(h, Left(Invalid("boom")))
+      assertEquals(b, Left(Invalid("boom")))
+      assertEquals(t1, Right(1))
+      assertEquals(t2, Right(1))
+      assertEquals(t3, Right(1))
+      assertEquals(t4, Right(1))
+    end for
 
 end OverloadDisambiguationSuite

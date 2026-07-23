@@ -306,7 +306,9 @@ object EffIO extends EffIOInstances:
   inline def parSequence_[E <: Throwable, A](effs: Iterable[EffIO[E, A]]): EffIO[E, Unit] =
     parTraverse_(effs)(identity)
 
-  /** Retries the effect up to `maxRetries` times on a typed failure; a defect propagates. */
+  /** Retries the effect up to `maxRetries` times on a typed failure; a defect propagates. For paced
+    * retries use the [[boilerplate.effect.RetryPolicy RetryPolicy]] overloads.
+    */
   inline def retry[E <: Throwable, A](eff: EffIO[E, A], maxRetries: Int)(using TypeTest[Throwable, E]): EffIO[E, A] =
     fromEff(Eff.retry[IO, E, A](eff.toEff, maxRetries))
 
@@ -332,6 +334,74 @@ object EffIO extends EffIOInstances:
     @unused maxRetries: Int,
     @unused initialDelay: FiniteDuration,
     @unused maxDelay: Option[FiniteDuration]
+  ): EffIO[Nothing, A] = eff
+
+  /** Retries the effect on typed failures, paced and bounded by `policy`; the final typed error
+    * propagates once the policy stops. A defect propagates without retrying.
+    */
+  inline def retry[E <: Throwable, A](eff: EffIO[E, A], policy: RetryPolicy)(using TypeTest[Throwable, E]): EffIO[E, A] =
+    fromEff(Eff.retry[IO, E, A](eff.toEff, policy))
+
+  /** As the policy overload, retrying only failures `retryOn` accepts; a rejected error propagates
+    * immediately.
+    */
+  inline def retry[E <: Throwable, A](eff: EffIO[E, A], policy: RetryPolicy, retryOn: E => Boolean)(using
+    TypeTest[Throwable, E]
+  ): EffIO[E, A] =
+    fromEff(Eff.retry[IO, E, A](eff.toEff, policy, retryOn))
+
+  /** As the policy overload, invoking `onRetry` with the 1-based number of the attempt that just
+    * failed, its error, and the delay about to be slept - only when a retry will actually happen,
+    * before its sleep. The side effect is a raw `IO[Unit]`: anything it raises propagates on `IO`'s
+    * channel.
+    */
+  inline def retry[E <: Throwable, A](
+    eff: EffIO[E, A],
+    policy: RetryPolicy,
+    onRetry: (Int, E, FiniteDuration) => IO[Unit]
+  )(using TypeTest[Throwable, E]): EffIO[E, A] =
+    fromEff(Eff.retry[IO, E, A](eff.toEff, policy, onRetry))
+
+  /** As the policy overload, with both the `retryOn` filter and the `onRetry` observer. */
+  inline def retry[E <: Throwable, A](
+    eff: EffIO[E, A],
+    policy: RetryPolicy,
+    retryOn: E => Boolean,
+    onRetry: (Int, E, FiniteDuration) => IO[Unit]
+  )(using TypeTest[Throwable, E]): EffIO[E, A] =
+    fromEff(Eff.retry[IO, E, A](eff.toEff, policy, retryOn, onRetry))
+
+  /** Retries an infallible effect: a defect is never a typed error, so it propagates on the first
+    * execution - zero retries, no delay.
+    */
+  inline def retry[A](eff: EffIO[Nothing, A], @unused policy: RetryPolicy): EffIO[Nothing, A] = eff
+
+  /** Retries an infallible effect: a defect is never a typed error, so it propagates on the first
+    * execution - zero retries, no delay.
+    */
+  inline def retry[A](
+    eff: EffIO[Nothing, A],
+    @unused policy: RetryPolicy,
+    @unused retryOn: Nothing => Boolean
+  ): EffIO[Nothing, A] = eff
+
+  /** Retries an infallible effect: a defect is never a typed error, so it propagates on the first
+    * execution - zero retries, no delay, no observation.
+    */
+  inline def retry[A](
+    eff: EffIO[Nothing, A],
+    @unused policy: RetryPolicy,
+    @unused onRetry: (Int, Nothing, FiniteDuration) => IO[Unit]
+  ): EffIO[Nothing, A] = eff
+
+  /** Retries an infallible effect: a defect is never a typed error, so it propagates on the first
+    * execution - zero retries, no delay, no observation.
+    */
+  inline def retry[A](
+    eff: EffIO[Nothing, A],
+    @unused policy: RetryPolicy,
+    @unused retryOn: Nothing => Boolean,
+    @unused onRetry: (Int, Nothing, FiniteDuration) => IO[Unit]
   ): EffIO[Nothing, A] = eff
 
   extension [E <: Throwable, A](self: EffIO[E, A])

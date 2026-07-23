@@ -301,7 +301,6 @@ integration and no runtime wrapper.
 ```scala
 import boilerplate.effect.*
 import cats.effect.IO
-import cats.syntax.all.*
 ```
 
 ### Core types
@@ -384,7 +383,24 @@ Eff[IO].suspend(sideEffect())          // UEff[IO, A]
 | Async        | `fromFuture(F[Future], ifFailure)`, `fromFuture(pf)`, `async`, `asyncAttempt(ifDefect)` |
 | Conditional  | `when`, `unless`, `raiseWhen`, `raiseUnless`, `cond(pred, ifTrue, ifFalse)`     |
 | Collection   | `traverse`, `sequence`, `parTraverse`, `parSequence` (each with a `_` discard variant) |
-| Retry        | `retry(eff, maxRetries)`, `retryWithBackoff(eff, maxRetries, delay, maxDelay)`  |
+| Retry        | `retry(eff, maxRetries)`, `retryWithBackoff(eff, maxRetries, delay, maxDelay)`, `retry(eff, policy[, retryOn][, onRetry])` |
+
+**Policy-driven retries.** `RetryPolicy` is a pure value describing only pacing and bounds, so one
+policy is shareable across differently-typed effects: a backoff strategy (`constant`,
+`exponential`, `fullJitter`, `decorrelated`) refined by `withMaxAttempts` (total executions,
+unbounded when absent), `withMaxDelay` (per-attempt cap), and `withMaxCumulativeDelay` (total
+sleep budget - retrying stops rather than sleep beyond it). The policy `retry` overloads interpret
+it: `retryOn: E => Boolean` selects which typed errors are worth retrying, and
+`onRetry: (attempt, error, nextDelay) => F[Unit]` observes each retry before its sleep. A defect
+never retries, on any overload.
+
+```scala
+import scala.concurrent.duration.*
+
+val policy = RetryPolicy.fullJitter(100.millis).withMaxAttempts(5).withMaxDelay(2.seconds)
+val retried: Eff[IO, AppError, User] =
+  Eff.retry(workflow, policy, { case _: AppError.NotFound => true; case _: AppError.Invalid => false })
+```
 
 ### Eff combinators
 
@@ -482,12 +498,22 @@ non-`Throwable` would be unsound - and `Show`/`Eq`/`PartialOrder` delegate strai
 
 </details>
 
-With `cats.syntax.all.*` in scope, standard cats syntax is available on the typed `MonadError[_, E]`:
+With the cats error syntax in scope, the standard operators resolve on the typed `MonadError[_, E]`:
+
+```scala
+import cats.syntax.applicativeError.*
+import cats.syntax.monadError.*
+```
 
 | Source             | Methods                                                |
 |--------------------|--------------------------------------------------------|
 | `ApplicativeError` | `recover`, `recoverWith`, `onError`, `adaptError`      |
 | `MonadError`       | `ensure`, `ensureOr`, `rethrow`, `redeem`, `redeemWith`|
+
+Import these modules specifically rather than the blanket `cats.syntax.all.*`: the blanket import
+also brings cats' own `flatMap`/`map` syntax, which is tried before `Eff`'s extensions and pins a
+for-comprehension's error type to the first step's `E` - a workflow whose steps carry distinct
+error types then fails to compile instead of widening to their union.
 
 ### EffIO
 
@@ -518,9 +544,9 @@ the generic `Eff`: it fixes `F = IO`, so call sites need neither `using` clauses
 argument, and it is additionally covariant in `A`.
 
 ```scala
-EffIO.succeed(42)               // UEffIO[Int]
-EffIO.fail(AppError.Timeout)    // EffIO[AppError.Timeout.type, Nothing]
-EffIO.liftF(IO.pure(42))        // UEffIO[Int]
+EffIO.succeed(42)                    // UEffIO[Int]
+EffIO.fail(AppError.NotFound("u1"))  // EffIO[AppError.NotFound, Nothing]
+EffIO.liftF(IO.pure(42))             // UEffIO[Int]
 
 workflow.map(user => user.name) // EffIO[AppError, String]
 workflow.either                 // IO[Either[AppError, User]]
@@ -671,11 +697,13 @@ Importing `boilerplate.effect.*` provides lifting extensions:
 | `Queue[F, A].eff[E]`         | `Queue[Of[F, E], A]`  |
 | `Semaphore[F].eff[E]`        | `Semaphore[Of[F,E]]`  |
 
+`CountDownLatch`, `CyclicBarrier`, `AtomicCell`, and `Supervisor` lift the same way.
+
 ### Fibre join extensions
 
-When working with `Fiber[Eff.Of[F, E], Throwable, A]` (e.g. from `Supervisor.supervise`). A fibre
-that failed with a typed error completes as `Outcome.Errored(e)`; the join re-raises `e` on the
-effect's channel, while a `Succeeded` returns its value:
+For `Fiber[Eff.Of[F, E], Throwable, A]` (e.g. from `Supervisor.supervise`): a fibre that failed
+with a typed error completes as `Outcome.Errored(e)`, and the join re-raises `e` on the effect's
+channel, while a `Succeeded` returns its value:
 
 | Extension               | Result Type     | On Cancellation        |
 |-------------------------|-----------------|------------------------|
@@ -690,7 +718,6 @@ The same joins are provided for `Fiber[EffIO.Of[E], Throwable, A]`, returning `E
 import boilerplate.effect.*
 import cats.effect.IO
 import cats.effect.kernel.{GenConcurrent, Outcome}
-import cats.syntax.all.*
 import scala.concurrent.duration.*
 import scala.util.control.NoStackTrace
 
@@ -698,13 +725,16 @@ sealed abstract class AppError(msg: String) extends Exception(msg) with NoStackT
 object AppError:
   final case class NotFound(id: String) extends AppError(s"not found: $id")
   final case class ValidationError(reason: String) extends AppError(s"invalid: $reason")
-  case object Cancelled extends AppError("cancelled")
-  case object Timeout extends AppError("timed out")
+  // Payload-free cases as class + case object, so type positions can name the class: reified
+  // unions over `.type` singleton arms mis-erase (Scala 3.8.4), classes are sound.
+  sealed abstract class Cancelled private () extends AppError("cancelled")
+  case object Cancelled extends Cancelled
+  sealed abstract class Timeout private () extends AppError("timed out")
+  case object Timeout extends Timeout
 
 case class User(id: String, name: String)
 
-given C: GenConcurrent[Eff.Of[IO, AppError], Throwable] =
-  summon[GenConcurrent[Eff.Of[IO, AppError], Throwable]]
+val C = summon[GenConcurrent[Eff.Of[IO, AppError], Throwable]]
 
 def fetchUser(id: String): Eff[IO, AppError.NotFound, User] =
   if id == "1" then Eff.succeed(User("1", "Alice"))

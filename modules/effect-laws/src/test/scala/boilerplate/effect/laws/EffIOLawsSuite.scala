@@ -77,7 +77,6 @@ class EffIOLawsSuite extends DisciplineSuite with EffIOTestInstances:
   implicit val arbTestEffIOUnit: Arbitrary[TestEffIO[Unit]] =
     arbitraryEffIO[E, Unit]
 
-  // A => B requires Cogen[A] to generate functions, and Arbitrary[B] for the result
   implicit def arbTestEffIOFunc[A: Cogen, B: Arbitrary]: Arbitrary[TestEffIO[A => B]] =
     Arbitrary(
       Arbitrary.arbFunction1[A, B].arbitrary.map(f => EffIO.succeed(f))

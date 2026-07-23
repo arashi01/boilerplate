@@ -390,6 +390,28 @@ class EffIOSuite extends CatsEffectSuite:
       assertEquals(r, Right(3))
       assertEquals(count, 3)
 
+  test("policy retry paces, filters, and observes on the EffIO surface"):
+    val policy = RetryPolicy.constant(1.milli).withMaxAttempts(3)
+    for
+      attempts <- IO.ref(0)
+      seen <- IO.ref(List.empty[Int])
+      hook = (n: Int, _: IoError, _: FiniteDuration) => seen.update(n :: _)
+      eff = EffIO.liftF(attempts.update(_ + 1)).flatMap(_ => EffIO.fail[IoError](Closed))
+      out <- run(EffIO.retry(eff, policy, hook))
+      n <- attempts.get
+      observed <- seen.get.map(_.reverse)
+      filtered <- IO.ref(0)
+      effF = EffIO.liftF(filtered.update(_ + 1)).flatMap(_ => EffIO.fail[IoError](Closed))
+      outF <- run(EffIO.retry(effF, policy, (_: IoError) => false))
+      nF <- filtered.get
+    yield
+      assertEquals(out, Left(Closed))
+      assertEquals(n, 3)
+      assertEquals(observed, List(1, 2))
+      assertEquals(outF, Left(Closed))
+      assertEquals(nF, 1)
+    end for
+
   // async
 
   test("async completes with a typed success or failure via the callback"):

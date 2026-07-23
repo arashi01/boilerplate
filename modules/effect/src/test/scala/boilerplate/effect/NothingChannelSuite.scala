@@ -51,9 +51,13 @@ class NothingChannelSuite extends CatsEffectSuite:
     val _ = eff.fold(_ => 0, _ => 1)
     val _ = eff.orElseSucceed(())
     // `retry`/`retryWithBackoff` are companion functions, not observers, but they take the same
-    // `TypeTest`; abstract `E` must resolve the general overload, never the `Nothing` twin.
+    // `TypeTest`; abstract `E` must resolve the general overloads, never the `Nothing` twins.
     val _ = EffIO.retry(eff, 3)
     val _ = EffIO.retryWithBackoff(eff, 3, 1.milli, None)
+    val _ = EffIO.retry(eff, RetryPolicy.constant(1.milli))
+    val _ = EffIO.retry(eff, RetryPolicy.constant(1.milli), (_: E) => true)
+    val _ = EffIO.retry(eff, RetryPolicy.constant(1.milli), (_: Int, _: E, _: FiniteDuration) => IO.unit)
+    val _ = EffIO.retry(eff, RetryPolicy.constant(1.milli), (_: E) => true, (_: Int, _: E, _: FiniteDuration) => IO.unit)
   end genericObservers
 
   // The same for the generic `Eff` surface (the handler ignores its argument - the shape that broke
@@ -69,14 +73,18 @@ class NothingChannelSuite extends CatsEffectSuite:
     val _ = eff.mapError(identity)
     val _ = Eff.retry(eff, 3)
 
-  // As above but with `GenTemporal` in scope, exercising the `retryWithBackoff` general overload
-  // under an abstract `E` (its `Nothing` twin must not shadow it).
+  // As above but with `GenTemporal` in scope, exercising the `retryWithBackoff` and policy-driven
+  // general overloads under an abstract `E` (their `Nothing` twins must not shadow them).
   @annotation.nowarn("msg=unused")
-  private def genericEffBackoff[F[_], E <: Throwable, A](eff: Eff[F, E, A])(using
-    cats.effect.kernel.GenTemporal[F, Throwable],
-    scala.reflect.TypeTest[Throwable, E]
+  private def genericEffPolicy[F[_], E <: Throwable, A](eff: Eff[F, E, A])(using
+    T: cats.effect.kernel.GenTemporal[F, Throwable],
+    tt: scala.reflect.TypeTest[Throwable, E]
   ): Unit =
     val _ = Eff.retryWithBackoff(eff, 3, 1.milli, None)
+    val _ = Eff.retry(eff, RetryPolicy.constant(1.milli))
+    val _ = Eff.retry(eff, RetryPolicy.constant(1.milli), (_: E) => true)
+    val _ = Eff.retry(eff, RetryPolicy.constant(1.milli), (_: Int, _: E, _: FiniteDuration) => T.unit)
+    val _ = Eff.retry(eff, RetryPolicy.constant(1.milli), (_: E) => true, (_: Int, _: E, _: FiniteDuration) => T.unit)
 
   test("either propagates")(propagates(defect.either))
   test("option propagates")(propagates(defect.option.absolve))
@@ -112,9 +120,9 @@ class NothingChannelSuite extends CatsEffectSuite:
       assertEquals(c, 4)
 
   // A defect on an infallible channel counts as a programmer error, never a typed failure, so
-  // `retry`/`retryWithBackoff` must run the effect exactly once. Before the `Nothing` twin, the
-  // call-site solver widened `E := Throwable`, making the observer's `TypeTest` the identity and
-  // re-running the defect `maxRetries` times.
+  // `retry` (counted and policy-driven alike) must run the effect exactly once. Before the
+  // `Nothing` twin, the call-site solver widened `E := Throwable`, making the observer's
+  // `TypeTest` the identity and re-running the defect until the bound.
   private def failing(counter: Ref[IO, Int], e: Throwable): IO[Int] =
     counter.update(_ + 1).flatMap(_ => IO.raiseError[Int](e))
 
@@ -138,11 +146,31 @@ class NothingChannelSuite extends CatsEffectSuite:
       assert(outcome.isLeft, s"defect not propagated: $outcome")
       assertEquals(count, 1)
 
+  test("EffIO.retry with a policy does not re-run a defect (executes exactly once)"):
+    for
+      counter <- IO.ref(0)
+      defect = EffIO.liftF(failing(counter, new RuntimeException("DEFECT")))
+      outcome <- EffIO.retry(defect, RetryPolicy.constant(1.milli).withMaxAttempts(3)).absolve.attempt
+      count <- counter.get
+    yield
+      assert(outcome.isLeft, s"defect not propagated: $outcome")
+      assertEquals(count, 1)
+
   test("Eff.retry does not re-run a defect (executes exactly once)"):
     for
       counter <- IO.ref(0)
       defect = Eff[IO].liftF(failing(counter, new RuntimeException("DEFECT")))
       outcome <- Eff.retry(defect, 3).absolve.attempt
+      count <- counter.get
+    yield
+      assert(outcome.isLeft, s"defect not propagated: $outcome")
+      assertEquals(count, 1)
+
+  test("Eff.retry with a policy does not re-run a defect (executes exactly once)"):
+    for
+      counter <- IO.ref(0)
+      defect = Eff[IO].liftF(failing(counter, new RuntimeException("DEFECT")))
+      outcome <- Eff.retry(defect, RetryPolicy.constant(1.milli).withMaxAttempts(3)).absolve.attempt
       count <- counter.get
     yield
       assert(outcome.isLeft, s"defect not propagated: $outcome")
@@ -168,4 +196,14 @@ class NothingChannelSuite extends CatsEffectSuite:
     yield
       assertEquals(outcome, Left(Invalid("boom")))
       assertEquals(count, 4)
+
+  test("EffIO.retry with a policy still retries a typed error up to maxAttempts total executions"):
+    for
+      counter <- IO.ref(0)
+      typed: EffIO[AppError, Int] = EffIO.liftF(counter.update(_ + 1)).flatMap(_ => EffIO.fail(Invalid("boom")))
+      outcome <- EffIO.retry(typed, RetryPolicy.constant(1.milli).withMaxAttempts(3)).either
+      count <- counter.get
+    yield
+      assertEquals(outcome, Left(Invalid("boom")))
+      assertEquals(count, 3)
 end NothingChannelSuite
