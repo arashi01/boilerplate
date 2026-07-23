@@ -49,6 +49,7 @@ val `boilerplate-effect` =
     .settings(fileHeaderSettings)
     .settings(publishSettings)
     .settings(libraryDependencies += `cats-effect`.value)
+    .settings(libraryDependencies += `cats-effect-testkit`.value % Test)
     .settings(libraryDependencies += `munit-cats-effect`.value % Test)
     .jvmPlatform(Seq(scala3))
     .jsPlatform(Seq(scala3))

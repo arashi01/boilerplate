@@ -845,7 +845,9 @@ object Eff extends EffInstances5:
   inline def parSequence_[F[_], E <: Throwable, A](effs: Iterable[Eff[F, E, A]])(using Parallel[F]): Eff[F, E, Unit] =
     parTraverse_(effs)(identity)
 
-  /** Retries the effect up to `maxRetries` times on a typed failure; a defect propagates. */
+  /** Retries the effect up to `maxRetries` times on a typed failure; a defect propagates. For paced
+    * retries use the [[boilerplate.effect.RetryPolicy RetryPolicy]] overloads.
+    */
   inline def retry[F[_], E <: Throwable, A](eff: Eff[F, E, A], maxRetries: Int)(using MonadThrow[F], TypeTest[Throwable, E]): Eff[F, E, A] =
     retryImpl(eff, maxRetries)
 
@@ -898,11 +900,168 @@ object Eff extends EffInstances5:
         T.handleErrorWith(eff) {
           case tt(_) =>
             val cappedDelay = maxDelay.fold(delay)(d => delay.min(d))
-            T.productR(T.sleep(cappedDelay))(loop(remaining - 1, delay * 2))
+            // Doubling past FiniteDuration's range throws mid-retry; hold the progression steady
+            // once another doubling could overflow (sleeps stay capped by `maxDelay` regardless).
+            val next = if delay.toNanos > Long.MaxValue / 4 then delay else delay * 2
+            T.productR(T.sleep(cappedDelay))(loop(remaining - 1, next))
           case other => T.raiseError(other)
         }
     loop(maxRetries, initialDelay)
   end retryWithBackoffImpl
+
+  /** Retries the effect on typed failures, paced and bounded by `policy`; the final typed error
+    * propagates once the policy stops. A defect propagates without retrying.
+    */
+  inline def retry[F[_], E <: Throwable, A](eff: Eff[F, E, A], policy: RetryPolicy)(using
+    T: GenTemporal[F, Throwable],
+    tt: TypeTest[Throwable, E]
+  ): Eff[F, E, A] =
+    retryPolicyImpl(eff, policy, _ => true, (_, _, _) => T.unit)
+
+  /** As the policy overload, retrying only failures `retryOn` accepts; a rejected error propagates
+    * immediately.
+    */
+  inline def retry[F[_], E <: Throwable, A](eff: Eff[F, E, A], policy: RetryPolicy, retryOn: E => Boolean)(using
+    T: GenTemporal[F, Throwable],
+    tt: TypeTest[Throwable, E]
+  ): Eff[F, E, A] =
+    retryPolicyImpl(eff, policy, retryOn, (_, _, _) => T.unit)
+
+  /** As the policy overload, invoking `onRetry` with the 1-based number of the attempt that just
+    * failed, its error, and the delay about to be slept - only when a retry will actually happen,
+    * before its sleep. The side effect is a raw `F[Unit]`: anything it raises propagates on `F`'s
+    * channel.
+    */
+  inline def retry[F[_], E <: Throwable, A](
+    eff: Eff[F, E, A],
+    policy: RetryPolicy,
+    onRetry: (Int, E, FiniteDuration) => F[Unit]
+  )(using GenTemporal[F, Throwable], TypeTest[Throwable, E]): Eff[F, E, A] =
+    retryPolicyImpl(eff, policy, _ => true, onRetry)
+
+  /** As the policy overload, with both the `retryOn` filter and the `onRetry` observer. */
+  inline def retry[F[_], E <: Throwable, A](
+    eff: Eff[F, E, A],
+    policy: RetryPolicy,
+    retryOn: E => Boolean,
+    onRetry: (Int, E, FiniteDuration) => F[Unit]
+  )(using GenTemporal[F, Throwable], TypeTest[Throwable, E]): Eff[F, E, A] =
+    retryPolicyImpl(eff, policy, retryOn, onRetry)
+
+  /** Retries an infallible effect: a defect is never a typed error, so it propagates on the first
+    * execution - zero retries, no delay.
+    */
+  inline def retry[F[_], A](eff: Eff[F, Nothing, A], @unused policy: RetryPolicy): Eff[F, Nothing, A] = eff
+
+  /** Retries an infallible effect: a defect is never a typed error, so it propagates on the first
+    * execution - zero retries, no delay.
+    */
+  inline def retry[F[_], A](
+    eff: Eff[F, Nothing, A],
+    @unused policy: RetryPolicy,
+    @unused retryOn: Nothing => Boolean
+  ): Eff[F, Nothing, A] = eff
+
+  /** Retries an infallible effect: a defect is never a typed error, so it propagates on the first
+    * execution - zero retries, no delay, no observation.
+    */
+  inline def retry[F[_], A](
+    eff: Eff[F, Nothing, A],
+    @unused policy: RetryPolicy,
+    @unused onRetry: (Int, Nothing, FiniteDuration) => F[Unit]
+  ): Eff[F, Nothing, A] = eff
+
+  /** Retries an infallible effect: a defect is never a typed error, so it propagates on the first
+    * execution - zero retries, no delay, no observation.
+    */
+  inline def retry[F[_], A](
+    eff: Eff[F, Nothing, A],
+    @unused policy: RetryPolicy,
+    @unused retryOn: Nothing => Boolean,
+    @unused onRetry: (Int, Nothing, FiniteDuration) => F[Unit]
+  ): Eff[F, Nothing, A] = eff
+
+  // SplitMix64 mixer: jitter needs statistical spread only - platform-uniform, allocation-free,
+  // and free of any randomness capability constraint at the call site.
+  private def mixSeed(z0: Long): Long =
+    val z1 = z0 + 0x9e3779b97f4a7c15L
+    val z2 = (z1 ^ (z1 >>> 30)) * 0xbf58476d1ce4e5b9L
+    val z3 = (z2 ^ (z2 >>> 27)) * 0x94d049bb133111ebL
+    z3 ^ (z3 >>> 31)
+
+  private def unitDouble(bits: Long): Double = (bits >>> 11).toDouble * 1.1102230246251565e-16
+
+  // Mixed into each run's seed: coarse clocks (notably on JS) would otherwise hand concurrent
+  // retry loops identical seeds, correlating their jitter and defeating its purpose.
+  private val retrySeedCounter = new java.util.concurrent.atomic.AtomicLong(0L)
+
+  // Half of Long.MaxValue nanoseconds: ample headroom below FiniteDuration's bounds for a single
+  // clamped delay (the cumulative accumulator saturates separately - see `loop`).
+  private val retryMaxNanos: Double = Long.MaxValue.toDouble * 0.5
+
+  private def fromNanosClamped(nanos: Double): FiniteDuration =
+    import scala.concurrent.duration.*
+    if nanos <= 0d then Duration.Zero
+    else if nanos >= retryMaxNanos then retryMaxNanos.toLong.nanos
+    else nanos.toLong.nanos
+
+  private def retryPolicyImpl[F[_], E <: Throwable, A](
+    eff: Eff[F, E, A],
+    policy: RetryPolicy,
+    retryOn: E => Boolean,
+    onRetry: (Int, E, FiniteDuration) => F[Unit]
+  )(using T: GenTemporal[F, Throwable], tt: TypeTest[Throwable, E]): Eff[F, E, A] =
+    import scala.concurrent.duration.Duration
+    import RetryPolicy.Backoff
+
+    def delayFor(attempt: Int, prev: FiniteDuration, rnd: Long): (FiniteDuration, Long) =
+      policy.backoff match
+        case Backoff.Constant(d)                  => (d, rnd)
+        case Backoff.Exponential(initial, factor) =>
+          (fromNanosClamped(initial.toNanos.toDouble * math.pow(factor, (attempt - 1).toDouble)), rnd)
+        case Backoff.FullJitter(initial, factor) =>
+          val ceiling = initial.toNanos.toDouble * math.pow(factor, (attempt - 1).toDouble)
+          val next = mixSeed(rnd)
+          (fromNanosClamped(unitDouble(next) * ceiling), next)
+        case Backoff.Decorrelated(base, factor) =>
+          val lo = base.toNanos.toDouble
+          val hiRaw = prev.toNanos.toDouble * factor
+          val (min, max) = if hiRaw >= lo then (lo, hiRaw) else (hiRaw, lo)
+          val next = mixSeed(rnd)
+          (fromNanosClamped(min + unitDouble(next) * (max - min)), next)
+
+    // The accumulator is a saturating Long of nanoseconds, never FiniteDuration arithmetic:
+    // `FiniteDuration.+` throws past its range, which would convert a typed-error retry loop into
+    // a defect once enough delay accumulates (both operands are non-negative, so a negative sum
+    // is the overflow signal).
+    def loop(attempt: Int, prev: FiniteDuration, cumulativeNanos: Long, rnd: Long): F[A] =
+      T.handleErrorWith(eff) {
+        case tt(e) =>
+          if !retryOn(e) then T.raiseError(e)
+          else if policy.maxAttempts.exists(attempt >= _) then T.raiseError(e)
+          else
+            val (raw, rnd2) = delayFor(attempt, prev, rnd)
+            val capped = policy.maxDelay.fold(raw)(cap => if raw > cap then cap else raw)
+            val sum = cumulativeNanos + capped.toNanos
+            val nextCumulativeNanos = if sum < 0 then Long.MaxValue else sum
+            if policy.maxCumulativeDelay.exists(budget => nextCumulativeNanos > budget.toNanos) then T.raiseError(e)
+            else
+              val slept =
+                if capped > Duration.Zero then T.productR(T.sleep(capped))(loop(attempt + 1, capped, nextCumulativeNanos, rnd2))
+                else loop(attempt + 1, capped, nextCumulativeNanos, rnd2)
+              T.productR(onRetry(attempt, e, capped))(slept)
+        case other => T.raiseError(other)
+      }
+
+    // Decorrelated jitter's recurrence starts from the base; every other strategy ignores `prev`.
+    val prev0 = policy.backoff match
+      case Backoff.Decorrelated(base, _) => base
+      case _                             => Duration.Zero
+
+    // Seeded inside the effect so each RUN reseeds - re-running a shared program value must not
+    // replay one jitter sequence.
+    T.flatMap(T.monotonic)(now => loop(1, prev0, 0L, mixSeed(now.toNanos ^ retrySeedCounter.incrementAndGet())))
+  end retryPolicyImpl
 
   /** The identity natural transformation lifting `F[A]` into `Eff[F, E, A]` (treating values as
     * successes). The canonical way to `mapK` `Resource[F, A]` and other primitives into `Eff`.

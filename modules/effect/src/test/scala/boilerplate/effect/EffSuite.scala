@@ -33,6 +33,7 @@ import cats.effect.Ref
 import cats.effect.Resource
 import cats.effect.kernel.Outcome
 import cats.effect.std.AtomicCell
+import cats.effect.testkit.TestControl
 import cats.syntax.parallel.*
 import munit.CatsEffectSuite
 
@@ -743,6 +744,164 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(result, Left(Closed))
       assertEquals(attempts, 4) // 1 initial + 3 retries
       assert(clue(end - start) < 60.millis)
+
+  test("retryWithBackoff survives a doubling progression that would overflow FiniteDuration"):
+    // 1s doubled 40 times exceeds FiniteDuration's range; the progression must hold steady
+    // instead of throwing mid-retry. Virtual time keeps the capped 1ms sleeps instant.
+    TestControl.executeEmbed {
+      for
+        counter <- IO.ref(0)
+        eff = Eff.liftF[IO, IoError, Unit](counter.update(_ + 1)).flatMap(_ => Eff.fail[IO, IoError, Int](Closed))
+        out <- runEff(Eff.retryWithBackoff(eff, 40, 1.second, Some(1.milli)))
+        n <- counter.get
+      yield
+        assertEquals(out, Left(Closed))
+        assertEquals(n, 41)
+    }
+
+  private def failingEff(counter: Ref[IO, Int], e: IoError): Eff[IO, IoError, Int] =
+    Eff.liftF[IO, IoError, Unit](counter.update(_ + 1)).flatMap(_ => Eff.fail(e))
+
+  test("policy retry paces the exponential series exactly and stops at maxAttempts"):
+    TestControl.executeEmbed {
+      for
+        counter <- IO.ref(0)
+        policy = RetryPolicy.exponential(100.millis).withMaxAttempts(4)
+        start <- IO.monotonic
+        out <- runEff(Eff.retry(failingEff(counter, Closed), policy))
+        end <- IO.monotonic
+        n <- counter.get
+      yield
+        assertEquals(out, Left(Closed))
+        assertEquals(n, 4)
+        assertEquals(end - start, (100 + 200 + 400).millis)
+    }
+
+  test("policy retry caps each delay at maxDelay"):
+    TestControl.executeEmbed {
+      for
+        counter <- IO.ref(0)
+        policy = RetryPolicy.exponential(100.millis).withMaxAttempts(4).withMaxDelay(150.millis)
+        start <- IO.monotonic
+        _ <- runEff(Eff.retry(failingEff(counter, Closed), policy))
+        end <- IO.monotonic
+      yield assertEquals(end - start, (100 + 150 + 150).millis)
+    }
+
+  test("policy retry stops rather than sleep beyond maxCumulativeDelay"):
+    TestControl.executeEmbed {
+      for
+        counter <- IO.ref(0)
+        policy = RetryPolicy.constant(100.millis).withMaxCumulativeDelay(250.millis)
+        start <- IO.monotonic
+        out <- runEff(Eff.retry(failingEff(counter, Closed), policy))
+        end <- IO.monotonic
+        n <- counter.get
+      yield
+        assertEquals(out, Left(Closed))
+        assertEquals(n, 3)
+        assertEquals(end - start, 200.millis)
+    }
+
+  test("policy retry saturates the cumulative-delay accumulator instead of throwing"):
+    // A constant delay near FiniteDuration's ceiling would overflow `FiniteDuration.+` within two
+    // retries; the accumulator must saturate so the typed error still propagates as typed.
+    TestControl.executeEmbed {
+      for
+        counter <- IO.ref(0)
+        policy = RetryPolicy.constant((Long.MaxValue / 2).nanos).withMaxAttempts(3)
+        out <- runEff(Eff.retry(failingEff(counter, Closed), policy))
+        n <- counter.get
+      yield
+        assertEquals(out, Left(Closed))
+        assertEquals(n, 3)
+    }
+
+  test("policy retry recovers once the effect succeeds"):
+    TestControl.executeEmbed {
+      for
+        attempts <- IO.ref(0)
+        eff = Eff.liftF[IO, IoError, Int](attempts.updateAndGet(_ + 1)).flatMap(n => if n < 3 then Eff.fail(Failed(n)) else Eff.succeed(n))
+        out <- runEff(Eff.retry(eff, RetryPolicy.constant(10.millis).withMaxAttempts(5)))
+        n <- attempts.get
+      yield
+        assertEquals(out, Right(3))
+        assertEquals(n, 3)
+    }
+
+  test("policy retry honours the retryOn predicate per error"):
+    TestControl.executeEmbed {
+      val policy = RetryPolicy.constant(10.millis).withMaxAttempts(3)
+      val retriable = (e: IoError) =>
+        e match
+          case _: Failed => true
+          case Closed    => false
+      for
+        fCount <- IO.ref(0)
+        cCount <- IO.ref(0)
+        rF <- runEff(Eff.retry(failingEff(fCount, Failed(1)), policy, retriable))
+        rC <- runEff(Eff.retry(failingEff(cCount, Closed), policy, retriable))
+        nF <- fCount.get
+        nC <- cCount.get
+      yield
+        assertEquals(rF, Left(Failed(1)))
+        assertEquals(rC, Left(Closed))
+        assertEquals(nF, 3)
+        assertEquals(nC, 1)
+      end for
+    }
+
+  test("policy retry full jitter draws every delay within [0, series]"):
+    TestControl.executeEmbed {
+      val policy = RetryPolicy.fullJitter(100.millis).withMaxAttempts(5)
+      for
+        counter <- IO.ref(0)
+        delays <- IO.ref(List.empty[(Int, FiniteDuration)])
+        hook = (attempt: Int, _: IoError, d: FiniteDuration) => delays.update((attempt, d) :: _)
+        _ <- runEff(Eff.retry(failingEff(counter, Closed), policy, hook))
+        ds <- delays.get
+      yield
+        assertEquals(ds.size, 4)
+        ds.foreach { case (attempt, d) =>
+          assert(d >= Duration.Zero)
+          assert(d.toNanos.toDouble <= 100.millis.toNanos.toDouble * math.pow(2.0, (attempt - 1).toDouble), clue((attempt, d)))
+        }
+      end for
+    }
+
+  test("policy retry decorrelated jitter draws every delay within [base, prev * factor]"):
+    TestControl.executeEmbed {
+      val policy = RetryPolicy.decorrelated(50.millis).withMaxAttempts(6).withMaxDelay(2.seconds)
+      for
+        counter <- IO.ref(0)
+        delays <- IO.ref(List.empty[FiniteDuration])
+        hook = (_: Int, _: IoError, d: FiniteDuration) => delays.update(d :: _)
+        _ <- runEff(Eff.retry(failingEff(counter, Closed), policy, hook))
+        ds <- delays.get.map(_.reverse)
+      yield
+        assertEquals(ds.size, 5)
+        val _ = ds.foldLeft(50.millis) { (prev, d) =>
+          val lo = 50.millis.toNanos.toDouble
+          val hi = math.max(lo, prev.toNanos.toDouble * 3.0)
+          assert(d.toNanos.toDouble >= math.min(lo, hi) && d.toNanos.toDouble <= hi, clue((prev, d)))
+          d
+        }
+      end for
+    }
+
+  test("policy retry hook observes (attempt, error, delay) only when a retry will happen"):
+    TestControl.executeEmbed {
+      for
+        counter <- IO.ref(0)
+        seen <- IO.ref(List.empty[(Int, IoError, FiniteDuration)])
+        policy = RetryPolicy.constant(10.millis).withMaxAttempts(3)
+        hook = (n: Int, e: IoError, d: FiniteDuration) => seen.update((n, e, d) :: _)
+        _ <- runEff(Eff.retry(failingEff(counter, Closed), policy, hook))
+        entries <- seen.get.map(_.reverse)
+      yield
+        val expected: List[(Int, IoError, FiniteDuration)] = List((1, Closed, 10.millis), (2, Closed, 10.millis))
+        assertEquals(entries, expected)
+    }
 
   // async
 

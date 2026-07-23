@@ -227,7 +227,7 @@ class OpaqueTypeSuite extends FunSuite:
     assertEquals(metres.unwrap, 100.0)
 
   test("wrap creates opaque type without validation"):
-    // wrap bypasses validation - this is intentional for trusted contexts
+    // Bypassing validation is wrap's contract - the trusted-context escape hatch.
     val wrapped = NonEmptyString.wrap("")
     assertEquals(NonEmptyString.unwrap(wrapped), "")
 
@@ -286,13 +286,12 @@ class OpaqueTypeSuite extends FunSuite:
     assertEquals("valid-token".asUnsafe[SecretToken].unwrap, "valid-token")
 
   test("Error type member is accessible"):
-    // This is a compile-time check - if Error wasn't properly constrained,
-    // we couldn't use it with intercept or catch
+    // Compile-time only: each companion's refined `Error` member must be ascribable from its
+    // concrete exception type.
     val _: NonEmptyString.Error = new IllegalArgumentException("test")
     val _: Email.Error = new EmailError("test")
 
   test("Error type flows through from"):
-    // Type inference check: result type includes refined Error
     val result: Either[IllegalArgumentException, NonEmptyString] = NonEmptyString.from("test")
     assert(result.isRight)
 
