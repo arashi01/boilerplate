@@ -23,6 +23,8 @@ package boilerplate.effect
 import scala.util.Try
 
 import cats.ApplicativeError
+import cats.Functor
+import cats.Monad
 import cats.MonadThrow
 import cats.effect.IO
 import cats.effect.kernel.Deferred
@@ -267,3 +269,26 @@ extension (supervisor: Supervisor[IO])
   /** Returns a `Supervisor` operating in the `EffIO` context. */
   inline def effIO[E <: Throwable]: Supervisor[EffIO.Of[E]] =
     EffIO.liftSupervisor(supervisor)
+
+// The monadic core re-declared at package level, delegating to the companions. Selection of `e.m`
+// falls back to an implicit conversion only when NO extension applies, at every scope level - so
+// these lexically visible twins stay selected ahead of cats' Ops-conversion syntax (e.g. from
+// `import cats.syntax.all.*`), whose `flatMap` over `Monad[Of[F, E]]` would pin `E` to the
+// receiver's and reject error-union widening in for-comprehensions.
+extension [F[_], E <: Throwable, A](self: Eff[F, E, A])
+  /** Maps the success channel while preserving the error type. */
+  inline def map[B](f: A => B)(using F: Functor[F]): Eff[F, E, B] =
+    Eff.map(self)(f)
+
+  /** Sequences computations, widening the error channel on demand. */
+  inline def flatMap[E2 >: E <: Throwable, B](f: A => Eff[F, E2, B])(using F: Monad[F]): Eff[F, E2, B] =
+    Eff.flatMap(self)(f)
+
+extension [E <: Throwable, A](self: EffIO[E, A])
+  /** Maps the success channel while preserving the error type. */
+  inline def map[B](f: A => B): EffIO[E, B] =
+    EffIO.map(self)(f)
+
+  /** Sequences computations, widening the error channel on demand. */
+  inline def flatMap[E2 >: E <: Throwable, B](f: A => EffIO[E2, B]): EffIO[E2, B] =
+    EffIO.flatMap(self)(f)

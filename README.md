@@ -498,22 +498,18 @@ non-`Throwable` would be unsound - and `Show`/`Eq`/`PartialOrder` delegate strai
 
 </details>
 
-With the cats error syntax in scope, the standard operators resolve on the typed `MonadError[_, E]`:
-
-```scala
-import cats.syntax.applicativeError.*
-import cats.syntax.monadError.*
-```
+With cats syntax in scope (`import cats.syntax.all.*`, or the error modules specifically), the
+standard operators resolve on the typed `MonadError[_, E]`:
 
 | Source             | Methods                                                |
 |--------------------|--------------------------------------------------------|
 | `ApplicativeError` | `recover`, `recoverWith`, `onError`, `adaptError`      |
 | `MonadError`       | `ensure`, `ensureOr`, `rethrow`, `redeem`, `redeemWith`|
 
-Import these modules specifically rather than the blanket `cats.syntax.all.*`: the blanket import
-also brings cats' own `flatMap`/`map` syntax, which is tried before `Eff`'s extensions and pins a
-for-comprehension's error type to the first step's `E` - a workflow whose steps carry distinct
-error types then fails to compile instead of widening to their union.
+The blanket import coexists with union inference: `map` and `flatMap` are declared at package
+level as well as on the companions, so they stay selected ahead of cats' own `flatMap` syntax -
+which would otherwise pin a for-comprehension's error type to the first step's `E` and reject a
+workflow whose steps carry distinct error types.
 
 ### EffIO
 
