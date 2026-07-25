@@ -502,6 +502,31 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(r, Left(Invalid("boom")))
       assertEquals(c, Left(Invalid("boom")))
 
+  // The package-level map/flatMap twins are selected ahead of cats' Ops conversions, whose
+  // `flatMap` would pin `E` to the first step's type. This test IS the guard: it fails to
+  // compile if resolution regresses under the blanket cats syntax import at the top of this file.
+  test("for-comprehension union widening survives cats.syntax.all on both surfaces"):
+    def findE(id: String): Eff[IO, NotFound, Int] = if id == "1" then Eff.succeed(1) else Eff.fail(NotFound(id))
+    def checkE(n: Int): Eff[IO, Invalid, Int] = if n > 0 then Eff.succeed(n) else Eff.fail(Invalid("neg"))
+    val effW: Eff[IO, AppError, Int] = for
+      a <- findE("1")
+      b <- checkE(a)
+    yield b
+
+    def findIO(id: String): EffIO[NotFound, Int] = if id == "1" then EffIO.succeed(1) else EffIO.fail(NotFound(id))
+    def checkIO(n: Int): EffIO[Invalid, Int] = if n > 0 then EffIO.succeed(n) else EffIO.fail(Invalid("neg"))
+    val ioW: EffIO[AppError, Int] = for
+      a <- findIO("1")
+      b <- checkIO(a)
+    yield b
+
+    for
+      r <- effW.either
+      r2 <- ioW.either
+    yield
+      assertEquals(r, Right(1))
+      assertEquals(r2, Right(1))
+
   test("policy retry disambiguates the retryOn and onRetry overloads by arity, twins included"):
     val policy = RetryPolicy.constant(1.milli).withMaxAttempts(2)
     val typed: EffIO[AppError, Int] = EffIO.fail(Invalid("boom"))
