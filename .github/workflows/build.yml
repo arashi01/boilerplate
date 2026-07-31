@@ -49,7 +49,7 @@ jobs:
           check-latest: true
 
       - name: Set up sbt
-        uses: sbt/setup-sbt@v1
+        uses: sbt/setup-sbt@v1.5.5
 
       - name: Set up Coursier cache
         uses: coursier/cache-action@v8
@@ -101,7 +101,7 @@ jobs:
           check-latest: true
 
       - name: Set up sbt
-        uses: sbt/setup-sbt@v1
+        uses: sbt/setup-sbt@v1.5.5
 
       - name: Set up Coursier cache
         uses: coursier/cache-action@v8
@@ -159,7 +159,7 @@ jobs:
           check-latest: true
 
       - name: Set up sbt
-        uses: sbt/setup-sbt@v1
+        uses: sbt/setup-sbt@v1.5.5
 
       - name: Set up Coursier cache
         uses: coursier/cache-action@v8
@@ -226,7 +226,7 @@ jobs:
           check-latest: true
 
       - name: Set up sbt
-        uses: sbt/setup-sbt@v1
+        uses: sbt/setup-sbt@v1.5.5
 
       - name: Set up Coursier cache
         uses: coursier/cache-action@v8
@@ -282,7 +282,7 @@ jobs:
           check-latest: true
 
       - name: Set up sbt
-        uses: sbt/setup-sbt@v1
+        uses: sbt/setup-sbt@v1.5.5
 
       - name: Set up Coursier cache
         uses: coursier/cache-action@v8
@@ -321,7 +321,7 @@ jobs:
           check-latest: true
 
       - name: Set up sbt
-        uses: sbt/setup-sbt@v1
+        uses: sbt/setup-sbt@v1.5.5
 
       - name: Set up Coursier cache
         uses: coursier/cache-action@v8
@@ -414,7 +414,7 @@ jobs:
           check-latest: true
 
       - name: Set up sbt
-        uses: sbt/setup-sbt@v1
+        uses: sbt/setup-sbt@v1.5.5
 
       - name: Submit Dependency Graph
         uses: scalacenter/sbt-dependency-submission@v3
