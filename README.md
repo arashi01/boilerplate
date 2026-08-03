@@ -32,10 +32,15 @@ import boilerplate.*
 
 ### OpaqueType
 
-`OpaqueType[A, Repr]` is a base trait for opaque type companion objects providing validated construction and extension-based syntax.
+`OpaqueType[A, Repr]` is a base trait for opaque type companion objects providing validated
+construction under the ecosystem's construction vocabulary: `of` is validated `Either`
+construction, `ofUnsafe` its throwing twin for trusted input, and `apply` is reserved for
+construction that cannot fail at runtime - compile-time-validated literals. `wrap` - construction
+with no validation at all - is `protected`: the companion author's tool, never part of a derived
+companion's public API.
 
 **Multiversal equality is opt-in** via `OpaqueType.Eq[A]`. Security-sensitive types (tokens, keys,
-password hashes) should omit it to prevent accidental comparison.
+password hashes) should omit it, making `==` a compile error under `strictEquality`.
 
 #### Defining an opaque type
 
@@ -47,13 +52,37 @@ opaque type UserId = String
 object UserId extends OpaqueType[UserId, String], OpaqueType.Eq[UserId]:
   type Error = IllegalArgumentException
 
-  inline def wrap(s: String): UserId     = s
-  inline def unwrap(id: UserId): String  = id
-  inline def apply(inline value: String): UserId = fromUnsafe(value)
+  protected inline def wrap(s: String): UserId = s
+  inline def unwrap(id: UserId): String        = id
+
+  inline def apply(inline value: String): UserId =
+    inline if value == "" then compiletime.error("UserId cannot be empty")
+    else wrap(value)
 
   protected inline def validate(s: String): Option[Error] =
     if s.nonEmpty then None
     else Some(new IllegalArgumentException("UserId cannot be empty"))
+```
+
+`UserId("user-123")` validates the literal at compile time - an invalid constant is a compile
+error, and a non-constant argument fails to reduce, directing the caller to the validated
+constructors:
+
+```scala
+val direct: UserId                                 = UserId("user-123")
+val safe: Either[IllegalArgumentException, UserId] = UserId.of(input)
+val trusted: UserId                                = UserId.ofUnsafe(input) // throws Error on invalid
+val underlying: String                             = UserId.unwrap(direct)
+```
+
+A module whose own code needs trusted zero-validation construction (an already-validated decode,
+an operating-system-supplied value) exposes that deliberately and narrowly over the protected
+`wrap`:
+
+```scala
+object SignalNumber extends OpaqueType[SignalNumber, Int], OpaqueType.Eq[SignalNumber]:
+  private[mylib] inline def trusted(value: Int): SignalNumber = wrap(value)
+  // ...
 ```
 
 For types where equality comparison should be forbidden, omit the `Eq` mixin:
@@ -67,69 +96,19 @@ object SecretToken extends OpaqueType[SecretToken, String]:
   // SecretToken values cannot be compared with == (compile error under strictEquality)
 ```
 
-#### Construction
-
-```scala
-// Via companion
-val direct: UserId                                 = UserId("user-123")
-val safe: Either[IllegalArgumentException, UserId] = UserId.from("user-123")
-
-// Via extension syntax
-val ext1: Either[IllegalArgumentException, UserId]  = "user-123".as[UserId]
-val ext2: UserId                                    = "user-123".asUnsafe[UserId]
-val ext3: UserId                                    = "user-123".const[UserId]
-```
-
-#### Extraction
-
-```scala
-val underlying: String = direct.unwrap
-```
-
-The `unwrap` extension resolves the concrete underlying type across module boundaries.
-
-#### Compile-time validation
-
-Companions may override `apply` with `inline if` + `compiletime.error` to reject invalid literals at compile time:
-
-```scala
-opaque type PositiveInt = Int
-
-object PositiveInt extends OpaqueType[PositiveInt, Int], OpaqueType.Eq[PositiveInt]:
-  type Error = IllegalArgumentException
-
-  inline def wrap(n: Int): PositiveInt    = n
-  inline def unwrap(p: PositiveInt): Int  = p
-
-  inline def apply(inline value: Int): PositiveInt =
-    inline if value <= 0 then compiletime.error("value must be positive")
-    else wrap(value)
-
-  protected inline def validate(n: Int): Option[Error] =
-    if n > 0 then None
-    else Some(new IllegalArgumentException(s"$n must be positive"))
-
-PositiveInt(42)   // compiles
-PositiveInt(-1)   // compile-time error: "value must be positive"
-```
-
 #### API summary
 
-| Member / Extension  | Description                                              |
-|---------------------|----------------------------------------------------------|
-| `Repr` (type param) | Underlying representation type                           |
-| `type Error`        | Validation error type (must extend `Throwable`)          |
-| `wrap(value)`       | Wraps without validation                                 |
-| `unwrap(value)`     | Extracts the underlying value                            |
-| `apply(value)`      | Direct construction; override for compile-time checks    |
-| `validate(value)`   | Returns `None` on success, `Some(error)` on failure      |
-| `from(value)`       | Safe construction returning `Either[Error, A]`           |
-| `fromUnsafe(value)` | Throws `Error` on validation failure                     |
-| `value.as[A]`       | Extension for `from`                                     |
-| `value.asUnsafe[A]` | Extension for `fromUnsafe`                               |
-| `value.const[A]`    | Extension for `apply`                                    |
-| `value.unwrap`      | Extension for `unwrap`                                   |
-| `OpaqueType.Eq[A]`  | Mixin providing `CanEqual[A, A]` (opt-in equality)       |
+| Member              | Description                                                        |
+|---------------------|--------------------------------------------------------------------|
+| `Repr` (type param) | Underlying representation type                                     |
+| `type Error`        | Validation error type (must extend `Throwable`)                    |
+| `wrap(value)`       | `protected` - unvalidated construction, the companion author's tool|
+| `unwrap(value)`     | Extracts the underlying value                                      |
+| `apply(value)`      | Compile-time-validated literal construction                        |
+| `validate(value)`   | Returns `None` on success, `Some(error)` on failure                |
+| `of(value)`         | Validated construction returning `Either[Error, A]`                |
+| `ofUnsafe(value)`   | Validated construction for trusted input; throws `Error`           |
+| `OpaqueType.Eq[A]`  | Mixin providing `CanEqual[A, A]` (opt-in equality)                 |
 
 ---
 
@@ -227,7 +206,28 @@ Slice.of(frame).sliceOrError(offset, offset + len) match
 ```
 
 **Scala Native.** `Slice.of(ptr, len)` views pointer-backed memory (the FFI `(Ptr, len)` world) whose
-lifetime the caller owns; `Slice.borrowing(ptr, len) { s => ... }` scopes that view to the block.
+lifetime the caller owns; `Slice.borrowing(ptr, len) { s => ... }` scopes that view to the block, and
+the scope is **enforced**, not merely documented:
+
+```scala
+import language.experimental.captureChecking
+import boilerplate.Slice
+
+Slice.borrowing(ptr, len)(s => s.toArray)             // fine - copies out
+Slice.borrowing(ptr, len)(s => s.drop(1).take(2).toArray) // fine - re-slice, then copy out
+Slice.borrowing(ptr, len)(s => s)                     // rejected: the view outlives its scope
+Slice.borrowing(ptr, len)(s => IO.pure(s))            // rejected: so does a suspended effect holding it
+Slice.borrowing(ptr, len)(s => s.take(2))             // rejected: so does a view re-sliced from it
+Slice.borrowing(ptr, len)(s => s.sliceOrError(0, 2))  // rejected: however the view is wrapped
+```
+
+The continuation takes a `Slice^`, so a caller with `import language.experimental.captureChecking`
+cannot let that view outlive the region it borrows - through an effect built inside the block, or
+through a sub-view, `take`/`drop`/`slice` returning `Slice^{s}` and so carrying the borrow's lifetime
+with them. Only a copy (`toArray`) or a pure result leaves the block. Opting in is per file and costs
+nothing elsewhere: a caller without the import compiles exactly as before, and an **owned** slice is
+untouched by any of this - `Slice.of(array).drop(1).take(2)` re-slices freely, its result staying
+pure.
 
 | Member                         | Description                                            |
 |--------------------------------|--------------------------------------------------------|
@@ -235,7 +235,7 @@ lifetime the caller owns; `Slice.borrowing(ptr, len) { s => ... }` scopes that v
 | `Slice.of(ptr, len)`           | Pointer-backed view (Scala Native only)                |
 | `Slice.borrowing(ptr, len)(f)` | Scoped pointer-backed view (Scala Native only)         |
 | `Slice.empty`                  | The zero-length view                                   |
-| `length` / `isEmpty`           | Size of the view                                       |
+| `length` / `isEmpty` / `nonEmpty` | Size of the view                                    |
 | `take(n)` / `drop(n)` / `slice(from, until)` | Bounds-checked sub-views, no copy (raise) |
 | `apply(i)` / `s(i) = b`        | Read / write the byte at `i` (raises out of range)     |
 | `readBE[A](o)` / `readLE[A](o)`| Decode `A` = `Short`/`Int`/`Long`, allocation-free (raise) |
@@ -248,6 +248,71 @@ lifetime the caller owns; `Slice.borrowing(ptr, len) { s => ... }` scopes that v
 
 The `unsafe*` accessors (array + offset, or an interior pointer on Native) are a seam for
 library-author backends; ordinary users never need them.
+
+---
+
+### Secret
+
+Where `Slice` borrows bytes someone else keeps alive, `Secret` **owns** them and is responsible for
+erasing them. There is no accessor and no copy-out: the bytes are reachable only inside a scoped
+view, and that view cannot escape.
+
+```scala
+import boilerplate.Secret
+
+val key = Secret.fill(32)(view => fillWithRandomBytes(view))
+val tag = key.use(view => mac(view, message))   // the view is valid for this call alone
+key.destroy()                                    // zeroed in place
+```
+
+`fill` allocates the buffer inside the carrier, so no unwiped copy is left outside it; if `init`
+throws, the buffer is erased before the throwable propagates. `use` raises rather than let a read
+observe a destroyed secret, and `destroy` raises rather than erase bytes a read is holding - one
+atomic cell tracks idle, in-use, and destroyed. Both are programmer errors, so both raise rather than
+returning a typed error.
+
+`toString` reports the length alone (`Secret(32 bytes)`), `hashCode` is constant so a secret cannot
+seed a hash oracle, and equality compares contents in constant time.
+
+Under `import language.experimental.captureChecking` the scope is enforced: `key.use(view => view)`
+does not compile, nor does `key.useEff(view => IO.pure(view))` - the escape through a suspended
+effect - nor `key.use(view => view.take(2))`, a sub-view carrying the same lifetime.
+`boilerplate-effect` adds `useEff`, which holds the read guard across the effect the continuation
+returns rather than only across the call, and `Secret.scoped`, an `EffResource` that destroys on
+release.
+
+| Member                | Description                                                        |
+|-----------------------|--------------------------------------------------------------------|
+| `Secret.fill(n)(init)`| Allocate `n` zeroed bytes and fill them through a scoped view       |
+| `use(f)`              | Read through a view valid for that call alone (raises if destroyed) |
+| `destroy()`           | Erase in place; idempotent, raises while a read is in flight        |
+| `useEff(f)`           | `use` holding the guard across the returned effect (effect module)  |
+| `Secret.scoped(n)(init)` | `EffResource[Nothing, Secret]` destroying on release (effect module) |
+
+---
+
+### TypedError
+
+The base for a module's typed-error root, capturing the four lines every one of them repeats: a
+stack-trace-free `Exception` with a message and an optional cause, and derived multiversal equality.
+
+```scala
+import boilerplate.TypedError
+
+sealed abstract class StoreError(message: String, cause: Option[Throwable]) extends TypedError(message, cause)
+object StoreError:
+  sealed abstract class Missing private () extends StoreError("missing", None)
+  case object Missing extends Missing
+
+  final class Unexpected private (cause: Throwable) extends StoreError("unexpected store failure", Some(cause))
+  object Unexpected:
+    def apply(cause: Throwable): StoreError = TypedError.idempotent[StoreError, Unexpected](cause)(new Unexpected(_))
+```
+
+The base is deliberately not sealed - the module declares its own `sealed` root over it, and that
+root, not this class, is what exhaustivity checks against. `TypedError.idempotent` returns a cause
+that already belongs to the root unchanged, so wrapping an error that has already crossed the
+boundary does not nest it.
 
 ---
 
@@ -292,11 +357,11 @@ Platform.arch match
 
 ## Effect
 
-Zero-cost typed-error effects atop cats-effect. `Eff` and `EffIO` track a compile-time error type
-`E <: Throwable` as a **phantom** over the base effect's own error channel: the representation is
-exactly `F[A]` (or `IO[A]`), a typed failure rides `F`'s native `Throwable` channel, and no `Either`
-is ever allocated. The result is exhaustive, statically-tracked error handling with full cats-effect
-integration and no runtime wrapper.
+Typed-error effects atop cats-effect, at no runtime cost. `Eff[+E, +A]` tracks a compile-time error
+type `E <: Throwable` as a **phantom** over `cats.effect.IO`'s own error channel: the representation
+is exactly `IO[A]`, a typed failure rides `IO`'s native `Throwable` channel, and no `Either` is ever
+allocated. The result is statically-tracked error handling with full cats-effect integration and no
+wrapper.
 
 ```scala
 import boilerplate.effect.*
@@ -305,19 +370,19 @@ import cats.effect.IO
 
 ### Core types
 
-| Type           | Representation         | Purpose                                   |
-|----------------|------------------------|-------------------------------------------|
-| `Eff[F, E, A]` | `F[A]`                 | Typed-error effect (phantom `E`)          |
-| `EffIO[E, A]`  | `IO[A]`                | Covariant, `IO`-specialised typed effect  |
-| `UEff[F, A]`   | `Eff[F, Nothing, A]`   | Infallible effect                         |
-| `TEff[F, A]`   | `Eff[F, Throwable, A]` | Throwable-errored effect                  |
-| `UEffIO[A]`    | `EffIO[Nothing, A]`    | Infallible `IO`-specialised effect        |
-| `TEffIO[A]`    | `EffIO[Throwable, A]`  | Throwable-errored `IO`-specialised effect |
+| Type                   | Representation      | Purpose                                        |
+|------------------------|---------------------|------------------------------------------------|
+| `Eff[E, A]`            | `IO[A]`             | Typed-error effect (phantom `E`)               |
+| `UEff[A]`              | `Eff[Nothing, A]`   | Infallible effect                              |
+| `TEff[A]`              | `Eff[Throwable, A]` | Throwable-errored effect                       |
+| `EffResource[E, A]`    | `Resource[IO, A]`   | Lifecycle-scoped resource with a typed acquire |
+| `Provider[R, E, A]`    | -                   | A recipe for one service, wired at compile time |
+| `RetryPolicy`          | -                   | Declarative retry pacing and bounds            |
 
-The typed error `E` is bounded by `Throwable`: it rides the base effect's native error channel, so
-every domain error is a `Throwable` subtype - typically a sealed `Exception` root with `NoStackTrace`.
-`E` is a phantom, absent from the representation, so all opaque types erase to their base effect at
-runtime: no wrapper allocation ever occurs and the happy path IS the base effect.
+`Eff` is covariant in both parameters, so a value of `Eff[Narrow, A]` is usable wherever
+`Eff[Wide, A]` is expected with no call-site method, and a `flatMap` over steps with distinct error
+types infers their union. That widening is silent - the channel can grow wider than intended with no
+compile error, so ascribe the result type, or use `mapError`/`catchOnly`, to contain it.
 
 ### Quick start
 
@@ -331,21 +396,21 @@ object AppError:
 
 case class User(id: String, name: String)
 
-def findUser(id: String): Eff[IO, AppError.NotFound, User] =
+def findUser(id: String): Eff[AppError.NotFound, User] =
   if id == "1" then Eff.succeed(User("1", "Alice"))
   else Eff.fail(AppError.NotFound(id))
 
-def validateUser(user: User): Eff[IO, AppError.Invalid, User] =
+def validateUser(user: User): Eff[AppError.Invalid, User] =
   if user.name.nonEmpty then Eff.succeed(user)
   else Eff.fail(AppError.Invalid("name required"))
 
-// for-comprehension: the error channel widens to the union automatically - no widenError
-val workflow: Eff[IO, AppError, User] = for
+// for-comprehension: the error channel widens to the union automatically
+val workflow: Eff[AppError, User] = for
   user      <- findUser("1")
   validated <- validateUser(user)
 yield validated
 
-// Exhaustive error handling - fold both channels back to the base effect
+// Exhaustive error handling - fold both channels back to IO
 val message: IO[String] = workflow.fold(
   {
     case AppError.NotFound(id) => s"user $id not found"
@@ -358,69 +423,99 @@ val message: IO[String] = workflow.fold(
 val io: IO[Either[AppError, User]] = workflow.either
 ```
 
-### Eff constructors
+### Lifting: a raw `IO` already is an `Eff`
 
-Partially-applied constructors minimise type annotations:
+`IO[A]` is declared as a **supertype** of `Eff[E, A]`, so any `IO` value flows into an `Eff`-typed
+position by subtyping alone - no conversion, no import, no compiler flag, nothing to call:
 
 ```scala
-Eff[IO].succeed(42)                    // UEff[IO, Int]
-Eff[IO].fail(AppError.NotFound("u1"))  // Eff[IO, AppError.NotFound, Nothing]
-Eff[IO].from(Right(1))                 // Eff[IO, Nothing, Int]
-Eff[IO].liftF(IO.pure(42))             // UEff[IO, Int]
-Eff[IO].unit                           // UEff[IO, Unit]
-Eff[IO].suspend(sideEffect())          // UEff[IO, A]
+val infallible: UEff[Int]         = IO.pure(1)
+val typed: Eff[AppError, Int]     = IO.pure(1)
+val inChain: Eff[AppError, Int]   = findUser("1").flatMap(_ => IO.pure(1))
 ```
+
+Every cats-effect and fs2 primitive therefore composes into an `Eff` workflow directly, and so does
+every operation on one - a `Ref[IO, A]`'s `get` returns `IO[A]`, which is already an `Eff`.
+
+The relation is strictly one-directional. Reaching `IO` from a typed channel is the explicit
+`absolve`, and neither of these compiles:
+
+```scala
+val leak: IO[Int] = typed        // rejected - a typed channel does not silently become IO
+val narrow: UEff[Int] = typed    // rejected - covariance widens E, it does not narrow it
+```
+
+**Lifting commits nothing about the error channel.** An `IO` placed where `Eff[E, A]` is expected
+simply *is* that value; the channel a context claims is the channel its observers filter by. Where a
+bare `IO` is passed to an entry point generic in `E`, `E` pins to `Nothing` and the infallible
+overload is selected - so `Eff.retry(io, 3)` runs `io` exactly once, a defect being no typed error.
+
+One consequence to know: in a for-comprehension each generator's `flatMap` comes from its own
+receiver, and `IO` has a member `flatMap` of its own, which wins over the extension. So an `IO`
+generator may not be **followed** by an `Eff` generator - and one `IO` generator downgrades every
+generator after it, not merely the next:
+
+| shape          |          |
+|----------------|----------|
+| `eff; io`      | compiles |
+| `io; io`       | compiles |
+| `eff; eff`     | compiles |
+| `io; eff`      | fails    |
+| `eff; io; eff` | fails    |
+
+An `IO` in final position is fine, and a comprehension that is `IO` throughout is an `IO`, which then
+lifts as a value into an `Eff`-typed position. Where an `Eff` step must follow an `IO` one, mark the
+`IO` generator with `.eff` - an identity view committing `E = Nothing` - rather than restructuring;
+an extension `flatMap` on `IO` cannot fix this, because the member is selected first and then fails:
+
+```scala
+val ordered: Eff[AppError, User] = for
+  _    <- IO.println("starting").eff
+  user <- findUser("1")
+yield user
+```
+
+`Resource` has the same seam and the same remedy: `Resource.pure[IO, Int](1).eff` is an
+`EffResource[Nothing, Int]` for a leading generator in an `EffResource` comprehension.
+
+### Eff constructors
 
 | Category     | Methods                                                                         |
 |--------------|---------------------------------------------------------------------------------|
 | Pure         | `from(Either)`, `from(Option, ifNone)`, `from(Try, ifFailure)`, `from(EitherT)` |
-| Effectful    | `lift(F[Either])`, `lift(F[Option], ifNone)`, `liftF(F[A])`                     |
+| Effectful    | `lift(IO[Either])`, `lift(IO[Option], ifNone)`                                  |
 | Suspended    | `delay(=> Either)`, `defer(=> Eff)`, `suspend(=> A)`, `blocking`, `suspendBlocking` |
 | Values       | `succeed`, `fail`, `unit`, `attempt`, `attempt(pf)`                             |
 | Temporal     | `sleep(duration)`, `monotonic`, `realTime`                                      |
-| Primitives   | `ref(initial)`, `deferred`                                                      |
 | Cancellation | `canceled`, `cede`, `never`                                                     |
-| Async        | `fromFuture(F[Future], ifFailure)`, `fromFuture(pf)`, `async`, `asyncAttempt(ifDefect)` |
+| Async        | `fromFuture(IO[Future], ifFailure)`, `fromFuture(pf)`, `async`, `asyncAttempt(ifDefect)` |
 | Conditional  | `when`, `unless`, `raiseWhen`, `raiseUnless`, `cond(pred, ifTrue, ifFalse)`     |
 | Collection   | `traverse`, `sequence`, `parTraverse`, `parSequence` (each with a `_` discard variant) |
 | Retry        | `retry(eff, maxRetries)`, `retryWithBackoff(eff, maxRetries, delay, maxDelay)`, `retry(eff, policy[, retryOn][, onRetry])` |
 
-**Policy-driven retries.** `RetryPolicy` is a pure value describing only pacing and bounds, so one
-policy is shareable across differently-typed effects: a backoff strategy (`constant`,
-`exponential`, `fullJitter`, `decorrelated`) refined by `withMaxAttempts` (total executions,
-unbounded when absent), `withMaxDelay` (per-attempt cap), and `withMaxCumulativeDelay` (total
-sleep budget - retrying stops rather than sleep beyond it). The policy `retry` overloads interpret
-it: `retryOn: E => Boolean` selects which typed errors are worth retrying, and
-`onRetry: (attempt, error, nextDelay) => F[Unit]` observes each retry before its sleep. A defect
-never retries, on any overload.
-
-```scala
-import scala.concurrent.duration.*
-
-val policy = RetryPolicy.fullJitter(100.millis).withMaxAttempts(5).withMaxDelay(2.seconds)
-val retried: Eff[IO, AppError, User] =
-  Eff.retry(workflow, policy, { case _: AppError.NotFound => true; case _: AppError.Invalid => false })
-```
+Entering the effect needs nothing beyond these and a raw `IO`: the supertype bound carries the
+lifting, so `Eff.succeed` and `Eff.fail` are the only constructors most code reaches for.
 
 ### Eff combinators
 
-| Category     | Methods                                                                      |
-|--------------|------------------------------------------------------------------------------|
-| Mapping      | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `transform`                   |
-| Composition  | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`       |
-| Recovery     | `valueOr`, `catchAll`, `catchSome`, `catchOnly`                             |
-| Error mapping| `mapError`, `mapErrorPartial`                                                |
-| Alternative  | `alt`, `orElseSucceed`, `orElseFail`                                         |
-| Folding      | `fold`, `foldF`, `redeemAll`                                                 |
-| Observation  | `tap`, `tapError`, `flatTapError`, `attemptTap`                              |
-| Variance     | `assume`, `assumeError`                                                       |
-| Extraction   | `option`, `collectSome`, `collectRight`                                      |
-| Conversion   | `either`, `absolve`, `eitherT`                                               |
-| Resource     | `bracket`, `bracketCase`, `timeout`                                          |
-| Concurrency  | `start`, `race`, `both`, `background`                                        |
-| Temporal     | `delayBy(duration)`, `andWait(duration)`, `timed`, `timeoutTo(dur, fallback)` |
-| Cancellation | `onCancel(fin)`, `guarantee(fin)`, `guaranteeCase(fin)`                      |
-| Parallel     | `&>`, `<&`                                                                   |
+| Category      | Methods                                                                      |
+|---------------|------------------------------------------------------------------------------|
+| Mapping       | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `transform`                   |
+| Composition   | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`       |
+| Recovery      | `valueOr`, `catchAll`, `catchSome`, `catchOnly`                              |
+| Error mapping | `mapError`, `mapErrorPartial`                                                |
+| Alternative   | `alt`, `orElseSucceed`, `orElseFail`                                         |
+| Folding       | `fold`, `foldF`, `redeemAll`                                                 |
+| Observation   | `tap`, `tapError`, `flatTapError`, `attemptTap`                              |
+| Variance      | `assume`, `assumeError`                                                      |
+| Extraction    | `option`, `collectSome`, `collectRight`                                      |
+| Conversion    | `either`, `absolve`, `eitherT`                                               |
+| Resource      | `bracket`, `bracketCase`, `timeout`                                          |
+| Concurrency   | `start`, `race`, `both`, `background`                                        |
+| Temporal      | `delayBy(duration)`, `andWait(duration)`, `timed`, `timeoutTo(dur, fallback)` |
+| Executor      | `evalOn(ec)` - channel-neutral shift, `E` preserved                          |
+| Cancellation  | `onCancel(fin)`, `guarantee(fin)`, `guaranteeCase(fin)`                      |
+| Parallel      | `&>`, `<&`                                                                   |
 
 **Observing the typed channel.** The combinators that observe or transform the error - `either`,
 `catchAll`, `mapError`, `fold`, `catchOnly`, `option`, `redeemAll`, `orElseFail`, `valueOr`, `alt`,
@@ -428,18 +523,18 @@ val retried: Eff[IO, AppError, User] =
 `TypeTest[Throwable, E]`, re-raising any non-`E` defect unchanged. For a concrete `E` (a sealed
 `Throwable` root, or a union of them) the compiler **synthesises** that `TypeTest`, so nothing is
 written at the call site; a library `given TypeTest[Throwable, Nothing]` covers the infallible
-(`E = Nothing`) case. For the generic `Eff` these combinators additionally need `MonadThrow[F]` -
-introducing a failure requires `F`'s `Throwable` channel - whereas the success-only ops
-(`succeed`/`map`/`flatMap`/`liftF`) compose over any `Monad`/`Functor` `F`:
+(`E = Nothing`) case, where every observer is degenerate and any handler is dead code.
+
+**Narrowing partial recovery (`catchOnly`).** Covariance lets you handle one arm of a union error
+while keeping the rest typed. The residual is inferred - no annotation needed:
 
 ```scala
-// success-only composition over a non-IO Monad - no MonadThrow, no TypeTest
-val overOption: Eff[Option, Nothing, Int] = for
-  a <- Eff.succeed[Option, Nothing, Int](20)
-  b <- Eff.liftF[Option, Nothing, Int](Some(22))
-yield a + b
-// overOption.absolve == Some(42)
+val consumed: Eff[IoError | AppError, Unit] = ...
+val handled: Eff[IoError, Unit] = consumed.catchOnly((app: AppError) => log(app))
 ```
+
+The handler may itself fail into the residual channel. The handled arm must be runtime-testable; an
+erasure-ambiguous choice is rejected at the call site.
 
 **Writing your own error-observing API generic in `E`.** Threading `using TypeTest[Throwable, E]`
 sets a trap: where `E` would infer as `Nothing`, the solver silently widens it to `Throwable` (whose
@@ -449,52 +544,151 @@ prevent it. Pin `E` from a covariant parameter (order the parameter lists so an 
 argument fixes `E` first) and add a `Nothing`-pinned overload for the infallible case - the shape the
 built-in observers and `retry` use.
 
+### EffResource
+
+`EffResource[E, A]` is the resource vocabulary in the same shape: the representation is exactly
+`Resource[IO, A]`, and `E` is the same phantom, carrying the error type an **acquisition** may fail
+with. Putting the error in a covariant parameter of the resource type - rather than inside an
+invariant `F` - is what lets an acquisition channel widen, so composing resources of distinct error
+types infers their union with no `mapK` and no cast:
+
+```scala
+val config: EffResource[ConfigError, Config] = EffResource.make(loadConfig)(_ => IO.unit)
+val db: EffResource[DbError, Db]             = EffResource.make(openDb)(closeDb)
+
+val both: EffResource[ConfigError | DbError, (Config, Db)] =
+  for
+    c <- config
+    d <- db
+  yield (c, d)
+```
+
+A raw `cats.effect.Resource[IO, A]` lifts by the same subtyping bound, and `absolve` is the way back.
+Release never carries a typed error: a finaliser runs on success, typed failure and cancellation
+alike, and has no channel of its own to fail into.
+
+| Member                               | Description                                          |
+|--------------------------------------|------------------------------------------------------|
+| `EffResource.eval(eff)`              | Hold the result of an effect, no finaliser           |
+| `EffResource.make(acquire)(release)` | Acquire and release                                  |
+| `EffResource.makeFull(acquire)(release)` | As `make`, acquisition uncancelable outside `poll` |
+| `EffResource.pure(a)` / `.unit`      | A value with no finaliser                            |
+| `use(f)` / `use_` / `surround(eff)`  | Run with the resource held, then release             |
+| `both(that)`                         | Acquire both, holding each until the scope exits     |
+| `onFinalize(fin)`                    | Register an additional finaliser                     |
+| `map` / `evalMap` / `evalTap`        | Transform or observe the acquired value              |
+| `flatMap`                            | Sequence resources; finalisers run in reverse order  |
+| `EffResource.retry(res, policy[, retryOn][, onRetry])` | Retry ACQUISITION per policy            |
+| `absolve`                            | The underlying `Resource[IO, A]`                     |
+
+**Retrying acquisition.** `EffResource.retry` applies a [`RetryPolicy`](#eff-constructors) to the
+acquisition alone - the client-pool shape: a failed attempt has already released whatever prefix it
+acquired, and the consumer of the resource is never re-run. A defect never retries, on any overload.
+
+### Provider: dependency wiring at compile time
+
+A `Provider` is an inert recipe for one service: how to build it as an `EffResource`, given the
+services it depends on. `Provider.wire[Target]` assembles a set of them into the resource that builds
+`Target`. Dependencies are matched by type, so argument order is irrelevant; each service is
+constructed **once** however many others depend on it; finalisers run in reverse construction order;
+and the result's error channel is the union of the providers' own.
+
+All of that is decided at compile time. The expansion is the nested `EffResource` composition a
+careful author would have written by hand - there is no registry, no environment threaded through the
+effect type, and no lookup at run time.
+
+```scala
+val configProvider = Provider(EffResource.make(loadConfig)(_ => IO.unit))
+val dbProvider     = Provider((c: Config) => EffResource.make(openDb(c))(closeDb))
+val cacheProvider  = Provider((c: Config) => EffResource.make(openCache(c))(closeCache))
+val serverProvider = Provider((d: Db, c: Cache) => EffResource.make(start(d, c))(stop))
+
+val server: EffResource[ConfigError | DbError, Server] =
+  Provider.wire[Server](serverProvider, dbProvider, cacheProvider, configProvider)
+```
+
+`Config` is a diamond here - both `Db` and `Cache` need it - and it is built exactly once, as a
+property of the emitted code rather than a runtime cache. Users never write the dependency tuple:
+the companion's `apply` takes either a dependency-free `EffResource` or a function of up to eight
+dependencies, and `wire` reads the rest off the types.
+
+The wired set must be exact, and every way it can be wrong is a compile error, reported together:
+
+```text
+Provider.wire[Server] failed:
+  - missing: no provider for Config
+      required by: Db (argument 2), Cache (argument 3)
+      note: argument 4 provides PgConfig <: Config; ascribe it to Provider[?, ?, Config] to supply it
+  - duplicate: Db is provided by arguments 2 and 5 - remove one, or ascribe their outputs to distinct services
+  - unused: argument 6 (provides Metrics) is not reachable from Server - remove it
+```
+
+Matching is on the exact declared output type, so publishing a provider at a wider service type is a
+free covariant ascription - which is what the `note:` line points at. A dependency cycle is reported
+on its own, with the full path (`cycle: Db -> Config -> Db`).
+
+`wire` is a convenience over the primary surface, not a framework: the result is an ordinary
+`EffResource`, and a consumer who prefers `given` resolution or a hand-written for-comprehension
+simply does not use it.
+
+### Retry and RetryPolicy
+
+`RetryPolicy` is a pure value describing only pacing and bounds, so one policy is shareable across
+differently-typed effects: a backoff strategy (`constant`, `exponential`, `fullJitter`,
+`decorrelated`) refined by `withMaxAttempts` (total executions, unbounded when absent),
+`withMaxDelay` (per-attempt cap), and `withMaxCumulativeDelay` (total sleep budget - retrying stops
+rather than sleep beyond it).
+
+The `retry` overloads interpret it: `retryOn: E => Boolean` selects which typed errors are worth
+retrying, and `onRetry: (attempt, error, nextDelay) => IO[Unit]` observes each retry before its
+sleep. A defect never retries, on any overload.
+
+```scala
+import scala.concurrent.duration.*
+
+val policy = RetryPolicy.fullJitter(100.millis).withMaxAttempts(5).withMaxDelay(2.seconds)
+val retried: Eff[AppError, User] =
+  Eff.retry(workflow, policy, { case _: AppError.NotFound => true; case _: AppError.Invalid => false })
+```
+
 ### cats interop
 
-Every cats and cats-effect instance for `F` is available on `Eff.Of[F, E]` (the type lambda
-`[A] =>> Eff[F, E, A]`) at no cost - `E` is a phantom, so `F`'s own `Async[F]` **is** the
-`Async[Eff.Of[F, E]]`. The one bespoke instance is the typed `MonadError[_, E]`, whose
-`handleErrorWith` filters `F`'s `Throwable` channel through a `TypeTest[Throwable, E]`, catching only
-a genuine `E` and re-raising any other defect:
+Every cats and cats-effect instance is available on `Eff.Of[E]` (the type lambda
+`[A] =>> Eff[E, A]`) at no cost - `E` is a phantom, so `IO`'s own `Async[IO]` **is** the
+`Async[Eff.Of[E]]`. The one bespoke instance is the typed `MonadError[_, E]`, whose
+`handleErrorWith` filters `IO`'s `Throwable` channel through a `TypeTest[Throwable, E]`, catching
+only a genuine `E` and re-raising any other defect.
 
 <details>
 <summary><strong>Effect typeclasses</strong></summary>
 
-| Typeclass                     | Requirement on `F`                       | Capability                           |
-|-------------------------------|------------------------------------------|--------------------------------------|
-| `Functor`                     | `Functor[F]`                             | `map`                                |
-| `Monad`                       | `Monad[F]`                               | `flatMap`, `pure`                    |
-| `MonadError[_, E]`            | `MonadThrow[F]`, `TypeTest[Throwable, E]`| Typed error channel `E`              |
-| `MonadError[_, EE]`           | `MonadError[F, EE]`                       | Defect channel (e.g. `Throwable`)    |
-| `MonadCancel[_, EE]`          | `MonadCancel[F, EE]`                      | Cancellation, `bracket`              |
-| `GenSpawn[_, Throwable]`      | `GenSpawn[F, Throwable]`                  | `start`, `race`, fibres              |
-| `GenConcurrent[_, Throwable]` | `GenConcurrent[F, Throwable]`             | `Ref`, `Deferred`, `memoize`         |
-| `GenTemporal[_, Throwable]`   | `GenTemporal[F, Throwable]`               | `sleep`, `timeout`                   |
-| `Sync`                        | `Sync[F]`                                 | `delay`, `blocking`, `interruptible` |
-| `Async`                       | `Async[F]`                                | `async`, `evalOn`, `fromFuture`      |
-| `Parallel`                    | `Parallel[F]`                             | `.parMapN`, `.parTraverse`           |
-| `Clock`                       | `Clock[F]`                                | `monotonic`, `realTime`              |
-| `Unique`                      | `Unique[F]`                               | Unique token generation              |
-| `Defer`                       | `Defer[F]`                                | Lazy evaluation                      |
-| `SemigroupK`                  | `MonadThrow[F]`, `TypeTest[Throwable, E]`| `combineK` / `<+>` (choice via `alt`)|
-| `Semigroup`                   | `Monad[F]`, `Semigroup[A]`                | `combine` on success values          |
-| `Monoid`                      | `Monad[F]`, `Monoid[A]`                   | `combine` with `empty`               |
+| Typeclass                     | Requirement                | Capability                           |
+|-------------------------------|----------------------------|--------------------------------------|
+| `Monad`                       | -                          | `flatMap`, `pure` (also `Functor`)   |
+| `MonadError[_, E]`            | `TypeTest[Throwable, E]`   | Typed error channel `E`              |
+| `Async`                       | -                          | `async`, `evalOn`, `fromFuture`      |
+| `Sync`, `GenTemporal`, `GenConcurrent`, `GenSpawn`, `MonadCancel`, `Clock`, `Unique`, `Defer` | - | Inherited from `Async` by subtyping |
+| `Parallel`                    | -                          | `.parMapN`, `.parTraverse`           |
+| `SemigroupK`                  | `TypeTest[Throwable, E]`   | `combineK` / `<+>` (choice via `alt`)|
+| `Semigroup`                   | `Semigroup[A]`             | `combine` on success values          |
+| `Monoid`                      | `Monoid[A]`                | `combine` with `empty`               |
+
+`EffResource.Of[E]` carries `Async[Resource[IO, *]]` the same way, and with it `MonadCancel`.
 
 </details>
 
 <details>
 <summary><strong>Data typeclasses</strong></summary>
 
-| Typeclass      | Requirement on `F`   | Behaviour                                 |
-|----------------|----------------------|-------------------------------------------|
-| `Show`         | `Show[F[A]]`         | Textual representation (delegates to base)|
-| `Eq`           | `Eq[F[A]]`           | Equality comparison                       |
-| `PartialOrder` | `PartialOrder[F[A]]` | Partial ordering                          |
+| Typeclass      | Requirement           | Behaviour                                 |
+|----------------|-----------------------|-------------------------------------------|
+| `Show`         | `Show[IO[A]]`         | Textual representation (delegates to `IO`)|
+| `Eq`           | `Eq[IO[A]]`           | Equality comparison                       |
+| `PartialOrder` | `PartialOrder[IO[A]]` | Partial ordering                          |
 
-Because the error is a `Throwable` in `F`'s channel rather than a foldable value, there are no
+Because the error is a `Throwable` in `IO`'s channel rather than a foldable value, there are no
 `Bifunctor`, `Foldable`, `Traverse`, `Bifoldable`, or `Bitraverse` instances - mapping the error to a
-non-`Throwable` would be unsound - and `Show`/`Eq`/`PartialOrder` delegate straight to the base
-`F[A]`.
+non-`Throwable` would be unsound - and `Show`/`Eq`/`PartialOrder` delegate straight to `IO[A]`.
 
 </details>
 
@@ -506,214 +700,76 @@ standard operators resolve on the typed `MonadError[_, E]`:
 | `ApplicativeError` | `recover`, `recoverWith`, `onError`, `adaptError`      |
 | `MonadError`       | `ensure`, `ensureOr`, `rethrow`, `redeem`, `redeemWith`|
 
-The blanket import coexists with union inference: `map` and `flatMap` are declared at package
-level as well as on the companions, so they stay selected ahead of cats' own `flatMap` syntax -
-which would otherwise pin a for-comprehension's error type to the first step's `E` and reject a
-workflow whose steps carry distinct error types.
+The blanket import coexists with union inference: `map` and `flatMap` are declared at package level
+as well as on the companions, for `Eff` and `EffResource` alike, so they stay selected ahead of cats'
+own syntax - which would otherwise pin a for-comprehension's error type to the first step's `E` and
+reject a workflow whose steps carry distinct error types.
 
-### EffIO
+### Cats-effect primitives
 
-`EffIO[E, A]` is the `cats.effect.IO`-specialised sibling of `Eff`, a **phantom over `IO`'s own
-error channel**, represented as `IO[A]`. `IO` is covariant and `E` is a phantom absent from the
-representation, so `EffIO` is **covariant in both `E` and `A`**: a value of `EffIO[Narrow, A]` is
-usable wherever `EffIO[Wide, A]` is expected when `Narrow <: Wide`, with no call-site method.
-
-```scala
-def findUser(id: String): EffIO[AppError.NotFound, User] =
-  if id == "1" then EffIO.succeed(User("1", "Alice"))
-  else EffIO.fail(AppError.NotFound(id))
-
-def validateUser(user: User): EffIO[AppError.Invalid, User] =
-  if user.name.nonEmpty then EffIO.succeed(user)
-  else EffIO.fail(AppError.Invalid("name required"))
-
-// Distinct error types unify into their union automatically
-val workflow: EffIO[AppError, User] = for
-  user      <- findUser("1")
-  validated <- validateUser(user)
-yield validated
-```
-
-`Eff[IO, E, A]` behaves identically here: it too is covariant in `E`, so distinct error steps unify
-without a call-site cast (the quick start above needs no `widenError`). `EffIO` adds two things over
-the generic `Eff`: it fixes `F = IO`, so call sites need neither `using` clauses nor an `[IO]` type
-argument, and it is additionally covariant in `A`.
+There is nothing to lift. A `Ref[IO, A]`, `Deferred`, `Queue`, `Semaphore`, `CountDownLatch`,
+`CyclicBarrier`, `AtomicCell`, or `Supervisor` is created in `IO` and its operations return `IO`,
+which is already an `Eff` - so they compose into a typed workflow directly:
 
 ```scala
-EffIO.succeed(42)                    // UEffIO[Int]
-EffIO.fail(AppError.NotFound("u1"))  // EffIO[AppError.NotFound, Nothing]
-EffIO.liftF(IO.pure(42))             // UEffIO[Int]
-
-workflow.map(user => user.name) // EffIO[AppError, String]
-workflow.either                 // IO[Either[AppError, User]]
-```
-
-Covariance subsumes error widening, so neither `EffIO` nor `Eff` has `widen`/`widenError`; the
-trusted narrowing casts `assume`/`assumeError` remain on both. The flip side is shared too: a
-`flatMap`/for-comprehension over steps with distinct error types silently infers their union
-(`E1 | E2 | ...`), which can grow wider than intended with no compile error - ascribe the result
-type, or use `mapError`/`catchOnly`, to contain it.
-
-**Narrowing partial recovery (`catchOnly`).** Covariance lets you handle one arm of a union error
-while keeping the rest typed. Given `EffIO[IoError | AppError, A]`, recover the `AppError` arm and the
-residual `IoError` is inferred - no annotation needed:
-
-```scala
-val consumed: EffIO[IoError | AppError, Unit] = ...
-val handled: EffIO[IoError, Unit] = consumed.catchOnly((app: AppError) => log(app))
-```
-
-The handler may itself fail into the residual channel. The handled arm must be runtime-testable; an
-erasure-ambiguous choice is rejected at the call site. `catchOnly` is available on both `Eff` and
-`EffIO` - covariance in `E` drives the residual inference on each.
-
-**Conversion to and from `Eff`.** `EffIO[E, A]` and `Eff[IO, E, A]` share the runtime
-representation `IO[A]`, so conversion is a zero-cost identity:
-
-```scala
-val asEff: Eff[IO, AppError, User] = workflow.toEff
-val asEffIO: EffIO[AppError, User] = EffIO.fromEff(asEff)
-```
-
-`EffIO.Of[E]` (the type lambda `[A] =>> EffIO[E, A]`) carries the same cats and cats-effect type
-class instances as `Eff.Of[IO, E]`. Natural transformations bridge invariant positions such as
-`Resource`:
-
-```scala
-val widen: EffIO.Of[AppError.NotFound] ~> EffIO.Of[AppError] = EffIO.widenK[AppError.NotFound, AppError]
-val liftK: IO ~> EffIO.Of[Nothing]                           = EffIO.liftK
-```
-
-`.effIO` lifting extensions mirror `.eff`, specialised to `IO`:
-
-| Extension                     | Result Type                |
-|-------------------------------|----------------------------|
-| `IO[A].effIO(ifFailure)`      | `EffIO[E, A]`              |
-| `IO[A].effIO`                 | `UEffIO[A]`                |
-| `IO[Either[E, A]].effIO`      | `EffIO[E, A]`              |
-| `Either[E, A].effIO`          | `EffIO[E, A]`              |
-| `Option[A].effIO(ifNone)`     | `EffIO[E, A]`              |
-| `IO[Option[A]].effIO(ifNone)` | `EffIO[E, A]`              |
-| `Try[A].effIO(ifFailure)`     | `EffIO[E, A]`              |
-| `Resource[IO, A].effIO[E]`    | `Resource[EffIO.Of[E], A]` |
-| `Resource[IO, A].useEffIO(f)` | `EffIO[E, B]`              |
-| `Ref[IO, A].effIO[E]`         | `Ref[EffIO.Of[E], A]`      |
-
-`Deferred`, `Queue`, `Semaphore`, `CountDownLatch`, `CyclicBarrier`, `AtomicCell`, and `Supervisor`
-lift the same way.
-
-### Cats-effect primitive interop
-
-**Summon typeclasses directly (preferred):**
-
-```scala
-import cats.effect.kernel.GenConcurrent
-import scala.concurrent.duration.*
-
-val C = summon[GenConcurrent[Eff.Of[IO, AppError], Throwable]]
-
-val program: Eff[IO, AppError, Int] = for
-  ref      <- C.ref(0)
-  deferred <- C.deferred[Int]
+val program: Eff[AppError, Int] = for
+  ref      <- IO.ref(0)
+  deferred <- IO.deferred[Int]
   _        <- ref.update(_ + 1)
   _        <- deferred.complete(42)
   result   <- deferred.get
 yield result
 ```
 
-**Use Eff factory methods:**
+Summoning a typeclass on `Eff.Of[E]` works equally well where a program is written against the
+capability rather than `IO`:
 
 ```scala
-val convenient: Eff[IO, AppError, Int] = for
-  ref  <- Eff.ref[IO, AppError, Int](0)
-  _    <- Eff.sleep[IO, AppError](10.millis)
-  time <- Eff.monotonic[IO, AppError]
-yield 42
-```
+import cats.effect.kernel.GenConcurrent
 
-**Transform existing primitives:**
-
-```scala
-// Named lift methods on the Eff companion
-Eff.liftResource(resource)   // Resource[Eff.Of[IO, E], A]
-Eff.liftRef(ref)             // Ref[Eff.Of[IO, E], A]
-Eff.liftDeferred(deferred)   // Deferred[Eff.Of[IO, E], A]
-Eff.liftQueue(queue)         // Queue[Eff.Of[IO, E], A]
-Eff.liftSemaphore(semaphore) // Semaphore[Eff.Of[IO, E]]
-Eff.liftLatch(latch)         // CountDownLatch[Eff.Of[IO, E]]
-Eff.liftBarrier(barrier)     // CyclicBarrier[Eff.Of[IO, E]]
-Eff.liftCell(cell)           // AtomicCell[Eff.Of[IO, E], A]
-Eff.liftSupervisor(sup)      // Supervisor[Eff.Of[IO, E]]
-
-// .eff[E] extension syntax (equivalent) - E must be a Throwable subtype
-resource.eff[AppError]
-ref.eff[AppError]
-deferred.eff[AppError]
-queue.eff[AppError]
-semaphore.eff[AppError]
-
-// Natural transformations for mapK
-val fk: IO ~> Eff.Of[IO, AppError]                              = Eff.functionK[IO, AppError]
-val widen: Eff.Of[IO, AppError.NotFound] ~> Eff.Of[IO, AppError] = Eff.widenK[IO, AppError.NotFound, AppError]
+val C = summon[GenConcurrent[Eff.Of[AppError], Throwable]]
 ```
 
 ### Erasing secrets
 
-`boilerplate-effect` depends on core, so a secret [`Slice`](#slice) can be tied to an effect's
-lifecycle. `IO[Slice].wiping` is a `Resource` that acquires the slice and wipes it on release - on
-success, error, or cancellation:
+`boilerplate-effect` depends on core, so secret bytes can be tied to an effect's lifecycle. For an
+owning carrier, use [`Secret`](#secret):
 
 ```scala
-import boilerplate.Slice
+import boilerplate.Secret
 
-// make a working copy, use it, and zero it once `use` completes - however it completes
-IO(Slice.of(secret.toArray)).wiping.useEffIO(use) // : EffIO[E, A]
+Secret.scoped(32)(fillWithRandomBytes).use(key => key.useEff(view => sign(view, message)))
 ```
 
-Keep the copy allocation inside the acquire, so the slice is erased from the moment it exists; it
-must not escape `use`.
+For a borrowed `Slice` that must be erased when a scope ends, `IO[Slice].wiping` runs a scoped read
+and then erases - on success, typed error, or cancellation:
 
-### Syntax extensions
+```scala
+IO(Slice.of(material.toArray)).wiping(view => digest(view))
+```
 
-Importing `boilerplate.effect.*` provides lifting extensions:
-
-| Extension                   | Result Type           |
-|------------------------------|-----------------------|
-| `Either[E, A].eff[F]`        | `Eff[F, E, A]`        |
-| `F[Either[E, A]].eff`        | `Eff[F, E, A]`        |
-| `Option[A].eff[F, E](err)`   | `Eff[F, E, A]`        |
-| `F[Option[A]].eff[E](err)`   | `Eff[F, E, A]`        |
-| `Try[A].eff[F, E](f)`        | `Eff[F, E, A]`        |
-| `F[A].eff[E](f)`             | `Eff[F, E, A]`        |
-| `F[A].eff`                   | `UEff[F, A]`          |
-| `Resource[F, A].eff[E]`      | `Resource[Of[F,E],A]` |
-| `Resource[F, A].useEff(f)`   | `Eff[F, E, B]`        |
-| `Ref[F, A].eff[E]`           | `Ref[Of[F, E], A]`    |
-| `Deferred[F, A].eff[E]`      | `Deferred[Of[F,E],A]` |
-| `Queue[F, A].eff[E]`         | `Queue[Of[F, E], A]`  |
-| `Semaphore[F].eff[E]`        | `Semaphore[Of[F,E]]`  |
-
-`CountDownLatch`, `CyclicBarrier`, `AtomicCell`, and `Supervisor` lift the same way.
+Keep the copy allocation inside the acquire, so the slice is erased from the moment it exists. It
+takes a continuation rather than yielding a resource for a reason: a `Resource` has no binder to
+scope the view to its `use`, so it could hand the slice out to be read after the wipe. Here the view
+cannot escape - the same enforcement `Secret.use` gets.
 
 ### Fibre join extensions
 
-For `Fiber[Eff.Of[F, E], Throwable, A]` (e.g. from `Supervisor.supervise`): a fibre that failed
-with a typed error completes as `Outcome.Errored(e)`, and the join re-raises `e` on the effect's
-channel, while a `Succeeded` returns its value:
+For `Fiber[Eff.Of[E], Throwable, A]` (e.g. from `start` or `Supervisor.supervise`): a fibre that
+failed with a typed error completes as `Outcome.Errored(e)`, and the join re-raises `e` on the
+effect's channel, while a `Succeeded` returns its value.
 
-| Extension               | Result Type     | On Cancellation        |
-|-------------------------|-----------------|------------------------|
-| `fiber.joinNever`       | `Eff[F, E, A]`  | Never completes        |
-| `fiber.joinOrFail(err)` | `Eff[F, E, A]`  | Fails with typed error |
-
-The same joins are provided for `Fiber[EffIO.Of[E], Throwable, A]`, returning `EffIO[E, A]`.
+| Extension               | Result Type  | On Cancellation        |
+|-------------------------|--------------|------------------------|
+| `fiber.joinNever`       | `Eff[E, A]`  | Never completes        |
+| `fiber.joinOrFail(err)` | `Eff[E, A]`  | Fails with typed error |
 
 ### Complete example
 
 ```scala
 import boilerplate.effect.*
 import cats.effect.IO
-import cats.effect.kernel.{GenConcurrent, Outcome}
+import cats.effect.kernel.Outcome
 import scala.concurrent.duration.*
 import scala.util.control.NoStackTrace
 
@@ -730,51 +786,41 @@ object AppError:
 
 case class User(id: String, name: String)
 
-val C = summon[GenConcurrent[Eff.Of[IO, AppError], Throwable]]
-
-def fetchUser(id: String): Eff[IO, AppError.NotFound, User] =
+def fetchUser(id: String): Eff[AppError.NotFound, User] =
   if id == "1" then Eff.succeed(User("1", "Alice"))
   else Eff.fail(AppError.NotFound(id))
 
-def validateUser(user: User): Eff[IO, AppError.ValidationError, User] =
+def validateUser(user: User): Eff[AppError.ValidationError, User] =
   if user.name.nonEmpty then Eff.succeed(user)
   else Eff.fail(AppError.ValidationError("name required"))
 
-// Distinct typed errors unify into their union automatically - no widenError
-val workflow: Eff[IO, AppError, User] = for
+// Distinct typed errors unify into their union automatically
+val workflow: Eff[AppError, User] = for
   user      <- fetchUser("1")
   validated <- validateUser(user)
 yield validated
 
-// Concurrency with typed errors; a fibre's typed failure is Outcome.Errored
-val concurrent: Eff[IO, AppError, User] = for
-  ref    <- C.ref(0)
-  _      <- ref.update(_ + 1)
+// A fibre's typed failure is Outcome.Errored
+val concurrent: Eff[AppError, User] = for
   fiber  <- workflow.start
   result <- fiber.joinOrFail(AppError.Cancelled)
+  _      <- IO.println(s"got ${result.name}")   // a raw IO composes straight in
 yield result
 
-// Racing, parallel composition, and timeout
-val raced: Eff[IO, AppError, Either[User, User]] =
-  workflow.race(workflow)
-
-val parallel: Eff[IO, AppError, (User, User)] =
-  workflow.both(workflow)
-
-val withTimeout: Eff[IO, AppError, User] =
-  workflow.timeout(5.seconds, AppError.Timeout)
+val raced: Eff[AppError, Either[User, User]] = workflow.race(workflow)
+val parallel: Eff[AppError, (User, User)]    = workflow.both(workflow)
+val withTimeout: Eff[AppError, User]         = workflow.timeout(5.seconds, AppError.Timeout)
 
 // Guaranteed cleanup - a typed failure surfaces as Outcome.Errored
-val withCleanup: Eff[IO, AppError, User] =
+val withCleanup: Eff[AppError, User] =
   workflow.guaranteeCase {
-    case Outcome.Succeeded(_) => Eff.liftF(IO.println("success"))
-    case Outcome.Errored(_)   => Eff.liftF(IO.println("error"))
-    case Outcome.Canceled()   => Eff.liftF(IO.println("cancelled"))
+    case Outcome.Succeeded(_) => IO.println("success")
+    case Outcome.Errored(_)   => IO.println("error")
+    case Outcome.Canceled()   => IO.println("cancelled")
   }
 
 val io: IO[Either[AppError, User]] = concurrent.either
 ```
-
 ---
 
 ## Licence
