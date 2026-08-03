@@ -12,9 +12,12 @@ on:
     paths-ignore:
       - "**.md"
 
+# Superseded runs are cancelled on PR branches only: cancelling a superseded `main` run skips that
+# commit's snapshot publish (`publish` needs the cancelled jobs), and a cancelled tag run is a
+# cancelled release.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
