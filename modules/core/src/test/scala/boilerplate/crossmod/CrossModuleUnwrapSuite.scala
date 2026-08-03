@@ -25,77 +25,53 @@ import munit.FunSuite
 import boilerplate.*
 
 // Sits in a child package rather than `boilerplate` so the opaque types' underlying representation
-// is abstract here, exercising that `transparent inline` carries unwrap/as/asUnsafe across a module
-// boundary.
+// is abstract here, exercising that the trait's final `inline` bodies - which call the PROTECTED
+// `wrap` and `validate` - expand soundly at a call site outside the defining scope.
 class CrossModuleUnwrapSuite extends FunSuite:
 
-  test("unwrap extension resolves concrete type for String-based opaque"):
-    import NonEmptyString.given
-    val wrapped = NonEmptyString.fromUnsafe("hello")
-    val result: String = wrapped.unwrap
-    assertEquals(result, "hello")
+  test("of round-trips through unwrap for a String-based opaque"):
+    val constructed = NonEmptyString.of("hello")
+    assertEquals(constructed.map(NonEmptyString.unwrap), Right("hello"))
 
-  test("unwrap extension resolves concrete type for Int-based opaque"):
-    import PositiveInt.given
-    val wrapped = PositiveInt.fromUnsafe(42)
-    val result: Int = wrapped.unwrap
-    assertEquals(result, 42)
+  test("of round-trips through unwrap for an Int-based opaque"):
+    val constructed = PositiveInt.of(42)
+    assertEquals(constructed.map(PositiveInt.unwrap), Right(42))
 
-  test("unwrap extension resolves concrete type for custom-error opaque"):
-    import Email.given
-    val wrapped = Email.fromUnsafe("test@example.com")
-    val result: String = wrapped.unwrap
-    assertEquals(result, "test@example.com")
+  test("of returns Left for invalid input across the boundary"):
+    assert(NonEmptyString.of("").isLeft)
 
-  test("unwrap extension resolves concrete type for phantom-typed opaque"):
-    import Distance.Metres.given
-    val wrapped = Distance.Metres.fromUnsafe(100.0)
-    val result: Double = wrapped.unwrap
-    assertEquals(result, 100.0)
+  test("of round-trips for a custom-error opaque"):
+    val original = "user@domain.com"
+    val constructed = Email.of(original)
+    assertEquals(constructed.map(Email.unwrap), Right(original))
 
-  test("as extension works across module boundary"):
-    import NonEmptyString.given
-    val result: Either[IllegalArgumentException, NonEmptyString] = "hello".as[NonEmptyString]
-    assert(result.isRight)
-    assertEquals(result.map(_.unwrap), Right("hello"))
-
-  test("as extension returns Left across module boundary"):
-    import NonEmptyString.given
-    assert("".as[NonEmptyString].isLeft)
-
-  test("as extension works with Int across module boundary"):
-    import PositiveInt.given
-    val result: Either[IllegalArgumentException, PositiveInt] = 42.as[PositiveInt]
-    assert(result.isRight)
-
-  test("asUnsafe extension works across module boundary"):
-    import NonEmptyString.given
-    val result: NonEmptyString = "hello".asUnsafe[NonEmptyString]
-    val underlying: String = result.unwrap
+  test("ofUnsafe constructs and unwrap extracts across the boundary"):
+    val value: NonEmptyString = NonEmptyString.ofUnsafe("hello")
+    val underlying: String = NonEmptyString.unwrap(value)
     assertEquals(underlying, "hello")
 
-  test("asUnsafe extension throws across module boundary"):
-    import NonEmptyString.given
+  test("ofUnsafe throws across the boundary"):
     intercept[IllegalArgumentException]:
-      "".asUnsafe[NonEmptyString]
+      NonEmptyString.ofUnsafe("")
 
-  test("from + unwrap round-trips across module boundary"):
-    import Email.given
-    val original = "user@domain.com"
-    val constructed = Email.from(original)
-    assertEquals(constructed.map(_.unwrap), Right(original))
+  test("ofUnsafe round-trips for a phantom-typed opaque"):
+    val wrapped = Distance.Metres.ofUnsafe(100.0)
+    val result: Double = Distance.Metres.unwrap(wrapped)
+    assertEquals(result, 100.0)
 
-  test("asUnsafe + unwrap round-trips across module boundary"):
-    import PositiveInt.given
-    val original = 99
-    val constructed: PositiveInt = original.asUnsafe[PositiveInt]
-    val extracted: Int = constructed.unwrap
-    assertEquals(extracted, original)
+  test("the compile-time apply expands at a call site outside the defining scope"):
+    assertEquals(CheckedPositive.unwrap(CheckedPositive(7)), 7)
 
-  test("SecretToken extensions work across module boundary"):
-    import SecretToken.given
-    val token = "my-secret".asUnsafe[SecretToken]
-    val underlying: String = token.unwrap
+  test("wrap stays inaccessible from another package"):
+    val errors = scala.compiletime.testing.typeCheckErrors:
+      """
+      boilerplate.PositiveInt.wrap(0)
+      """
+    assert(errors.nonEmpty, "wrap was accessible outside the companion's scope")
+
+  test("SecretToken constructs and extracts across the boundary"):
+    val token = SecretToken.ofUnsafe("my-secret")
+    val underlying: String = SecretToken.unwrap(token)
     assertEquals(underlying, "my-secret")
 
 end CrossModuleUnwrapSuite
