@@ -24,7 +24,7 @@ import scala.concurrent.duration.Duration
 import scala.concurrent.duration.FiniteDuration
 
 /** Declarative retry pacing, interpreted by the policy-driven
-  * [[boilerplate.effect.Eff$ Eff]]`.retry` / [[boilerplate.effect.EffIO$ EffIO]]`.retry` overloads.
+  * [[boilerplate.effect.Eff$ Eff]]`.retry` overloads.
   *
   * A policy describes only HOW attempts are paced and bounded; WHICH typed errors are worth
   * retrying is supplied at the interpretation site, so one policy value is shareable across

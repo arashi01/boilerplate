@@ -21,21 +21,23 @@
 package boilerplate
 
 import scala.language.experimental.captureChecking
-import scala.util.control.NoStackTrace
+import scala.scalanative.unsafe.*
 
-/** The typed error for the untrusted-bounds reader [[sliceOrError]] - wire input whose bounds are
-  * attacker-controlled. Trusted-bounds operations (`take`/`drop`/`slice`,
-  * `apply`/`readBE`/`readLE`) raise instead.
-  */
-sealed abstract class SliceError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
-object SliceError:
-  /** The requested range `[from, until)` did not satisfy `0 <= from <= until <= length`. */
-  final case class OutOfBounds(from: Int, until: Int, length: Int) extends SliceError(s"slice [$from, $until) is outside [0, $length]")
+// The opted-in caller. Escape rejection is asserted by the build's `checkCaptureEscapes` - see
+// SecretBorrowSuite for why `typeCheckErrors` cannot express a capture-checking negative.
+class SliceBorrowSuite extends munit.FunSuite:
+  test("a borrow that copies out rather than retaining the view compiles under capture checking"):
+    val ptr = stackalloc[Byte](2)
+    ptr(0) = 9.toByte
+    ptr(1) = 8.toByte
+    assertEquals(Slice.borrowing(ptr, 2)(s => s.toArray).toList, List[Byte](9, 8))
 
-extension (s: Slice^)
-  /** The untrusted-bounds reader for wire input: `Right(view)` when `0 <= from <= until <= length`,
-    * else `Left(SliceError.OutOfBounds)`. Trusted callers use `slice`, which raises.
-    */
-  def sliceOrError(from: Int, until: Int): Either[SliceError, Slice^{s}] =
-    if 0 <= from && from <= until && until <= s.length then Right(s.slice(from, until))
-    else Left(SliceError.OutOfBounds(from, until, s.length))
+  test("a chained re-slice is readable inside the borrow and its copy outlives it"):
+    val ptr = stackalloc[Byte](4)
+    ptr(0) = 1.toByte
+    ptr(1) = 2.toByte
+    ptr(2) = 3.toByte
+    ptr(3) = 4.toByte
+    assertEquals(Slice.borrowing(ptr, 4)(s => s.drop(1).take(2).toArray).toList, List[Byte](2, 3))
+    assertEquals(Slice.borrowing(ptr, 4)(s => s.drop(2).take(1)(0)), 3.toByte)
+end SliceBorrowSuite

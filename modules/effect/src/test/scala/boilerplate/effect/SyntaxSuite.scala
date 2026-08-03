@@ -21,202 +21,87 @@
 package boilerplate.effect
 
 import scala.reflect.TypeTest
-import scala.util.Failure
-import scala.util.Try
 
 import cats.effect.IO
 import munit.CatsEffectSuite
 
 import boilerplate.effect.AppError.*
-import boilerplate.effect.IoError.*
 
-// The fallible conversions need `MonadThrow[F]`, which `Id` lacks, so `F = IO` throughout; the
-// infallible no-argument lifts carry no constraint and are observed with `absolve`. Data-structure
-// lifting extensions (`Resource`/`Ref`/`Queue`/...) are covered by `EffInteropSuite`.
+// The fibre-join extensions over `Fiber[Eff.Of[E], Throwable, A]`: a typed failure arrives as
+// `Outcome.Errored`, so joining has to re-raise it on the typed channel rather than report success.
 class SyntaxSuite extends CatsEffectSuite:
 
-  private def runEff[E <: Throwable, A](eff: Eff[IO, E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =
-    eff.either
+  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either
 
-  private def run[E <: Throwable, A](eff: EffIO[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] =
-    eff.either
-
-  // Eff conversions (F = IO)
-
-  test("Either.eff lifts a Right to success and a Left to a typed error"):
-    for
-      ok <- runEff((Right(42): Either[AppError, Int]).eff[IO])
-      ko <- runEff((Left(NotFound("u1")): Either[AppError, Int]).eff[IO])
-    yield
-      assertEquals(ok, Right(42))
-      assertEquals(ko, Left(NotFound("u1")))
-
-  test("F[Either].eff absorbs a Left into the typed channel"):
-    for
-      ok <- runEff(IO.pure(Right(7): Either[IoError, Int]).eff)
-      ko <- runEff(IO.pure(Left(Closed): Either[IoError, Int]).eff)
-    yield
-      assertEquals(ok, Right(7))
-      assertEquals(ko, Left(Closed))
-
-  test("Option.eff lifts a Some and supplies the error for None"):
-    for
-      ok <- runEff((Some(42): Option[Int]).eff[IO, AppError](NotFound("u1")))
-      ko <- runEff((None: Option[Int]).eff[IO, AppError](NotFound("u1")))
-    yield
-      assertEquals(ok, Right(42))
-      assertEquals(ko, Left(NotFound("u1")))
-
-  test("F[Option].eff lifts a Some and supplies the error for None"):
-    for
-      ok <- runEff(IO.pure(Some(42): Option[Int]).eff[IoError](Closed))
-      ko <- runEff(IO.pure(None: Option[Int]).eff[IoError](Closed))
-    yield
-      assertEquals(ok, Right(42))
-      assertEquals(ko, Left(Closed))
-
-  test("Try.eff converts a Success and translates a Failure"):
-    for
-      ok <- runEff(Try(42).eff[IO, AppError](t => Invalid(t.getMessage)))
-      ko <- runEff(Failure[Int](RuntimeException("boom")).eff[IO, AppError](t => Invalid(t.getMessage)))
-    yield
-      assertEquals(ok, Right(42))
-      assertEquals(ko, Left(Invalid("boom")))
-
-  test("F[A].eff captures a raised throwable as a typed error"):
-    for
-      ok <- runEff(IO.pure(1).eff[AppError](t => Invalid(t.getMessage)))
-      ko <- runEff(IO.raiseError[Int](RuntimeException("boom")).eff[AppError](t => Invalid(t.getMessage)))
-    yield
-      assertEquals(ok, Right(1))
-      assertEquals(ko, Left(Invalid("boom")))
-
-  test("F[A].eff lifts an infallible effect as a success; absolve is O(0) identity"):
-    val lifted: UEff[IO, Int] = IO.pure(42).eff
-    lifted.absolve.map(value => assertEquals(value, 42))
-
-  // EffIO conversions
-
-  test("IO.effIO captures a raised throwable as a typed error"):
-    for
-      ok <- run(IO.pure(1).effIO[AppError](t => Invalid(t.getMessage)))
-      ko <- run(IO.raiseError[Int](RuntimeException("boom")).effIO[AppError](t => Invalid(t.getMessage)))
-    yield
-      assertEquals(ok, Right(1))
-      assertEquals(ko, Left(Invalid("boom")))
-
-  test("IO.effIO lifts an infallible IO as a success; absolve is O(0) identity"):
-    IO.pure(42).effIO.absolve.map(value => assertEquals(value, 42))
-
-  test("IO[Either].effIO absorbs a Left into the typed channel"):
-    for
-      ok <- run(IO.pure(Right(7): Either[IoError, Int]).effIO)
-      ko <- run(IO.pure(Left(Closed): Either[IoError, Int]).effIO)
-    yield
-      assertEquals(ok, Right(7))
-      assertEquals(ko, Left(Closed))
-
-  test("Either.effIO lifts a Right to success and a Left to a typed error"):
-    for
-      ok <- run((Right(42): Either[AppError, Int]).effIO)
-      ko <- run((Left(NotFound("u1")): Either[AppError, Int]).effIO)
-    yield
-      assertEquals(ok, Right(42))
-      assertEquals(ko, Left(NotFound("u1")))
-
-  test("Option.effIO lifts a Some and supplies the error for None"):
-    for
-      ok <- run((Some(42): Option[Int]).effIO[IoError](Closed))
-      ko <- run((None: Option[Int]).effIO[IoError](Closed))
-    yield
-      assertEquals(ok, Right(42))
-      assertEquals(ko, Left(Closed))
-
-  test("IO[Option].effIO lifts a Some and supplies the error for None"):
-    for
-      ok <- run(IO.pure(Some(42): Option[Int]).effIO[IoError](Closed))
-      ko <- run(IO.pure(None: Option[Int]).effIO[IoError](Closed))
-    yield
-      assertEquals(ok, Right(42))
-      assertEquals(ko, Left(Closed))
-
-  test("Try.effIO converts a Success and translates a Failure"):
-    for
-      ok <- run(Try(42).effIO[AppError](t => Invalid(t.getMessage)))
-      ko <- run(Failure[Int](RuntimeException("boom")).effIO[AppError](t => Invalid(t.getMessage)))
-    yield
-      assertEquals(ok, Right(42))
-      assertEquals(ko, Left(Invalid("boom")))
-
-  // Fibre joins under the Errored flip
-
-  test("Eff Fiber.joinNever returns a success and re-raises a typed failure as Errored"):
-    def joined(eff: Eff[IO, AppError, Int]): Eff[IO, AppError, Int] =
+  test("Fiber.joinNever returns a success and re-raises a typed failure as Errored"):
+    def joined(eff: Eff[AppError, Int]): Eff[AppError, Int] =
       for
         fiber <- eff.start
         value <- fiber.joinNever
       yield value
     for
-      ok <- runEff(joined(Eff.succeed[IO, AppError, Int](42)))
-      ko <- runEff(joined(Eff.fail[IO, AppError, Int](Timeout)))
+      ok <- run(joined(Eff.succeed(42)))
+      ko <- run(joined(Eff.fail(Timeout)))
     yield
       assertEquals(ok, Right(42))
       assertEquals(ko, Left(Timeout))
 
-  test("Eff Fiber.joinOrFail returns a success and re-raises a typed failure as Errored"):
-    def joined(eff: Eff[IO, AppError, Int]): Eff[IO, AppError, Int] =
+  test("Fiber.joinOrFail returns a success and re-raises a typed failure as Errored"):
+    def joined(eff: Eff[AppError, Int]): Eff[AppError, Int] =
       for
         fiber <- eff.start
         value <- fiber.joinOrFail(Timeout)
       yield value
     for
-      ok <- runEff(joined(Eff.succeed[IO, AppError, Int](42)))
-      ko <- runEff(joined(Eff.fail[IO, AppError, Int](Invalid("boom"))))
+      ok <- run(joined(Eff.succeed(42)))
+      ko <- run(joined(Eff.fail(Invalid("boom"))))
     yield
       assertEquals(ok, Right(42))
       assertEquals(ko, Left(Invalid("boom")))
 
-  test("Eff Fiber.joinOrFail fails with onCanceled when the fibre is cancelled"):
-    val program: Eff[IO, AppError, Int] =
+  test("Fiber.joinOrFail fails with onCanceled when the fibre is cancelled"):
+    val program: Eff[AppError, Int] =
       for
-        fiber <- Eff.never[IO, AppError, Int].start
+        fiber <- (Eff.never: Eff[AppError, Int]).start
         _ <- fiber.cancel
         value <- fiber.joinOrFail(Timeout)
       yield value
-    runEff(program).map(result => assertEquals(result, Left(Timeout)))
+    run(program).map(result => assertEquals(result, Left(Timeout)))
 
-  test("EffIO Fiber.joinNever returns a success and re-raises a typed failure as Errored"):
-    def joined(eff: EffIO[IoError, Int]): EffIO[IoError, Int] =
+  // The leading-generator seam: `IO`'s member `flatMap` wins over any extension, so an `IO`
+  // generator followed by an `Eff` generator needs `.eff` on the `IO` - the one lift position
+  // the supertype bound cannot reach.
+  test("an IO generator marked .eff is followed by Eff generators"):
+    def typed(n: Int): Eff[AppError, Int] =
+      if n >= 0 then Eff.succeed(n + 1) else Eff.fail(Invalid("negative"))
+    val program: Eff[AppError, Int] =
       for
-        fiber <- eff.start
-        value <- fiber.joinNever
-      yield value
-    for
-      ok <- run(joined(EffIO.succeed(42)))
-      ko <- run(joined(EffIO.fail(Closed)))
-    yield
-      assertEquals(ok, Right(42))
-      assertEquals(ko, Left(Closed))
+        ref <- IO.ref(41).eff
+        n <- ref.get.eff
+        out <- typed(n)
+      yield out
+    run(program).map(assertEquals(_, Right(42)))
 
-  test("EffIO Fiber.joinOrFail returns a success and re-raises a typed failure as Errored"):
-    def joined(eff: EffIO[IoError, Int]): EffIO[IoError, Int] =
-      for
-        fiber <- eff.start
-        value <- fiber.joinOrFail(Closed)
-      yield value
-    for
-      ok <- run(joined(EffIO.succeed(42)))
-      ko <- run(joined(EffIO.fail(Failed(500))))
-    yield
-      assertEquals(ok, Right(42))
-      assertEquals(ko, Left(Failed(500)))
+  test("an unmarked IO generator before an Eff generator still fails to compile"):
+    val errors = scala.compiletime.testing.typeCheckErrors(
+      """
+      def typed(n: Int): Eff[AppError, Int] = Eff.succeed(n + 1)
+      val program: Eff[AppError, Int] =
+        for
+          n <- IO.pure(41)
+          out <- typed(n)
+        yield out
+      """
+    )
+    assert(errors.nonEmpty && errors.exists(_.message.contains("Eff")), errors.map(_.message).mkString("\n"))
 
-  test("EffIO Fiber.joinOrFail fails with onCanceled when the fibre is cancelled"):
-    val program: EffIO[IoError, Int] =
+  test("a Resource generator marked .eff is followed by EffResource generators"):
+    import cats.effect.Resource
+    def typed(n: Int): EffResource[AppError, Int] = EffResource.eval(Eff.succeed(n + 1))
+    val program: EffResource[AppError, Int] =
       for
-        fiber <- (EffIO.never: EffIO[IoError, Int]).start
-        _ <- fiber.cancel
-        value <- fiber.joinOrFail(Closed)
-      yield value
-    run(program).map(result => assertEquals(result, Left(Closed)))
+        n <- Resource.pure[IO, Int](41).eff
+        out <- typed(n)
+      yield out
+    program.use(n => Eff.succeed(n)).absolve.map(assertEquals(_, 42))
 end SyntaxSuite

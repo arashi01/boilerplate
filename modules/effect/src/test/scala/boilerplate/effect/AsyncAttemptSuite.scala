@@ -32,24 +32,24 @@ class AsyncAttemptSuite extends CatsEffectSuite:
   // The original B2 consumer shape: `E` is a type parameter, so a synthesised `TypeTest` would be
   // unchecked and fail under `-Werror`. This must compile.
   @annotation.nowarn("msg=unused")
-  private def generic[E <: Throwable, A](ifDefect: Throwable => E)(k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]): EffIO[E, A] =
-    EffIO.asyncAttempt(ifDefect)(k)
+  private def generic[E <: Throwable, A](ifDefect: Throwable => E)(k: (Either[E, A] => Unit) => IO[Option[IO[Unit]]]): Eff[E, A] =
+    Eff.asyncAttempt(ifDefect)(k)
 
   test("a callback-delivered typed error passes through unchanged"):
-    EffIO
+    Eff
       .asyncAttempt[AppError, Int](_ => NotFound("defect"))(cb => IO(cb(Left(Timeout))).as(None))
       .either
       .map(r => assertEquals(r, Left(Timeout)))
 
   test("a registration-time failure is folded through ifDefect"):
     val boom = new RuntimeException("boom")
-    EffIO
+    Eff
       .asyncAttempt[AppError, Int](_ => Timeout)(_ => IO.raiseError(boom))
       .either
       .map(r => assertEquals(r, Left(Timeout)))
 
   test("a callback-delivered success passes through"):
-    EffIO
+    Eff
       .asyncAttempt[AppError, Int](_ => Timeout)(cb => IO(cb(Right(42))).as(None))
       .either
       .map(r => assertEquals(r, Right(42)))

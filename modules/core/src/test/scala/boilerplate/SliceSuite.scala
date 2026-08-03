@@ -39,6 +39,16 @@ class SliceSuite extends munit.FunSuite:
     assertEquals(Slice.empty.length, 0)
     assertEquals(Slice.empty.toArray.length, 0)
 
+  test("nonEmpty is the exact complement of isEmpty, including on a sub-view emptied by re-slicing"):
+    val s = Slice.of(Array[Byte](1, 2, 3))
+    assert(s.nonEmpty)
+    assert(!s.isEmpty)
+    assert(!Slice.empty.nonEmpty)
+    assert(s.take(0).isEmpty)
+    assert(!s.take(0).nonEmpty)
+    assert(s.drop(3).isEmpty)
+    assert(s.drop(2).nonEmpty)
+
   test("apply reads a byte by index; an out-of-range index raises"):
     val s = Slice.of(Array[Byte](10, 20, 30))
     assertEquals(s(0), 10.toByte)

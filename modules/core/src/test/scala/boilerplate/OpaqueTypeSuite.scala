@@ -27,9 +27,10 @@ opaque type NonEmptyString = String
 object NonEmptyString extends OpaqueType[NonEmptyString, String], OpaqueType.Eq[NonEmptyString]:
   type Error = IllegalArgumentException
 
-  inline def wrap(s: String): NonEmptyString = s
+  protected inline def wrap(s: String): NonEmptyString = s
   inline def unwrap(s: NonEmptyString): String = s
-  inline def apply(inline value: String): NonEmptyString = fromUnsafe(value)
+  // The runtime-delegating shape the trait permits; the compile-time shape is CheckedPositive's.
+  inline def apply(inline value: String): NonEmptyString = ofUnsafe(value)
 
   protected inline def validate(s: String): Option[Error] =
     if s.nonEmpty then None
@@ -40,9 +41,9 @@ opaque type PositiveInt = Int
 object PositiveInt extends OpaqueType[PositiveInt, Int], OpaqueType.Eq[PositiveInt]:
   type Error = IllegalArgumentException
 
-  inline def wrap(n: Int): PositiveInt = n
+  protected inline def wrap(n: Int): PositiveInt = n
   inline def unwrap(n: PositiveInt): Int = n
-  inline def apply(inline value: Int): PositiveInt = fromUnsafe(value)
+  inline def apply(inline value: Int): PositiveInt = ofUnsafe(value)
 
   protected inline def validate(n: Int): Option[Error] =
     if n > 0 then None
@@ -58,9 +59,9 @@ opaque type Email = String
 object Email extends OpaqueType[Email, String], OpaqueType.Eq[Email]:
   type Error = EmailError
 
-  inline def wrap(s: String): Email = s
+  protected inline def wrap(s: String): Email = s
   inline def unwrap(e: Email): String = e
-  inline def apply(inline value: String): Email = fromUnsafe(value)
+  inline def apply(inline value: String): Email = ofUnsafe(value)
 
   protected inline def validate(s: String): Option[Error] =
     if s.contains("@") then None
@@ -72,13 +73,17 @@ opaque type SecretToken = String
 object SecretToken extends OpaqueType[SecretToken, String]:
   type Error = IllegalArgumentException
 
-  inline def wrap(s: String): SecretToken = s
+  protected inline def wrap(s: String): SecretToken = s
   inline def unwrap(s: SecretToken): String = s
-  inline def apply(inline value: String): SecretToken = fromUnsafe(value)
+  inline def apply(inline value: String): SecretToken = ofUnsafe(value)
 
   protected inline def validate(s: String): Option[Error] =
     if s.nonEmpty then None
     else Some(new IllegalArgumentException("Token must be non-empty"))
+
+  // The deliberate, author-scoped trusted seam over the protected `wrap`.
+  private[boilerplate] inline def trusted(s: String): SecretToken = wrap(s)
+end SecretToken
 
 sealed trait Metres
 sealed trait Feet
@@ -89,9 +94,9 @@ object Distance:
   object Metres extends OpaqueType[Distance[boilerplate.Metres], Double], OpaqueType.Eq[Distance[boilerplate.Metres]]:
     type Error = IllegalArgumentException
 
-    inline def wrap(d: Double): Distance[boilerplate.Metres] = d
+    protected inline def wrap(d: Double): Distance[boilerplate.Metres] = d
     inline def unwrap(d: Distance[boilerplate.Metres]): Double = d
-    inline def apply(inline value: Double): Distance[boilerplate.Metres] = fromUnsafe(value)
+    inline def apply(inline value: Double): Distance[boilerplate.Metres] = ofUnsafe(value)
 
     protected inline def validate(d: Double): Option[Error] =
       if d >= 0.0 then None
@@ -100,9 +105,9 @@ object Distance:
   object Feet extends OpaqueType[Distance[boilerplate.Feet], Double], OpaqueType.Eq[Distance[boilerplate.Feet]]:
     type Error = IllegalArgumentException
 
-    inline def wrap(d: Double): Distance[boilerplate.Feet] = d
+    protected inline def wrap(d: Double): Distance[boilerplate.Feet] = d
     inline def unwrap(d: Distance[boilerplate.Feet]): Double = d
-    inline def apply(inline value: Double): Distance[boilerplate.Feet] = fromUnsafe(value)
+    inline def apply(inline value: Double): Distance[boilerplate.Feet] = ofUnsafe(value)
 
     protected inline def validate(d: Double): Option[Error] =
       if d >= 0.0 then None
@@ -114,7 +119,7 @@ opaque type CheckedPositive = Int
 object CheckedPositive extends OpaqueType[CheckedPositive, Int], OpaqueType.Eq[CheckedPositive]:
   type Error = IllegalArgumentException
 
-  inline def wrap(n: Int): CheckedPositive = n
+  protected inline def wrap(n: Int): CheckedPositive = n
   inline def unwrap(n: CheckedPositive): Int = n
 
   protected inline def validate(n: Int): Option[Error] =
@@ -128,162 +133,88 @@ end CheckedPositive
 
 class OpaqueTypeSuite extends FunSuite:
 
-  test("from returns Right for valid input"):
-    assertEquals(NonEmptyString.from("hello"), Right(NonEmptyString.wrap("hello")))
+  test("of returns Right for valid input"):
+    assertEquals(NonEmptyString.of("hello"), Right(NonEmptyString.ofUnsafe("hello")))
 
-  test("from returns Right for boundary valid input"):
-    assertEquals(NonEmptyString.from("x"), Right(NonEmptyString.wrap("x")))
-    assertEquals(PositiveInt.from(1), Right(PositiveInt.wrap(1)))
+  test("of returns Right for boundary valid input"):
+    assertEquals(NonEmptyString.of("x"), Right(NonEmptyString.ofUnsafe("x")))
+    assertEquals(PositiveInt.of(1), Right(PositiveInt.ofUnsafe(1)))
 
-  test("from returns Left for invalid input"):
-    assert(NonEmptyString.from("").isLeft)
-    assert(PositiveInt.from(0).isLeft)
-    assert(PositiveInt.from(-5).isLeft)
+  test("of returns Left for invalid input"):
+    assert(NonEmptyString.of("").isLeft)
+    assert(PositiveInt.of(0).isLeft)
+    assert(PositiveInt.of(-5).isLeft)
 
-  test("from Left contains correct error type"):
-    NonEmptyString.from("") match
+  test("of Left contains correct error type"):
+    NonEmptyString.of("") match
       case Left(e: IllegalArgumentException) => assert(e.getMessage.contains("non-empty"))
       case other                             => fail(s"Expected Left(IllegalArgumentException), got: $other")
 
-  test("from preserves custom error type"):
-    Email.from("invalid") match
+  test("of preserves custom error type"):
+    Email.of("invalid") match
       case Left(e: EmailError) => assert(e.getMessage.contains("Invalid email format"))
       case other               => fail(s"Expected Left(EmailError), got: $other")
 
-  test("from Right value equals wrapped value"):
-    val result = NonEmptyString.from("test")
+  test("of Right value round-trips through unwrap"):
+    val result = NonEmptyString.of("test")
     assertEquals(result.map(NonEmptyString.unwrap), Right("test"))
 
-  test("fromUnsafe returns value for valid input"):
-    assertEquals(NonEmptyString.unwrap(NonEmptyString.fromUnsafe("hello")), "hello")
-    assertEquals(PositiveInt.unwrap(PositiveInt.fromUnsafe(42)), 42)
+  test("ofUnsafe returns value for valid input"):
+    assertEquals(NonEmptyString.unwrap(NonEmptyString.ofUnsafe("hello")), "hello")
+    assertEquals(PositiveInt.unwrap(PositiveInt.ofUnsafe(42)), 42)
 
-  test("fromUnsafe throws for invalid input"):
+  test("ofUnsafe throws for invalid input"):
     intercept[IllegalArgumentException]:
-      NonEmptyString.fromUnsafe("")
+      NonEmptyString.ofUnsafe("")
 
-  test("fromUnsafe throws correct error type"):
+  test("ofUnsafe throws correct error type"):
     val ex = intercept[IllegalArgumentException]:
-      PositiveInt.fromUnsafe(-1)
+      PositiveInt.ofUnsafe(-1)
     assert(ex.getMessage.contains("-1"))
 
-  test("fromUnsafe throws custom error type"):
+  test("ofUnsafe throws custom error type"):
     val ex = intercept[EmailError]:
-      Email.fromUnsafe("not-an-email")
+      Email.ofUnsafe("not-an-email")
     assert(ex.getMessage.contains("Invalid email format"))
 
-  test("as extension returns Right for valid input"):
-    import NonEmptyString.given
-    assertEquals("hello".as[NonEmptyString], Right(NonEmptyString.wrap("hello")))
+  test("wrap is protected - unvalidated construction is a compile error outside the companion"):
+    val errors = scala.compiletime.testing.typeCheckErrors:
+      """
+      boilerplate.NonEmptyString.wrap("")
+      """
+    assert(errors.nonEmpty, "wrap was accessible outside its companion")
 
-  test("as extension returns Left for invalid input"):
-    import NonEmptyString.given
-    assert("".as[NonEmptyString].isLeft)
+  test("an author-scoped trusted seam over wrap constructs without validation"):
+    assertEquals(SecretToken.unwrap(SecretToken.trusted("")), "")
 
-  test("as extension works with Int underlying type"):
-    import PositiveInt.given
-    assertEquals(42.as[PositiveInt], Right(PositiveInt.wrap(42)))
-    assert(0.as[PositiveInt].isLeft)
-
-  test("as extension preserves custom error type"):
-    import Email.given
-    "bad".as[Email] match
-      case Left(_: EmailError) => () // expected
-      case other               => fail(s"Expected Left(EmailError), got: $other")
-
-  test("asUnsafe extension returns value for valid input"):
-    import NonEmptyString.given
-    assertEquals(NonEmptyString.unwrap("hello".asUnsafe[NonEmptyString]), "hello")
-
-  test("asUnsafe extension throws for invalid input"):
-    import NonEmptyString.given
-    intercept[IllegalArgumentException]:
-      "".asUnsafe[NonEmptyString]
-
-  test("asUnsafe extension throws custom error type"):
-    import Email.given
-    intercept[EmailError]:
-      "invalid".asUnsafe[Email]
-
-  test("unwrap extension extracts underlying value"):
-    import NonEmptyString.given
-    val wrapped = NonEmptyString.wrap("hello")
-    assertEquals(wrapped.unwrap, "hello")
-
-  test("unwrap extension works with Int underlying type"):
-    import PositiveInt.given
-    val wrapped = PositiveInt.wrap(42)
-    assertEquals(wrapped.unwrap, 42)
-
-  test("unwrap extension round-trips with construction"):
-    import Email.given
-    val original = "test@example.com"
-    val constructed = original.asUnsafe[Email]
-    assertEquals(constructed.unwrap, original)
-
-  test("unwrap extension works with phantom type parameter"):
-    import Distance.Metres.given
-    val metres = Distance.Metres.wrap(100.0)
-    assertEquals(metres.unwrap, 100.0)
-
-  test("wrap creates opaque type without validation"):
-    // Bypassing validation is wrap's contract - the trusted-context escape hatch.
-    val wrapped = NonEmptyString.wrap("")
-    assertEquals(NonEmptyString.unwrap(wrapped), "")
-
-  test("unwrap extracts underlying value"):
-    val wrapped = NonEmptyString.wrap("test")
-    assertEquals(NonEmptyString.unwrap(wrapped), "test")
-
-  test("wrap and unwrap are inverses"):
-    val original = "hello"
-    assertEquals(NonEmptyString.unwrap(NonEmptyString.wrap(original)), original)
-
-  test("OpaqueType.apply summons instance"):
-    import NonEmptyString.given
-    val instance = OpaqueType[NonEmptyString, String]
-    assert(instance eq NonEmptyString)
-
-  test("OpaqueType.apply returns same instance"):
-    import NonEmptyString.given
-    val a = OpaqueType[NonEmptyString, String]
-    val b = OpaqueType[NonEmptyString, String]
-    assert(a eq b)
-
-  test("CanEqual allows same-type comparison when Eq is mixed in"):
-    val a = NonEmptyString.wrap("hello")
-    val b = NonEmptyString.wrap("hello")
+  test("OpaqueType.Eq allows same-type comparison when mixed in"):
+    val a = NonEmptyString.ofUnsafe("hello")
+    val b = NonEmptyString.ofUnsafe("hello")
     assertEquals(a, b)
 
-  test("CanEqual detects inequality when Eq is mixed in"):
-    val a = NonEmptyString.wrap("hello")
-    val b = NonEmptyString.wrap("world")
+  test("OpaqueType.Eq detects inequality when mixed in"):
+    val a = NonEmptyString.ofUnsafe("hello")
+    val b = NonEmptyString.ofUnsafe("world")
     assertNotEquals(a, b)
 
   test("CanEqual is absent when Eq is omitted - compile error on =="):
     val errors = scala.compiletime.testing.typeCheckErrors:
       """
-      val a: boilerplate.SecretToken = boilerplate.SecretToken.wrap("abc")
-      val b: boilerplate.SecretToken = boilerplate.SecretToken.wrap("abc")
+      val a: boilerplate.SecretToken = boilerplate.SecretToken.ofUnsafe("abc")
+      val b: boilerplate.SecretToken = boilerplate.SecretToken.ofUnsafe("abc")
       a == b
       """
-    assert(errors.nonEmpty, "Expected compile error when comparing SecretTokens with ==")
+    assert(errors.exists(_.message.contains("cannot be compared with == or !=")), errors.map(_.message).mkString)
 
-  test("SecretToken from succeeds for valid input"):
-    assert(SecretToken.from("my-secret").isRight)
+  test("SecretToken of succeeds for valid input"):
+    assert(SecretToken.of("my-secret").isRight)
 
-  test("SecretToken from fails for empty input"):
-    assert(SecretToken.from("").isLeft)
+  test("SecretToken of fails for empty input"):
+    assert(SecretToken.of("").isLeft)
 
   test("SecretToken unwrap works"):
-    val token = SecretToken.fromUnsafe("my-secret")
+    val token = SecretToken.ofUnsafe("my-secret")
     assertEquals(SecretToken.unwrap(token), "my-secret")
-
-  test("SecretToken extension methods work"):
-    import SecretToken.given
-    assert("valid-token".as[SecretToken].isRight)
-    assert("".as[SecretToken].isLeft)
-    assertEquals("valid-token".asUnsafe[SecretToken].unwrap, "valid-token")
 
   test("Error type member is accessible"):
     // Compile-time only: each companion's refined `Error` member must be ascribable from its
@@ -291,88 +222,74 @@ class OpaqueTypeSuite extends FunSuite:
     val _: NonEmptyString.Error = new IllegalArgumentException("test")
     val _: Email.Error = new EmailError("test")
 
-  test("Error type flows through from"):
-    val result: Either[IllegalArgumentException, NonEmptyString] = NonEmptyString.from("test")
+  test("Error type flows through of"):
+    val result: Either[IllegalArgumentException, NonEmptyString] = NonEmptyString.of("test")
     assert(result.isRight)
 
-  test("Error type flows through extension"):
-    import Email.given
-    val result: Either[EmailError, Email] = "test@example.com".as[Email]
-    assert(result.isRight)
+  test("phantom type of succeeds for valid input"):
+    assertEquals(Distance.Metres.of(100.0), Right(Distance.Metres.ofUnsafe(100.0)))
+    assertEquals(Distance.Feet.of(328.0), Right(Distance.Feet.ofUnsafe(328.0)))
 
-  test("phantom type from succeeds for valid input"):
-    assertEquals(Distance.Metres.from(100.0), Right(Distance.Metres.wrap(100.0)))
-    assertEquals(Distance.Feet.from(328.0), Right(Distance.Feet.wrap(328.0)))
+  test("phantom type of fails for invalid input"):
+    assert(Distance.Metres.of(-1.0).isLeft)
+    assert(Distance.Feet.of(-1.0).isLeft)
 
-  test("phantom type from fails for invalid input"):
-    assert(Distance.Metres.from(-1.0).isLeft)
-    assert(Distance.Feet.from(-1.0).isLeft)
-
-  test("phantom type fromUnsafe works"):
-    val m = Distance.Metres.fromUnsafe(50.0)
+  test("phantom type ofUnsafe works"):
+    val m = Distance.Metres.ofUnsafe(50.0)
     assertEquals(Distance.Metres.unwrap(m), 50.0)
 
-  test("phantom type fromUnsafe throws for invalid"):
+  test("phantom type ofUnsafe throws for invalid"):
     intercept[IllegalArgumentException]:
-      Distance.Metres.fromUnsafe(-1.0)
-
-  test("phantom type extension as works"):
-    import Distance.Metres.given
-    assertEquals(100.0.as[Distance[Metres]], Right(Distance.Metres.wrap(100.0)))
-
-  test("phantom type extension asUnsafe works"):
-    import Distance.Feet.given
-    val d = 50.0.asUnsafe[Distance[Feet]]
-    assertEquals(Distance.Feet.unwrap(d), 50.0)
+      Distance.Metres.ofUnsafe(-1.0)
 
   test("phantom types are distinct at compile time"):
-    val metres: Distance[Metres] = Distance.Metres.wrap(100.0)
-    val feet: Distance[Feet] = Distance.Feet.wrap(328.0)
+    val metres: Distance[Metres] = Distance.Metres.ofUnsafe(100.0)
+    val feet: Distance[Feet] = Distance.Feet.ofUnsafe(328.0)
     assertEquals(Distance.Metres.unwrap(metres), 100.0)
     assertEquals(Distance.Feet.unwrap(feet), 328.0)
 
   test("phantom type CanEqual only allows same-unit comparison"):
-    val m1 = Distance.Metres.wrap(100.0)
-    val m2 = Distance.Metres.wrap(100.0)
+    val m1 = Distance.Metres.ofUnsafe(100.0)
+    val m2 = Distance.Metres.ofUnsafe(100.0)
     assertEquals(m1, m2)
     // Comparing Distance[Metres] to Distance[Feet] is a compile error
 
   test("error message contains relevant information"):
-    PositiveInt.from(-42) match
+    PositiveInt.of(-42) match
       case Left(e)  => assert(e.getMessage.contains("-42"))
       case Right(_) => fail("Expected Left")
 
   test("email error message includes input"):
-    Email.from("notvalid") match
+    Email.of("notvalid") match
       case Left(e)  => assert(e.getMessage.contains("notvalid"))
       case Right(_) => fail("Expected Left")
 
   test("whitespace-only string is valid for NonEmptyString"):
     // nonEmpty, not non-blank: whitespace-only strings pass.
-    assert(NonEmptyString.from("   ").isRight)
+    assert(NonEmptyString.of("   ").isRight)
 
   test("zero is invalid for PositiveInt"):
-    assert(PositiveInt.from(0).isLeft)
+    assert(PositiveInt.of(0).isLeft)
 
   test("negative zero for Distance is valid"):
     // IEEE 754: -0.0 == 0.0, and 0.0 >= 0.0 is true
-    assert(Distance.Metres.from(-0.0).isRight)
+    assert(Distance.Metres.of(-0.0).isRight)
 
   test("positive infinity is valid for Distance"):
-    assert(Distance.Metres.from(Double.PositiveInfinity).isRight)
+    assert(Distance.Metres.of(Double.PositiveInfinity).isRight)
 
   test("negative infinity is invalid for Distance"):
-    assert(Distance.Metres.from(Double.NegativeInfinity).isLeft)
+    assert(Distance.Metres.of(Double.NegativeInfinity).isLeft)
 
   test("NaN comparison for Distance"):
     // NaN >= 0.0 is false, so NaN should be invalid
-    assert(Distance.Metres.from(Double.NaN).isLeft)
+    assert(Distance.Metres.of(Double.NaN).isLeft)
 
   test("for-comprehension chains multiple validated types"):
     val result = for
-      name <- NonEmptyString.from("Alice")
-      age <- PositiveInt.from(30)
-      email <- Email.from("alice@example.com")
+      name <- NonEmptyString.of("Alice")
+      age <- PositiveInt.of(30)
+      email <- Email.of("alice@example.com")
     yield (name, age, email)
 
     assert(result.isRight)
@@ -386,9 +303,9 @@ class OpaqueTypeSuite extends FunSuite:
     var evaluatedEmail = false // scalafix:ok DisableSyntax.var
 
     val result = for
-      name <- NonEmptyString.from("")
+      name <- NonEmptyString.of("")
       email <-
-        evaluatedEmail = true; Email.from("test@test.com")
+        evaluatedEmail = true; Email.of("test@test.com")
     yield (name, email)
 
     assert(result.isLeft)
@@ -398,11 +315,11 @@ class OpaqueTypeSuite extends FunSuite:
     assertEquals(NonEmptyString.unwrap(NonEmptyString("hello")), "hello")
     assertEquals(PositiveInt.unwrap(PositiveInt(42)), 42)
 
-  test("apply throws for invalid input"):
+  test("apply delegating to ofUnsafe throws for invalid input"):
     intercept[IllegalArgumentException]:
       NonEmptyString("")
 
-  test("apply throws custom error type"):
+  test("apply delegating to ofUnsafe throws custom error type"):
     intercept[EmailError]:
       Email("not-an-email")
 
@@ -412,43 +329,10 @@ class OpaqueTypeSuite extends FunSuite:
 
   test("apply compile-time error for invalid literal"):
     val errors = scala.compiletime.testing.typeCheckErrors("boilerplate.CheckedPositive(0)")
-    assert(errors.nonEmpty, "Expected compile-time error for CheckedPositive(0)")
-    assert(errors.exists(_.message.contains("value must be positive")))
+    assert(errors.exists(_.message.contains("value must be positive")), errors.map(_.message).mkString)
 
   test("apply compile-time error for negative literal"):
     val errors = scala.compiletime.testing.typeCheckErrors("boilerplate.CheckedPositive(-1)")
-    assert(errors.nonEmpty, "Expected compile-time error for CheckedPositive(-1)")
-
-  test("const extension succeeds for valid input"):
-    import NonEmptyString.given
-    assertEquals(NonEmptyString.unwrap("hello".const[NonEmptyString]), "hello")
-
-  test("const extension throws for invalid input (default apply)"):
-    import NonEmptyString.given
-    intercept[IllegalArgumentException]:
-      "".const[NonEmptyString]
-
-  test("const extension works with Int underlying type"):
-    import PositiveInt.given
-    assertEquals(PositiveInt.unwrap(42.const[PositiveInt]), 42)
-
-  test("const extension preserves custom error type"):
-    import Email.given
-    intercept[EmailError]:
-      "invalid".const[Email]
-
-  test("const extension propagates constants for compile-time validation"):
-    import CheckedPositive.given
-    assertEquals(CheckedPositive.unwrap(42.const[CheckedPositive]), 42)
-
-  test("const extension compile-time error for invalid literal"):
-    val errors = scala.compiletime.testing.typeCheckErrors:
-      """
-      import boilerplate.CheckedPositive
-      import CheckedPositive.given
-      import boilerplate.const
-      0.const[CheckedPositive]
-      """
-    assert(errors.nonEmpty, "Expected compile-time error for 0.const[CheckedPositive]")
+    assert(errors.exists(_.message.contains("value must be positive")), errors.map(_.message).mkString)
 
 end OpaqueTypeSuite
