@@ -24,6 +24,7 @@ import scala.annotation.publicInBinary
 import scala.annotation.tailrec
 import scala.compiletime.erasedValue
 import scala.compiletime.error
+import scala.language.experimental.captureChecking
 
 /** A bounds-checked, borrowing view over caller-owned bytes - the ecosystem's one byte-slice
   * vocabulary. A `Slice` never owns, frees, or outlives its backing region: it is a borrower, valid
@@ -53,22 +54,25 @@ object Slice:
   /** The empty view. */
   val empty: Slice = of(Array.emptyByteArray)
 
-  extension (s: Slice)
+  extension (s: Slice^)
     /** True when the view spans no bytes. */
     def isEmpty: Boolean = s.length == 0
 
+    /** True when the view spans at least one byte. */
+    def nonEmpty: Boolean = s.length > 0
+
     /** A view of the first `n` bytes. Requires `0 <= n <= length`. */
-    def take(n: Int): Slice =
+    def take(n: Int): Slice^{s} =
       require(0 <= n && n <= s.length, "take bounds")
       new Slice(s.unsafeArray, s.unsafeOffset, n)
 
     /** A view past the first `n` bytes. Requires `0 <= n <= length`. */
-    def drop(n: Int): Slice =
+    def drop(n: Int): Slice^{s} =
       require(0 <= n && n <= s.length, "drop bounds")
       new Slice(s.unsafeArray, s.unsafeOffset + n, s.length - n)
 
     /** A view of the byte range `[from, until)`. Requires `0 <= from <= until <= length`. */
-    def slice(from: Int, until: Int): Slice =
+    def slice(from: Int, until: Int): Slice^{s} =
       require(0 <= from && from <= until && until <= s.length, "slice bounds")
       new Slice(s.unsafeArray, s.unsafeOffset + from, until - from)
 
@@ -79,7 +83,7 @@ object Slice:
       out
 
     /** Copies `min(length, dst.length)` bytes into `dst`, returning the number copied. */
-    def copyInto(dst: Slice): Int =
+    def copyInto(dst: Slice^): Int =
       val n = math.min(s.length, dst.length)
       System.arraycopy(s.unsafeArray, s.unsafeOffset, dst.unsafeArray, dst.unsafeOffset, n)
       n
@@ -108,7 +112,7 @@ object Slice:
     /** Compares content for equality. NOT constant-time - use [[constantTimeEquals]] where
       * comparison timing could leak a secret.
       */
-    def contentEquals(that: Slice): Boolean =
+    def contentEquals(that: Slice^): Boolean =
       s.length == that.length &&
         sameBytes(s.unsafeArray, s.unsafeOffset, that.unsafeArray, that.unsafeOffset, s.length)
 
@@ -117,7 +121,7 @@ object Slice:
       * timing oracle. Views of differing length compare unequal; that check is not itself
       * constant-time, as lengths are taken to be public.
       */
-    def constantTimeEquals(that: Slice): Boolean =
+    def constantTimeEquals(that: Slice^): Boolean =
       s.length == that.length &&
         ctEquals(s.unsafeArray, s.unsafeOffset, that.unsafeArray, that.unsafeOffset, s.length)
 
@@ -175,19 +179,19 @@ object Slice:
 
   // Concrete-return scalar readers. `@publicInBinary` so the `inline` readBE/readLE may reference
   // them from an expanded call site; kept private so the public surface is just readBE/readLE.
-  @publicInBinary private[Slice] def beShort(s: Slice, o: Int): Short =
+  @publicInBinary private[Slice] def beShort(s: Slice^, o: Int): Short =
     require(o >= 0 && o + 2 <= s.length, "readBE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
     (((b(i) & 0xff) << 8) | (b(i + 1) & 0xff)).toShort
 
-  @publicInBinary private[Slice] def beInt(s: Slice, o: Int): Int =
+  @publicInBinary private[Slice] def beInt(s: Slice^, o: Int): Int =
     require(o >= 0 && o + 4 <= s.length, "readBE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
     ((b(i) & 0xff) << 24) | ((b(i + 1) & 0xff) << 16) | ((b(i + 2) & 0xff) << 8) | (b(i + 3) & 0xff)
 
-  @publicInBinary private[Slice] def beLong(s: Slice, o: Int): Long =
+  @publicInBinary private[Slice] def beLong(s: Slice^, o: Int): Long =
     require(o >= 0 && o + 8 <= s.length, "readBE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
@@ -195,19 +199,19 @@ object Slice:
       ((b(i + 3) & 0xffL) << 32) | ((b(i + 4) & 0xffL) << 24) | ((b(i + 5) & 0xffL) << 16) |
       ((b(i + 6) & 0xffL) << 8) | (b(i + 7) & 0xffL)
 
-  @publicInBinary private[Slice] def leShort(s: Slice, o: Int): Short =
+  @publicInBinary private[Slice] def leShort(s: Slice^, o: Int): Short =
     require(o >= 0 && o + 2 <= s.length, "readLE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
     (((b(i + 1) & 0xff) << 8) | (b(i) & 0xff)).toShort
 
-  @publicInBinary private[Slice] def leInt(s: Slice, o: Int): Int =
+  @publicInBinary private[Slice] def leInt(s: Slice^, o: Int): Int =
     require(o >= 0 && o + 4 <= s.length, "readLE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
     ((b(i + 3) & 0xff) << 24) | ((b(i + 2) & 0xff) << 16) | ((b(i + 1) & 0xff) << 8) | (b(i) & 0xff)
 
-  @publicInBinary private[Slice] def leLong(s: Slice, o: Int): Long =
+  @publicInBinary private[Slice] def leLong(s: Slice^, o: Int): Long =
     require(o >= 0 && o + 8 <= s.length, "readLE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
@@ -217,14 +221,14 @@ object Slice:
 
   // Concrete scalar writers. `@publicInBinary` so the `inline` writeBE/writeLE may reference them
   // from an expanded call site; kept private so the public surface is just writeBE/writeLE.
-  @publicInBinary private[Slice] def putBeShort(s: Slice, o: Int, v: Short): Unit =
+  @publicInBinary private[Slice] def putBeShort(s: Slice^, o: Int, v: Short): Unit =
     require(o >= 0 && o + 2 <= s.length, "writeBE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
     b(i) = (v >>> 8).toByte
     b(i + 1) = v.toByte
 
-  @publicInBinary private[Slice] def putBeInt(s: Slice, o: Int, v: Int): Unit =
+  @publicInBinary private[Slice] def putBeInt(s: Slice^, o: Int, v: Int): Unit =
     require(o >= 0 && o + 4 <= s.length, "writeBE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
@@ -233,7 +237,7 @@ object Slice:
     b(i + 2) = (v >>> 8).toByte
     b(i + 3) = v.toByte
 
-  @publicInBinary private[Slice] def putBeLong(s: Slice, o: Int, v: Long): Unit =
+  @publicInBinary private[Slice] def putBeLong(s: Slice^, o: Int, v: Long): Unit =
     require(o >= 0 && o + 8 <= s.length, "writeBE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
@@ -247,14 +251,14 @@ object Slice:
     b(i + 7) = v.toByte
   end putBeLong
 
-  @publicInBinary private[Slice] def putLeShort(s: Slice, o: Int, v: Short): Unit =
+  @publicInBinary private[Slice] def putLeShort(s: Slice^, o: Int, v: Short): Unit =
     require(o >= 0 && o + 2 <= s.length, "writeLE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
     b(i) = v.toByte
     b(i + 1) = (v >>> 8).toByte
 
-  @publicInBinary private[Slice] def putLeInt(s: Slice, o: Int, v: Int): Unit =
+  @publicInBinary private[Slice] def putLeInt(s: Slice^, o: Int, v: Int): Unit =
     require(o >= 0 && o + 4 <= s.length, "writeLE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o
@@ -263,7 +267,7 @@ object Slice:
     b(i + 2) = (v >>> 16).toByte
     b(i + 3) = (v >>> 24).toByte
 
-  @publicInBinary private[Slice] def putLeLong(s: Slice, o: Int, v: Long): Unit =
+  @publicInBinary private[Slice] def putLeLong(s: Slice^, o: Int, v: Long): Unit =
     require(o >= 0 && o + 8 <= s.length, "writeLE out of range")
     val b = s.unsafeArray
     val i = s.unsafeOffset + o

@@ -41,19 +41,21 @@ import org.scalacheck.util.Pretty
 
 import boilerplate.effect.Eff
 
-// `GenConcurrent`/`GenTemporal` add no laws over `GenSpawn`, and every instance is a representation
-// cast of the corresponding `IO` instance, so `GenSpawn` lawfulness plus upstream carries them; the
-// primitives are exercised behaviourally in `EffSuite`. `Foldable`/`Traverse`/`Bifunctor` do not
-// apply - the error is a `Throwable` in the channel, not a foldable value.
+// `GenConcurrent`, `GenTemporal`, `Sync`, and `Async` all resolve from the single `Async` instance by
+// subtyping, so `GenSpawnTests` exercises the shared structure. `Foldable`/`Traverse`/`Bifunctor` do
+// not apply - the error is a `Throwable` in the channel, not a foldable value. Behavioural tests are
+// in `EffSuite`.
 class EffLawsSuite extends DisciplineSuite with EffTestInstances:
 
   type E = LawError
-  type TestEff[A] = Eff[IO, E, A]
+  type TestEff[A] = Eff[E, A]
 
   implicit val ticker: Ticker = Ticker(TestContext())
 
   implicit def arbIOEither[A: Arbitrary]: Arbitrary[IO[Either[E, A]]] =
-    Arbitrary(Arbitrary.arbitrary[Either[E, A]].map(IO.pure(_)))
+    Arbitrary(
+      Arbitrary.arbitrary[Either[E, A]].map(IO.pure(_))
+    )
 
   implicit def eqTestEff[A: Eq]: Eq[TestEff[A]] = eqEff[E, A]
 
@@ -77,7 +79,7 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances:
 
   implicit def arbTestEffFunc[A: Cogen, B: Arbitrary]: Arbitrary[TestEff[A => B]] =
     Arbitrary(
-      Arbitrary.arbFunction1[A, B].arbitrary.map(f => Eff.succeed[IO, E, A => B](f))
+      Arbitrary.arbFunction1[A, B].arbitrary.map(f => Eff.succeed(f))
     )
 
   implicit def cogenTestEff[A: Cogen]: Cogen[TestEff[A]] =
@@ -91,22 +93,22 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances:
 
   // GenSpawn tests include MonadCancel and Monad laws
   checkAll(
-    "Eff[IO, LawError, *].GenSpawn[Throwable]",
+    "Eff[LawError, *].GenSpawn[Throwable]",
     GenSpawnTests[TestEff, Throwable].spawn[Int, Int, Int]
   )
 
   checkAll(
-    "Eff[IO, LawError, *].Defer",
+    "Eff[LawError, *].Defer",
     DeferTests[TestEff].defer[Int]
   )
 
   checkAll(
-    "Eff[IO, LawError, *].Clock",
+    "Eff[LawError, *].Clock",
     ClockTests[TestEff].clock
   )
 
   checkAll(
-    "Eff[IO, LawError, *].Unique",
+    "Eff[LawError, *].Unique",
     UniqueTests[TestEff].unique
   )
 
@@ -116,17 +118,17 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances:
     EitherT.catsDataEqForEitherT[TestEff, E, Int]
 
   checkAll(
-    "Eff[IO, LawError, *].MonadError[LawError]",
+    "Eff[LawError, *].MonadError[LawError]",
     MonadErrorTests[TestEff, E].monadError[Int, Int, Int]
   )
 
   checkAll(
-    "Eff[IO, LawError, *].SemigroupK",
+    "Eff[LawError, *].SemigroupK",
     SemigroupKTests[TestEff].semigroupK[Int]
   )
 
   checkAll(
-    "Eff[IO, LawError, Int].Eq",
-    EqTests[Eff[IO, E, Int]].eqv
+    "Eff[LawError, Int].Eq",
+    EqTests[Eff[E, Int]].eqv
   )
 end EffLawsSuite

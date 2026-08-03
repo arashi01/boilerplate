@@ -20,275 +20,96 @@
  */
 package boilerplate.effect
 
-import scala.util.Try
+import scala.language.experimental.captureChecking
 
-import cats.ApplicativeError
-import cats.Functor
-import cats.Monad
-import cats.MonadThrow
 import cats.effect.IO
-import cats.effect.kernel.Deferred
 import cats.effect.kernel.Fiber
-import cats.effect.kernel.GenSpawn
-import cats.effect.kernel.MonadCancel
 import cats.effect.kernel.Outcome
-import cats.effect.kernel.Ref
 import cats.effect.kernel.Resource
-import cats.effect.std.AtomicCell
-import cats.effect.std.CountDownLatch
-import cats.effect.std.CyclicBarrier
-import cats.effect.std.Queue
-import cats.effect.std.Semaphore
-import cats.effect.std.Supervisor
 
+import boilerplate.Secret
 import boilerplate.Slice
 
-extension [F[_], A](resource: Resource[F, A])
-  /** Transforms this `Resource[F, A]` to `Resource[Eff.Of[F, E], A]`. */
-  inline def eff[E <: Throwable]: Resource[Eff.Of[F, E], A] =
-    Eff.liftResource(resource)
-
-  /** `use` with an `Eff`-returning body, keeping the `Resource` itself `E`-agnostic; release runs
-    * on success, typed error, and defect alike.
-    */
-  inline def useEff[E <: Throwable, B](f: A => Eff[F, E, B])(using MonadCancel[F, Throwable]): Eff[F, E, B] =
-    Eff.liftF(resource.use(a => f(a).absolve))
-
-extension [F[_], A](ref: Ref[F, A])
-  /** Returns a `Ref` operating in the `Eff` context. */
-  inline def eff[E <: Throwable]: Ref[Eff.Of[F, E], A] =
-    Eff.liftRef(ref)
-
-extension [F[_], A](deferred: Deferred[F, A])
-  /** Returns a `Deferred` operating in the `Eff` context. */
-  inline def eff[E <: Throwable]: Deferred[Eff.Of[F, E], A] =
-    Eff.liftDeferred(deferred)
-
-extension [F[_], A](queue: Queue[F, A])
-  /** Returns a `Queue` operating in the `Eff` context. */
-  inline def eff[E <: Throwable]: Queue[Eff.Of[F, E], A] =
-    Eff.liftQueue(queue)
-
-extension [F[_]](semaphore: Semaphore[F])
-  /** Returns a `Semaphore` operating in the `Eff` context. */
-  inline def eff[E <: Throwable]: Semaphore[Eff.Of[F, E]] =
-    Eff.liftSemaphore(semaphore)
-
-extension [F[_]](latch: CountDownLatch[F])
-  /** Returns a `CountDownLatch` operating in the `Eff` context. */
-  inline def eff[E <: Throwable]: CountDownLatch[Eff.Of[F, E]] =
-    Eff.liftLatch(latch)
-
-extension [F[_]](barrier: CyclicBarrier[F])
-  /** Returns a `CyclicBarrier` operating in the `Eff` context. */
-  inline def eff[E <: Throwable]: CyclicBarrier[Eff.Of[F, E]] =
-    Eff.liftBarrier(barrier)
-
-extension [F[_], A](cell: AtomicCell[F, A])
-  /** Returns an `AtomicCell` operating in the `Eff` context. */
-  inline def eff[E <: Throwable]: AtomicCell[Eff.Of[F, E], A] =
-    Eff.liftCell(cell)
-
-extension [F[_]](supervisor: Supervisor[F])
-  /** Returns a `Supervisor` operating in the `Eff` context. */
-  inline def eff[E <: Throwable]: Supervisor[Eff.Of[F, E]] =
-    Eff.liftSupervisor(supervisor)
-
-extension [E <: Throwable, A](either: Either[E, A])
-  /** Converts this `Either` into [[boilerplate.effect.Eff Eff]]. */
-  inline def eff[F[_]](using ApplicativeError[F, Throwable]): Eff[F, E, A] =
-    Eff.from(either)
-
-extension [F[_], E <: Throwable, A](fea: F[Either[E, A]])
-  /** Wraps an `F[Either]` as [[boilerplate.effect.Eff Eff]]. */
-  inline def eff(using MonadThrow[F]): Eff[F, E, A] =
-    Eff.lift(fea)
-
-extension [A](opt: Option[A])
-  /** Elevates an `Option` into [[boilerplate.effect.Eff Eff]], supplying an error when empty. */
-  inline def eff[F[_], E <: Throwable](ifNone: => E)(using ApplicativeError[F, Throwable]): Eff[F, E, A] =
-    Eff.from(opt, ifNone)
-
-extension [F[_], A](fo: F[Option[A]])
-  /** Elevates an `F[Option]` into [[boilerplate.effect.Eff Eff]]. */
-  inline def eff[E <: Throwable](ifNone: => E)(using MonadThrow[F]): Eff[F, E, A] =
-    Eff.lift(fo, ifNone)
-
-extension [A](result: Try[A])
-  /** Converts a `Try` into [[boilerplate.effect.Eff Eff]], translating failures. */
-  inline def eff[F[_], E <: Throwable](ifFailure: Throwable => E)(using ApplicativeError[F, Throwable]): Eff[F, E, A] =
-    Eff.from(result, ifFailure)
-
-extension [F[_], A](fa: F[A])
-  /** Captures throwable failures in `F` into [[boilerplate.effect.Eff Eff]]. */
-  inline def eff[E <: Throwable](ifFailure: Throwable => E)(using MonadThrow[F]): Eff[F, E, A] =
-    Eff.attempt(fa, ifFailure)
-
-  /** Lifts an infallible `F[A]` into [[boilerplate.effect.Eff Eff]], treating values as successes. */
-  inline def eff: UEff[F, A] =
-    Eff.liftF(fa)
-
-extension [F[_], E <: Throwable, A](fiber: Fiber[Eff.Of[F, E], Throwable, A])
-
+extension [E <: Throwable, A](fiber: Fiber[Eff.Of[E], Throwable, A])
   /** Joins the fibre: a success returns its value, a typed error `E` propagates, cancellation never
-    * completes. Unlike cats-effect's `joinWithNever`, this needs only `GenSpawn[F, Throwable]`.
+    * completes.
     */
-  inline def joinNever(using F: GenSpawn[F, Throwable]): Eff[F, E, A] =
+  inline def joinNever: Eff[E, A] =
     fiber.join.flatMap {
       case Outcome.Succeeded(fa) => fa
-      case Outcome.Errored(e)    => Eff.liftF[F, E, A](F.raiseError(e))
-      case Outcome.Canceled()    => Eff.liftF[F, E, A](F.never[A])
-    }(using F)
+      case Outcome.Errored(e)    => IO.raiseError[A](e)
+      case Outcome.Canceled()    => IO.never[A]
+    }
 
   /** Joins the fibre: a success returns its value, a typed error `E` propagates, cancellation fails
     * with `onCanceled`.
     */
-  inline def joinOrFail(onCanceled: => E)(using F: MonadCancel[F, Throwable]): Eff[F, E, A] =
+  inline def joinOrFail(onCanceled: => E): Eff[E, A] =
     fiber.join.flatMap {
       case Outcome.Succeeded(fa) => fa
-      case Outcome.Errored(e)    => Eff.liftF[F, E, A](F.raiseError(e))
+      case Outcome.Errored(e)    => IO.raiseError[A](e)
       case Outcome.Canceled()    => Eff.fail(onCanceled)
-    }(using F)
-end extension
-
-extension [E <: Throwable, A](fiber: Fiber[EffIO.Of[E], Throwable, A])
-
-  /** Joins the fibre: a success returns its value, a typed error `E` propagates, cancellation never
-    * completes. The `EffIO` sibling of the `Eff`-context `joinNever`.
-    */
-  inline def joinNever: EffIO[E, A] =
-    fiber.join.flatMap {
-      case Outcome.Succeeded(fa) => fa
-      case Outcome.Errored(e)    => EffIO.liftF(IO.raiseError[A](e))
-      case Outcome.Canceled()    => EffIO.liftF(IO.never[A])
-    }
-
-  /** Joins the fibre: a success returns its value, a typed error `E` propagates, cancellation fails
-    * with `onCanceled`.
-    */
-  inline def joinOrFail(onCanceled: => E): EffIO[E, A] =
-    fiber.join.flatMap {
-      case Outcome.Succeeded(fa) => fa
-      case Outcome.Errored(e)    => EffIO.liftF(IO.raiseError[A](e))
-      case Outcome.Canceled()    => EffIO.fail(onCanceled)
     }
 end extension
-
-extension [A](io: IO[A])
-  /** Captures throwable failures in `IO` into [[boilerplate.effect.EffIO EffIO]]. */
-  inline def effIO[E <: Throwable](ifFailure: Throwable => E): EffIO[E, A] =
-    EffIO.attempt(io, ifFailure)
-
-  /** Lifts an infallible `IO` into [[boilerplate.effect.EffIO EffIO]]. */
-  inline def effIO: UEffIO[A] =
-    EffIO.liftF(io)
-
-extension [E <: Throwable, A](io: IO[Either[E, A]])
-  /** Wraps an `IO[Either]` as [[boilerplate.effect.EffIO EffIO]]. */
-  inline def effIO: EffIO[E, A] =
-    EffIO.lift(io)
-
-extension [E <: Throwable, A](either: Either[E, A])
-  /** Converts this `Either` into [[boilerplate.effect.EffIO EffIO]]. */
-  inline def effIO: EffIO[E, A] =
-    EffIO.from(either)
-
-extension [A](opt: Option[A])
-  /** Elevates an `Option` into [[boilerplate.effect.EffIO EffIO]], supplying an error when empty. */
-  inline def effIO[E <: Throwable](ifNone: => E): EffIO[E, A] =
-    EffIO.from(opt, ifNone)
-
-extension [A](io: IO[Option[A]])
-  /** Elevates an `IO[Option]` into [[boilerplate.effect.EffIO EffIO]], supplying an error when
-    * empty.
-    */
-  inline def effIO[E <: Throwable](ifNone: => E): EffIO[E, A] =
-    EffIO.lift(io, ifNone)
-
-extension [A](result: Try[A])
-  /** Converts a `Try` into [[boilerplate.effect.EffIO EffIO]], translating failures. */
-  inline def effIO[E <: Throwable](ifFailure: Throwable => E): EffIO[E, A] =
-    EffIO.from(result, ifFailure)
-
-extension [A](resource: Resource[IO, A])
-  /** Transforms this `Resource[IO, A]` to `Resource[EffIO.Of[E], A]`. */
-  inline def effIO[E <: Throwable]: Resource[EffIO.Of[E], A] =
-    EffIO.liftResource(resource)
-
-  /** `use` with an `EffIO`-returning body, keeping the `Resource` itself `E`-agnostic; release runs
-    * on success, typed error, and defect alike.
-    */
-  inline def useEffIO[E <: Throwable, B](f: A => EffIO[E, B]): EffIO[E, B] =
-    EffIO.liftF(resource.use(a => f(a).absolve))
 
 extension (acquire: IO[Slice])
-  /** A `Resource` that acquires a secret slice through `acquire` and wipes it on release - on
-    * success, error, or cancellation of the using effect. Keep the working-copy allocation inside
-    * `acquire` so the slice is erased from the moment it exists; consume with [[useEffIO]] or
-    * `use`, and do not let the slice escape the use.
+  /** Acquires a secret slice through `acquire`, runs `f` on a view of it, then erases it - on
+    * success, typed error, and cancellation alike. Keep the working-copy allocation inside
+    * `acquire` so the slice is erased from the moment it exists.
+    *
+    * The scoped continuation, rather than a resource yielding the slice, is what makes the read
+    * window enforceable: a `Resource` has no binder to root a borrowed view's lifetime in, so a
+    * caller's `use` could read the slice after the wipe. Here the view may not escape `f`, nor may
+    * one re-sliced from it.
     */
-  inline def wiping: Resource[IO, Slice] =
-    Resource.make(acquire)(s => IO(s.wipe()))
+  def wiping[E <: Throwable, A](f: Slice^ => Eff[E, A]): Eff[E, A] =
+    Resource.make(acquire)(s => IO(s.wipe())).use(s => f(s).absolve)
 
-extension [A](ref: Ref[IO, A])
-  /** Returns a `Ref` operating in the `EffIO` context. */
-  inline def effIO[E <: Throwable]: Ref[EffIO.Of[E], A] =
-    EffIO.liftRef(ref)
+extension (s: Secret)
+  /** Runs `f` on a view of the bytes and then the effect it returns, holding the read guard for
+    * both - so a concurrent `destroy` cannot erase the bytes part-way through the operation, not
+    * merely part-way through the call. The view itself may not escape `f`.
+    */
+  def useEff[E <: Throwable, A](f: Slice^ => Eff[E, A]): Eff[E, A] =
+    IO(Secret.enter(s)).bracket(_ => Secret.unguarded(s)(f).absolve)(_ => IO(Secret.exit(s)))
 
-extension [A](deferred: Deferred[IO, A])
-  /** Returns a `Deferred` operating in the `EffIO` context. */
-  inline def effIO[E <: Throwable]: Deferred[EffIO.Of[E], A] =
-    EffIO.liftDeferred(deferred)
+extension (secret: Secret.type)
+  /** A resource filling a secret of `size` bytes through `init` and destroying it on release - on
+    * success, typed error, and cancellation alike.
+    */
+  def scoped(size: Int)(init: Slice^ => Unit): EffResource[Nothing, Secret] =
+    Resource.make(IO(Secret.fill(size)(init)))(s => IO(s.destroy()))
 
-extension [A](queue: Queue[IO, A])
-  /** Returns a `Queue` operating in the `EffIO` context. */
-  inline def effIO[E <: Throwable]: Queue[EffIO.Of[E], A] =
-    EffIO.liftQueue(queue)
+extension [A](io: IO[A])
+  /** This effect viewed as an infallible `Eff` - identity at runtime, committing `E = Nothing`
+    * (failures stay defects). Subtyping lifts an `IO` in every argument position already; this
+    * exists for the one position subtyping cannot reach - a leading `IO` generator in a
+    * for-comprehension selects `IO`'s own member `flatMap` before any typed step is considered,
+    * so mark that generator with `.eff` to keep the chain on the typed surface.
+    */
+  inline def eff: UEff[A] = io
 
-extension (semaphore: Semaphore[IO])
-  /** Returns a `Semaphore` operating in the `EffIO` context. */
-  inline def effIO[E <: Throwable]: Semaphore[EffIO.Of[E]] =
-    EffIO.liftSemaphore(semaphore)
+extension [A](resource: Resource[IO, A])
+  /** This resource viewed as an infallible `EffResource` - identity at runtime; the `Resource`
+    * counterpart of `eff` on `IO`, for the same leading-generator position.
+    */
+  inline def eff: EffResource[Nothing, A] = resource
 
-extension (latch: CountDownLatch[IO])
-  /** Returns a `CountDownLatch` operating in the `EffIO` context. */
-  inline def effIO[E <: Throwable]: CountDownLatch[EffIO.Of[E]] =
-    EffIO.liftLatch(latch)
-
-extension (barrier: CyclicBarrier[IO])
-  /** Returns a `CyclicBarrier` operating in the `EffIO` context. */
-  inline def effIO[E <: Throwable]: CyclicBarrier[EffIO.Of[E]] =
-    EffIO.liftBarrier(barrier)
-
-extension [A](cell: AtomicCell[IO, A])
-  /** Returns an `AtomicCell` operating in the `EffIO` context. */
-  inline def effIO[E <: Throwable]: AtomicCell[EffIO.Of[E], A] =
-    EffIO.liftCell(cell)
-
-extension (supervisor: Supervisor[IO])
-  /** Returns a `Supervisor` operating in the `EffIO` context. */
-  inline def effIO[E <: Throwable]: Supervisor[EffIO.Of[E]] =
-    EffIO.liftSupervisor(supervisor)
-
-// The monadic core re-declared at package level, delegating to the companions. Selection of `e.m`
-// falls back to an implicit conversion only when NO extension applies, at every scope level - so
-// these lexically visible twins stay selected ahead of cats' Ops-conversion syntax (e.g. from
-// `import cats.syntax.all.*`), whose `flatMap` over `Monad[Of[F, E]]` would pin `E` to the
-// receiver's and reject error-union widening in for-comprehensions.
-extension [F[_], E <: Throwable, A](self: Eff[F, E, A])
-  /** Maps the success channel while preserving the error type. */
-  inline def map[B](f: A => B)(using F: Functor[F]): Eff[F, E, B] =
+// The monadic core re-declared at package level, delegating to the companions, which carry its
+// documentation. Selection of `e.m` falls back to an implicit conversion only when NO extension
+// applies, at every scope level - so these lexically visible twins stay selected ahead of cats'
+// Ops-conversion syntax (e.g. from `import cats.syntax.all.*`), whose `flatMap` over `Monad[Of[E]]`
+// would pin `E` to the receiver's and reject error-union widening in for-comprehensions.
+extension [E <: Throwable, A](self: Eff[E, A])
+  inline def map[B](f: A => B): Eff[E, B] =
     Eff.map(self)(f)
 
-  /** Sequences computations, widening the error channel on demand. */
-  inline def flatMap[E2 >: E <: Throwable, B](f: A => Eff[F, E2, B])(using F: Monad[F]): Eff[F, E2, B] =
+  inline def flatMap[E2 >: E <: Throwable, B](f: A => Eff[E2, B]): Eff[E2, B] =
     Eff.flatMap(self)(f)
 
-extension [E <: Throwable, A](self: EffIO[E, A])
-  /** Maps the success channel while preserving the error type. */
-  inline def map[B](f: A => B): EffIO[E, B] =
-    EffIO.map(self)(f)
+extension [E <: Throwable, A](self: EffResource[E, A])
+  inline def map[B](f: A => B): EffResource[E, B] =
+    EffResource.map(self)(f)
 
-  /** Sequences computations, widening the error channel on demand. */
-  inline def flatMap[E2 >: E <: Throwable, B](f: A => EffIO[E2, B]): EffIO[E2, B] =
-    EffIO.flatMap(self)(f)
+  inline def flatMap[E2 >: E <: Throwable, B](f: A => EffResource[E2, B]): EffResource[E2, B] =
+    EffResource.flatMap(self)(f)

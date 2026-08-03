@@ -29,7 +29,7 @@ trait EffGenerators:
 
   implicit def arbitraryEff[E <: Throwable, A](using
     arbIO: Arbitrary[IO[Either[E, A]]]
-  ): Arbitrary[Eff[IO, E, A]] =
+  ): Arbitrary[Eff[E, A]] =
     Arbitrary(arbIO.arbitrary.map(Eff.lift(_)))
 
 object EffGenerators extends EffGenerators

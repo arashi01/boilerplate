@@ -18,18 +18,28 @@
  * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package boilerplate.effect.laws
+package boilerplate.effect
 
-import cats.effect.*
-import org.scalacheck.Arbitrary
+import scala.scalanative.unsafe.*
 
-import boilerplate.effect.EffIO
+import boilerplate.Slice
 
-trait EffIOGenerators:
+// Escape rejection is asserted by the build's `checkCaptureEscapes` - see SecretBorrowSuite for why
+// `typeCheckErrors` cannot express a capture-checking negative.
+class SliceBorrowEffectSuite extends munit.FunSuite:
+  test("an effect that reads the view and keeps only the result compiles and runs"):
+    val ptr = stackalloc[Byte](2)
+    ptr(0) = 3.toByte
+    ptr(1) = 4.toByte
+    val total: Eff[Nothing, Int] = Slice.borrowing(ptr, 2)(s => Eff.succeed(s(0) + s(1)))
+    assertEquals(total.absolve.syncStep(Int.MaxValue).unsafeRunSync().toOption, Some(7))
 
-  implicit def arbitraryEffIO[E <: Throwable, A](using
-    arbIO: Arbitrary[IO[Either[E, A]]]
-  ): Arbitrary[EffIO[E, A]] =
-    Arbitrary(arbIO.arbitrary.map(EffIO.lift(_)))
-
-object EffIOGenerators extends EffIOGenerators
+  test("an effect over a re-sliced view keeps only the result"):
+    val ptr = stackalloc[Byte](4)
+    ptr(0) = 1.toByte
+    ptr(1) = 2.toByte
+    ptr(2) = 3.toByte
+    ptr(3) = 4.toByte
+    val tail: Eff[Nothing, List[Byte]] = Slice.borrowing(ptr, 4)(s => Eff.succeed(s.drop(2).take(2).toArray.toList))
+    assertEquals(tail.absolve.syncStep(Int.MaxValue).unsafeRunSync().toOption, Some(List[Byte](3, 4)))
+end SliceBorrowEffectSuite

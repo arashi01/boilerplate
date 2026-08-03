@@ -29,15 +29,14 @@ import munit.CatsEffectSuite
 import boilerplate.effect.AppError.*
 import boilerplate.effect.IoError.*
 
-// With `import cats.syntax.all.*` in scope, each test pairs an infix `eff.map`/`.flatMap`/... call
-// with an expanded `Eff.method(eff)(...)` control and asserts they agree - whichever of the `Eff`
-// extension or cats' generic syntax wins resolution, behaviour must be identical. Resolution itself
-// is not pinned here: cats' imported syntax CAN win, and on an error-widening flatMap it pins `E`
-// to the receiver's - the documented reason the README scopes cats syntax imports narrowly.
+// Every row pairs an infix `eff.map`/`.flatMap`/... call with the expanded `Eff.method(eff)(...)`
+// control and asserts they agree, all under a blanket `import cats.syntax.all.*` - the scope in
+// which the package-level twins must stay selected ahead of cats' Ops conversions, whose `flatMap`
+// would pin `E` to the receiver's and reject an error-widening for-comprehension.
 class OverloadDisambiguationSuite extends CatsEffectSuite:
 
   test("map on Eff selects Eff extension over Functor syntax"):
-    val eff: Eff[IO, AppError, Int] = Eff.succeed(21)
+    val eff: Eff[AppError, Int] = Eff.succeed(21)
 
     val result = eff.map(_ * 2)
     val control = Eff.map(eff)(_ * 2)
@@ -50,10 +49,10 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(42))
 
   test("void on Eff selects Eff extension over Functor syntax"):
-    val eff: Eff[IO, AppError, Int] = Eff.succeed(42)
+    val eff: Eff[AppError, Int] = Eff.succeed(42)
 
-    val result: Eff[IO, AppError, Unit] = eff.void
-    val control: Eff[IO, AppError, Unit] = Eff.void(eff)
+    val result: Eff[AppError, Unit] = eff.void
+    val control: Eff[AppError, Unit] = Eff.void(eff)
 
     for
       r <- result.either
@@ -63,7 +62,7 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(()))
 
   test("as on Eff selects Eff extension over Functor syntax"):
-    val eff: Eff[IO, AppError, Int] = Eff.succeed(42)
+    val eff: Eff[AppError, Int] = Eff.succeed(42)
 
     val result = eff.as("done")
     val control = Eff.as(eff)("done")
@@ -76,7 +75,7 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right("done"))
 
   test("flatMap on Eff selects Eff extension over FlatMap syntax"):
-    val eff: Eff[IO, AppError, Int] = Eff.succeed(21)
+    val eff: Eff[AppError, Int] = Eff.succeed(21)
 
     val result = eff.flatMap(n => Eff.succeed(n * 2))
     val control = Eff.flatMap(eff)(n => Eff.succeed(n * 2))
@@ -89,8 +88,8 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(42))
 
   test("product on Eff selects Eff extension over Apply syntax"):
-    val left: Eff[IO, AppError, Int] = Eff.succeed(1)
-    val right: Eff[IO, AppError, String] = Eff.succeed("two")
+    val left: Eff[AppError, Int] = Eff.succeed(1)
+    val right: Eff[AppError, String] = Eff.succeed("two")
 
     val result = left.product(right)
     val control = Eff.product(left)(right)
@@ -103,8 +102,8 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right((1, "two")))
 
   test("productL (<*) on Eff selects Eff extension over Apply syntax"):
-    val left: Eff[IO, AppError, Int] = Eff.succeed(42)
-    val right: Eff[IO, AppError, String] = Eff.succeed("ignored")
+    val left: Eff[AppError, Int] = Eff.succeed(42)
+    val right: Eff[AppError, String] = Eff.succeed("ignored")
 
     val result = left <* right
     val control = Eff.productL(left)(right)
@@ -117,8 +116,8 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(42))
 
   test("productR (*>) on Eff selects Eff extension over Apply syntax"):
-    val left: Eff[IO, AppError, Int] = Eff.succeed(1)
-    val right: Eff[IO, AppError, String] = Eff.succeed("kept")
+    val left: Eff[AppError, Int] = Eff.succeed(1)
+    val right: Eff[AppError, String] = Eff.succeed("kept")
 
     val result = left *> right
     val control = Eff.productR(left)(right)
@@ -132,10 +131,10 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
 
   test("flatTap on Eff selects Eff extension over FlatMap syntax"):
     var observed: Option[Int] = None // scalafix:ok DisableSyntax.var
-    val eff: Eff[IO, AppError, Int] = Eff.succeed(42)
+    val eff: Eff[AppError, Int] = Eff.succeed(42)
 
-    val result = eff.flatTap(n => Eff.liftF(IO { observed = Some(n) }))
-    val control = Eff.flatTap(eff)(n => Eff.liftF(IO { observed = Some(n) }))
+    val result = eff.flatTap(n => IO { observed = Some(n) })
+    val control = Eff.flatTap(eff)(n => IO { observed = Some(n) })
 
     for
       r <- result.either
@@ -146,14 +145,14 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(observed, Some(42))
 
   test("valueOr on Eff is unique to boilerplate-effect (total error recovery, typed channel)"):
-    val eff: Eff[IO, AppError, Int] = Eff.fail(Invalid("boom"))
+    val eff: Eff[AppError, Int] = Eff.fail(Invalid("boom"))
 
     // `E` is the typed `AppError`, so the handler pattern-matches its subtypes.
-    val result: UEff[IO, Int] = eff.valueOr {
+    val result: UEff[Int] = eff.valueOr {
       case Invalid(reason) => reason.length
       case _               => -1
     }
-    val control: UEff[IO, Int] = Eff.valueOr(eff) {
+    val control: UEff[Int] = Eff.valueOr(eff) {
       case Invalid(reason) => reason.length
       case _               => -1
     }
@@ -166,13 +165,13 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(4))
 
   test("catchAll on Eff is unique to boilerplate-effect (total effectful recovery, typed channel)"):
-    val eff: Eff[IO, AppError, Int] = Eff.fail(NotFound("x"))
+    val eff: Eff[AppError, Int] = Eff.fail(NotFound("x"))
 
-    val result: Eff[IO, Nothing, Int] = eff.catchAll {
+    val result: Eff[Nothing, Int] = eff.catchAll {
       case NotFound(id) => Eff.succeed(id.length)
       case _            => Eff.succeed(-1)
     }
-    val control: Eff[IO, Nothing, Int] = Eff.catchAll(eff) {
+    val control: Eff[Nothing, Int] = Eff.catchAll(eff) {
       case NotFound(id) => Eff.succeed(id.length)
       case _            => Eff.succeed(-1)
     }
@@ -185,10 +184,10 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(1))
 
   test("catchSome on Eff is unique to boilerplate-effect (partial effectful recovery)"):
-    val eff: Eff[IO, AppError, Int] = Eff.fail(NotFound("known"))
+    val eff: Eff[AppError, Int] = Eff.fail(NotFound("known"))
 
-    val result: Eff[IO, AppError, Int] = eff.catchSome { case NotFound(_) => Eff.succeed(1) }
-    val control: Eff[IO, AppError, Int] = Eff.catchSome(eff) { case NotFound(_) => Eff.succeed(1) }
+    val result: Eff[AppError, Int] = eff.catchSome { case NotFound(_) => Eff.succeed(1) }
+    val control: Eff[AppError, Int] = Eff.catchSome(eff) { case NotFound(_) => Eff.succeed(1) }
 
     for
       r <- result.either
@@ -198,14 +197,14 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(1))
 
   test("redeemAll on Eff is unique to boilerplate-effect (effectful fold with error type change)"):
-    val eff: Eff[IO, AppError, Int] = Eff.fail(Invalid("boom"))
+    val eff: Eff[AppError, Int] = Eff.fail(Invalid("boom"))
 
     // cats uses `redeemWith` with a different signature; `redeemAll` is ours and may change `E`.
-    val result: Eff[IO, IoError, String] = eff.redeemAll(
+    val result: Eff[IoError, String] = eff.redeemAll(
       e => Eff.succeed(s"recovered: ${e.getMessage}"),
       a => Eff.succeed(s"value: $a")
     )
-    val control: Eff[IO, IoError, String] = Eff.redeemAll(eff)(
+    val control: Eff[IoError, String] = Eff.redeemAll(eff)(
       e => Eff.succeed(s"recovered: ${e.getMessage}"),
       a => Eff.succeed(s"value: $a")
     )
@@ -219,7 +218,7 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
 
   test("tapError on Eff is unique to boilerplate-effect"):
     var observed: Option[String] = None // scalafix:ok DisableSyntax.var
-    val eff: Eff[IO, AppError, Int] = Eff.fail(Invalid("boom"))
+    val eff: Eff[AppError, Int] = Eff.fail(Invalid("boom"))
 
     val result = eff.tapError(e => IO { observed = Some(e.getMessage) })
     val control = Eff.tapError(eff)(e => IO { observed = Some(e.getMessage) })
@@ -234,7 +233,7 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
 
   test("tap on Eff is unique to boilerplate-effect"):
     var observed: Option[Int] = None // scalafix:ok DisableSyntax.var
-    val eff: Eff[IO, AppError, Int] = Eff.succeed(42)
+    val eff: Eff[AppError, Int] = Eff.succeed(42)
 
     val result = eff.tap(n => IO { observed = Some(n) })
     val control = Eff.tap(eff)(n => IO { observed = Some(n) })
@@ -248,11 +247,11 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(observed, Some(42))
 
   test("alt on Eff is unique to boilerplate-effect (allows error type change)"):
-    val eff: Eff[IO, AppError, Int] = Eff.fail(Invalid("first error"))
-    val fallback: Eff[IO, IoError, Int] = Eff.succeed(42)
+    val eff: Eff[AppError, Int] = Eff.fail(Invalid("first error"))
+    val fallback: Eff[IoError, Int] = Eff.succeed(42)
 
-    val result: Eff[IO, IoError, Int] = eff.alt(fallback)
-    val control: Eff[IO, IoError, Int] = Eff.alt(eff)(fallback)
+    val result: Eff[IoError, Int] = eff.alt(fallback)
+    val control: Eff[IoError, Int] = Eff.alt(eff)(fallback)
 
     for
       r <- result.either
@@ -262,10 +261,10 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(42))
 
   test("orElseSucceed on Eff is unique to boilerplate-effect"):
-    val eff: Eff[IO, AppError, Int] = Eff.fail(Invalid("error"))
+    val eff: Eff[AppError, Int] = Eff.fail(Invalid("error"))
 
-    val result: UEff[IO, Int] = eff.orElseSucceed(0)
-    val control: UEff[IO, Int] = Eff.orElseSucceed(eff)(0)
+    val result: UEff[Int] = eff.orElseSucceed(0)
+    val control: UEff[Int] = Eff.orElseSucceed(eff)(0)
 
     for
       r <- result.either
@@ -275,10 +274,10 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(0))
 
   test("orElseFail on Eff is unique to boilerplate-effect"):
-    val eff: Eff[IO, AppError, Int] = Eff.fail(Invalid("error"))
+    val eff: Eff[AppError, Int] = Eff.fail(Invalid("error"))
 
-    val result: Eff[IO, IoError, Int] = eff.orElseFail(Closed)
-    val control: Eff[IO, IoError, Int] = Eff.orElseFail(eff)(Closed)
+    val result: Eff[IoError, Int] = eff.orElseFail(Closed)
+    val control: Eff[IoError, Int] = Eff.orElseFail(eff)(Closed)
 
     for
       r <- result.either
@@ -288,7 +287,7 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Left(Closed))
 
   test("semiflatMap on Eff selects Eff extension (not EitherT)"):
-    val eff: Eff[IO, AppError, Int] = Eff.succeed(21)
+    val eff: Eff[AppError, Int] = Eff.succeed(21)
 
     val result = eff.semiflatMap(n => IO.pure(n * 2))
     val control = Eff.semiflatMap(eff)(n => IO.pure(n * 2))
@@ -301,7 +300,7 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(42))
 
   test("subflatMap on Eff selects Eff extension (not EitherT)"):
-    val eff: Eff[IO, AppError, Int] = Eff.succeed(21)
+    val eff: Eff[AppError, Int] = Eff.succeed(21)
 
     val result = eff.subflatMap(n => Right(n * 2))
     val control = Eff.subflatMap(eff)(n => Right(n * 2))
@@ -314,7 +313,7 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, Right(42))
 
   test("fold on Eff selects Eff extension (not EitherT)"):
-    val eff: Eff[IO, AppError, Int] = Eff.fail(Invalid("boom"))
+    val eff: Eff[AppError, Int] = Eff.fail(Invalid("boom"))
 
     val result: IO[String] = eff.fold(e => s"error: ${e.getMessage}", a => s"value: $a")
     val control: IO[String] = Eff.fold(eff)(e => s"error: ${e.getMessage}", a => s"value: $a")
@@ -327,7 +326,7 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(c, "error: invalid: boom")
 
   test("foldF on Eff selects Eff extension (not EitherT)"):
-    val eff: Eff[IO, AppError, Int] = Eff.fail(Invalid("boom"))
+    val eff: Eff[AppError, Int] = Eff.fail(Invalid("boom"))
 
     val result: IO[String] = eff.foldF(e => IO.pure(s"error: ${e.getMessage}"), a => IO.pure(s"value: $a"))
     val control: IO[String] = Eff.foldF(eff)(e => IO.pure(s"error: ${e.getMessage}"), a => IO.pure(s"value: $a"))
@@ -341,7 +340,7 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
 
   test("bracket on Eff selects Eff extension (not MonadCancel)"):
     var released = false // scalafix:ok DisableSyntax.var
-    val acquire: Eff[IO, AppError, Int] = Eff.succeed(42)
+    val acquire: Eff[AppError, Int] = Eff.succeed(42)
 
     val result = acquire.bracket(n => Eff.succeed(n * 2))(_ => IO { released = true })
     val control = Eff.bracket(acquire)(n => Eff.succeed(n * 2))(_ => IO { released = true })
@@ -355,9 +354,9 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assert(released)
 
   test("bracketCase on Eff selects Eff extension (not MonadCancel)"):
-    // The release outcome is over `Eff.Of[IO, AppError]` and the phantom-erased value channel `Int`.
-    var outcome: Option[Outcome[Eff.Of[IO, AppError], Throwable, Int]] = None // scalafix:ok DisableSyntax.var
-    val acquire: Eff[IO, AppError, Int] = Eff.succeed(42)
+    // The release outcome is over `Eff.Of[AppError]` and the phantom-erased value channel `Int`.
+    var outcome: Option[Outcome[Eff.Of[AppError], Throwable, Int]] = None // scalafix:ok DisableSyntax.var
+    val acquire: Eff[AppError, Int] = Eff.succeed(42)
 
     val result = acquire.bracketCase(n => Eff.succeed(n * 2)) { (_, oc) =>
       IO { outcome = Some(oc) }
@@ -375,7 +374,7 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assert(outcome.exists(_.isSuccess))
 
   test("timeout on Eff selects Eff extension (not Temporal)"):
-    val eff: Eff[IO, AppError, Int] = Eff.succeed(42)
+    val eff: Eff[AppError, Int] = Eff.succeed(42)
 
     val result = eff.timeout(1.second, Timeout)
     val control = Eff.timeout(eff)(1.second, Timeout)
@@ -390,16 +389,15 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
   test("Eff.traverse is unique to boilerplate-effect"):
     val items = List(1, 2, 3)
 
-    val result = Eff.traverse[IO, AppError, Int, Int](items)(n => Eff.succeed(n * 2))
+    val result = Eff.traverse[AppError, Int, Int](items)(n => Eff.succeed(n * 2))
 
     for r <- result.either
     yield assertEquals(r, Right(List(2, 4, 6)))
 
   test("Eff.sequence is unique to boilerplate-effect"):
-    val effs: List[Eff[IO, AppError, Int]] =
-      List(Eff.succeed[IO, AppError, Int](1), Eff.succeed[IO, AppError, Int](2), Eff.succeed[IO, AppError, Int](3))
+    val effs: List[Eff[AppError, Int]] = List(Eff.succeed(1), Eff.succeed(2), Eff.succeed(3))
 
-    val result = Eff.sequence[IO, AppError, Int](effs)
+    val result = Eff.sequence[AppError, Int](effs)
 
     for r <- result.either
     yield assertEquals(r, Right(List(1, 2, 3)))
@@ -407,16 +405,15 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
   test("Eff.parTraverse is unique to boilerplate-effect"):
     val items = List(1, 2, 3)
 
-    val result = Eff.parTraverse[IO, AppError, Int, Int](items)(n => Eff.succeed(n * 2))
+    val result = Eff.parTraverse[AppError, Int, Int](items)(n => Eff.succeed(n * 2))
 
     for r <- result.either
     yield assertEquals(r, Right(List(2, 4, 6)))
 
   test("Eff.parSequence is unique to boilerplate-effect"):
-    val effs: List[Eff[IO, AppError, Int]] =
-      List(Eff.succeed[IO, AppError, Int](1), Eff.succeed[IO, AppError, Int](2), Eff.succeed[IO, AppError, Int](3))
+    val effs: List[Eff[AppError, Int]] = List(Eff.succeed(1), Eff.succeed(2), Eff.succeed(3))
 
-    val result = Eff.parSequence[IO, AppError, Int](effs)
+    val result = Eff.parSequence[AppError, Int](effs)
 
     for r <- result.either
     yield assertEquals(r, Right(List(1, 2, 3)))
@@ -426,10 +423,10 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
   // and allows the error type to change.
 
   test("alt falls back only on failure, leaving a success untouched"):
-    val recovered: Eff[IO, IoError, Int] =
-      (Eff.fail(Invalid("boom")): Eff[IO, AppError, Int]).alt(Eff.succeed(42))
-    val untouched: Eff[IO, IoError, Int] =
-      (Eff.succeed(1): Eff[IO, AppError, Int]).alt(Eff.succeed(2))
+    val recovered: Eff[IoError, Int] =
+      (Eff.fail(Invalid("boom")): Eff[AppError, Int]).alt(Eff.succeed(42))
+    val untouched: Eff[IoError, Int] =
+      (Eff.succeed(1): Eff[AppError, Int]).alt(Eff.succeed(2))
 
     for
       r <- recovered.either
@@ -480,69 +477,64 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
   // Abstract-`E` generic code must keep resolving the general overloads (a twin selects only when
   // `E` is statically `Nothing`); if a twin ever shadowed the general form, this helper would not
   // compile.
-  private def retryGeneric[E <: Throwable, A](eff: EffIO[E, A], n: Int)(using
+  private def retryGeneric[E <: Throwable, A](eff: Eff[E, A], n: Int)(using
     scala.reflect.TypeTest[Throwable, E]
-  ): EffIO[E, A] =
-    EffIO.retry(EffIO.retryWithBackoff(EffIO.retry(eff, n), n, 1.milli, None), RetryPolicy.constant(1.milli).withMaxAttempts(n))
-
-  private def retryGenericEff[F[_], E <: Throwable, A](eff: Eff[F, E, A], n: Int)(using
-    cats.effect.kernel.GenTemporal[F, Throwable],
-    scala.reflect.TypeTest[Throwable, E]
-  ): Eff[F, E, A] =
+  ): Eff[E, A] =
     Eff.retry(Eff.retryWithBackoff(Eff.retry(eff, n), n, 1.milli, None), RetryPolicy.constant(1.milli).withMaxAttempts(n))
 
   test("retry on an abstract E resolves the general overload without ambiguity"):
-    val eff: EffIO[AppError, Int] = EffIO.fail(Invalid("boom"))
-    val control: Eff[IO, AppError, Int] = Eff.fail(Invalid("boom"))
+    val eff: Eff[AppError, Int] = Eff.fail(Invalid("boom"))
 
-    for
-      r <- retryGeneric(eff, 2).either
-      c <- retryGenericEff(control, 2).either
-    yield
-      assertEquals(r, Left(Invalid("boom")))
-      assertEquals(c, Left(Invalid("boom")))
+    for r <- retryGeneric(eff, 2).either
+    yield assertEquals(r, Left(Invalid("boom")))
 
   // The package-level map/flatMap twins are selected ahead of cats' Ops conversions, whose
-  // `flatMap` would pin `E` to the first step's type. This test IS the guard: it fails to
-  // compile if resolution regresses under the blanket cats syntax import at the top of this file.
-  test("for-comprehension union widening survives cats.syntax.all on both surfaces"):
-    def findE(id: String): Eff[IO, NotFound, Int] = if id == "1" then Eff.succeed(1) else Eff.fail(NotFound(id))
-    def checkE(n: Int): Eff[IO, Invalid, Int] = if n > 0 then Eff.succeed(n) else Eff.fail(Invalid("neg"))
-    val effW: Eff[IO, AppError, Int] = for
-      a <- findE("1")
-      b <- checkE(a)
-    yield b
+  // `flatMap` would pin `E` to the first step's type. These two tests ARE the guard: either fails
+  // to compile if resolution regresses under the blanket cats syntax import at the top of this file.
+  test("for-comprehension union widening on Eff survives cats.syntax.all"):
+    def findE(id: String): Eff[NotFound, Int] = if id == "1" then Eff.succeed(1) else Eff.fail(NotFound(id))
+    def checkE(n: Int): Eff[Invalid, Int] = if n > 0 then Eff.succeed(n) else Eff.fail(Invalid("neg"))
 
-    def findIO(id: String): EffIO[NotFound, Int] = if id == "1" then EffIO.succeed(1) else EffIO.fail(NotFound(id))
-    def checkIO(n: Int): EffIO[Invalid, Int] = if n > 0 then EffIO.succeed(n) else EffIO.fail(Invalid("neg"))
-    val ioW: EffIO[AppError, Int] = for
-      a <- findIO("1")
-      b <- checkIO(a)
-    yield b
+    val widened: Eff[NotFound | Invalid, Int] =
+      for
+        a <- findE("1")
+        b <- checkE(a)
+      yield b
 
-    for
-      r <- effW.either
-      r2 <- ioW.either
-    yield
-      assertEquals(r, Right(1))
-      assertEquals(r2, Right(1))
+    for r <- widened.either
+    yield assertEquals(r, Right(1))
+
+  test("for-comprehension union widening on EffResource survives cats.syntax.all"):
+    def openR(id: String): EffResource[NotFound, Int] =
+      EffResource.eval(if id == "1" then Eff.succeed(1) else Eff.fail(NotFound(id)))
+    def checkR(n: Int): EffResource[Invalid, Int] =
+      EffResource.eval(if n > 0 then Eff.succeed(n) else Eff.fail(Invalid("neg")))
+
+    val widened: EffResource[NotFound | Invalid, Int] =
+      for
+        a <- openR("1")
+        b <- checkR(a)
+      yield b
+
+    for r <- widened.use(n => Eff.succeed(n)).either
+    yield assertEquals(r, Right(1))
 
   test("policy retry disambiguates the retryOn and onRetry overloads by arity, twins included"):
     val policy = RetryPolicy.constant(1.milli).withMaxAttempts(2)
-    val typed: EffIO[AppError, Int] = EffIO.fail(Invalid("boom"))
-    val infallible: UEffIO[Int] = EffIO.succeed(1)
+    val typed: Eff[AppError, Int] = Eff.fail(Invalid("boom"))
+    val infallible: UEff[Int] = Eff.succeed(1)
 
     // General overloads on a concrete typed channel: a one-arg lambda selects `retryOn`, a
     // three-arg lambda selects `onRetry`, and both together select the full form.
-    val withPred = EffIO.retry(typed, policy, (_: AppError) => false)
-    val withHook = EffIO.retry(typed, policy, (_: Int, _: AppError, _: FiniteDuration) => IO.unit)
-    val withBoth = EffIO.retry(typed, policy, (_: AppError) => false, (_: Int, _: AppError, _: FiniteDuration) => IO.unit)
+    val withPred = Eff.retry(typed, policy, (_: AppError) => false)
+    val withHook = Eff.retry(typed, policy, (_: Int, _: AppError, _: FiniteDuration) => IO.unit)
+    val withBoth = Eff.retry(typed, policy, (_: AppError) => false, (_: Int, _: AppError, _: FiniteDuration) => IO.unit)
 
     // The `Nothing` twins resolve for a statically infallible receiver - no TypeTest, no retries.
-    val twinPlain = EffIO.retry(infallible, policy)
-    val twinPred = EffIO.retry(infallible, policy, (_: Nothing) => true)
-    val twinHook = EffIO.retry(infallible, policy, (_: Int, _: Nothing, _: FiniteDuration) => IO.unit)
-    val twinBoth = EffIO.retry(infallible, policy, (_: Nothing) => true, (_: Int, _: Nothing, _: FiniteDuration) => IO.unit)
+    val twinPlain = Eff.retry(infallible, policy)
+    val twinPred = Eff.retry(infallible, policy, (_: Nothing) => true)
+    val twinHook = Eff.retry(infallible, policy, (_: Int, _: Nothing, _: FiniteDuration) => IO.unit)
+    val twinBoth = Eff.retry(infallible, policy, (_: Nothing) => true, (_: Int, _: Nothing, _: FiniteDuration) => IO.unit)
 
     for
       p <- withPred.either

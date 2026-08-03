@@ -30,18 +30,16 @@ class SliceWipingSuite extends CatsEffectSuite:
 
   test("wiping runs the use over the secret, then erases it"):
     val backing = Array[Byte](1, 2, 3, 4)
-    IO(Slice.of(backing)).wiping
-      .useEffIO[Throwable, List[Byte]](s => EffIO.succeed(s.toArray.toList))
-      .either
+    val used: Eff[Nothing, List[Byte]] = IO(Slice.of(backing)).wiping(s => Eff.succeed(s.toArray.toList))
+    used.either
       .map: result =>
         assertEquals(result, Right(List[Byte](1, 2, 3, 4))) // the use observed the secret
         assertEquals(backing.toList, List[Byte](0, 0, 0, 0)) // erased on release
 
   test("wiping erases the secret even when the use fails"):
     val backing = Array[Byte](1, 2, 3, 4)
-    IO(Slice.of(backing)).wiping
-      .useEffIO[AppError, Unit](_ => EffIO.fail(Timeout))
-      .either
+    val used: Eff[AppError, Unit] = IO(Slice.of(backing)).wiping(_ => Eff.fail(Timeout))
+    used.either
       .map: result =>
         assertEquals(result, Left(Timeout))
         assertEquals(backing.toList, List[Byte](0, 0, 0, 0))
@@ -50,8 +48,8 @@ class SliceWipingSuite extends CatsEffectSuite:
     val backing = Array[Byte](1, 2, 3, 4)
     for
       started <- IO.deferred[Unit]
-      fiber <- IO(Slice.of(backing)).wiping
-                 .useEffIO[Throwable, Unit](_ => EffIO.liftF(started.complete(()).flatMap(_ => IO.never[Unit])))
+      fiber <- IO(Slice.of(backing))
+                 .wiping(_ => started.complete(()).flatMap(_ => IO.never[Unit]))
                  .absolve
                  .start
       _ <- started.get // the use has begun, so the resource is acquired

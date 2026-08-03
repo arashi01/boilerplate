@@ -36,20 +36,20 @@ import boilerplate.effect.Eff
 // (needing a `TypeTest[Throwable, E]`, synthesised for the concrete law error) before comparing.
 trait EffTestInstances extends CatsEffectTestInstances with EffGenerators:
 
-  implicit def eqEff[E <: Throwable: Eq, A: Eq](using ticker: Ticker, tt: TypeTest[Throwable, E]): Eq[Eff[IO, E, A]] =
-    Eq.by[Eff[IO, E, A], IO[Either[E, A]]](_.either)(using eqIOA[Either[E, A]])
+  implicit def eqEff[E <: Throwable: Eq, A: Eq](using ticker: Ticker, tt: TypeTest[Throwable, E]): Eq[Eff[E, A]] =
+    Eq.by[Eff[E, A], IO[Either[E, A]]](_.either)(using eqIOA[Either[E, A]])
 
-  implicit def cogenEff[E <: Throwable: Cogen, A: Cogen](using ticker: Ticker, tt: TypeTest[Throwable, E]): Cogen[Eff[IO, E, A]] =
+  implicit def cogenEff[E <: Throwable: Cogen, A: Cogen](using ticker: Ticker, tt: TypeTest[Throwable, E]): Cogen[Eff[E, A]] =
     cogenIO[Either[E, A]].contramap(_.either)
 
-  implicit def prettyEff[E <: Throwable, A](using ticker: Ticker, tt: TypeTest[Throwable, E]): Eff[IO, E, A] => Pretty =
+  implicit def prettyEff[E <: Throwable, A](using ticker: Ticker, tt: TypeTest[Throwable, E]): Eff[E, A] => Pretty =
     eff => Pretty(_ => unsafeRun(eff.either).toString)
 
-  implicit def isomorphismsEff[E <: Throwable]: Isomorphisms[Eff.Of[IO, E]] =
-    Isomorphisms.invariant[Eff.Of[IO, E]]
+  implicit def isomorphismsEff[E <: Throwable]: Isomorphisms[Eff.Of[E]] =
+    Isomorphisms.invariant[Eff.Of[E]]
 
   // Passes only when the effect completes successfully with `Right(true)`.
-  implicit def effBooleanToProp[E <: Throwable](eff: Eff[IO, E, Boolean])(using ticker: Ticker, tt: TypeTest[Throwable, E]): Prop =
+  implicit def effBooleanToProp[E <: Throwable](eff: Eff[E, Boolean])(using ticker: Ticker, tt: TypeTest[Throwable, E]): Prop =
     Prop(unsafeRun(eff.either).fold(false, _ => false, _.fold(false)(_.fold(_ => false, identity))))
 end EffTestInstances
 

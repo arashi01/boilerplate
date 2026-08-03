@@ -21,21 +21,16 @@
 package boilerplate
 
 import scala.language.experimental.captureChecking
-import scala.util.control.NoStackTrace
 
-/** The typed error for the untrusted-bounds reader [[sliceOrError]] - wire input whose bounds are
-  * attacker-controlled. Trusted-bounds operations (`take`/`drop`/`slice`,
-  * `apply`/`readBE`/`readLE`) raise instead.
-  */
-sealed abstract class SliceError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
-object SliceError:
-  /** The requested range `[from, until)` did not satisfy `0 <= from <= until <= length`. */
-  final case class OutOfBounds(from: Int, until: Int, length: Int) extends SliceError(s"slice [$from, $until) is outside [0, $length]")
+// The opted-in caller. Escape rejection is asserted by the build's `checkCaptureEscapes`, not here:
+// `typeCheckErrors` compiles its snippet in a nested scope, where the language import is rejected
+// and the body is never capture-checked, so such a row would pass without the `^` annotation.
+class SecretBorrowSuite extends munit.FunSuite:
+  test("a scoped read that keeps nothing compiles"):
+    val secret = Secret.fill(4)(view => view(0) = 7)
+    assertEquals(secret.use(view => view(0)), 7.toByte)
 
-extension (s: Slice^)
-  /** The untrusted-bounds reader for wire input: `Right(view)` when `0 <= from <= until <= length`,
-    * else `Left(SliceError.OutOfBounds)`. Trusted callers use `slice`, which raises.
-    */
-  def sliceOrError(from: Int, until: Int): Either[SliceError, Slice^{s}] =
-    if 0 <= from && from <= until && until <= s.length then Right(s.slice(from, until))
-    else Left(SliceError.OutOfBounds(from, until, s.length))
+  test("a re-sliced view is readable inside the scope and its copy outlives it"):
+    val secret = Secret.fill(4)(view => { view(1) = 8; view(2) = 9 })
+    assertEquals(secret.use(view => view.drop(1).take(2).toArray).toList, List[Byte](8, 9))
+end SecretBorrowSuite
