@@ -1,4 +1,4 @@
-name: "build"
+name: "ci"
 
 on:
   workflow_dispatch:
@@ -31,7 +31,7 @@ env:
 
 jobs:
   test_jvm:
-    name: "[JVM: jdk-${{ matrix.java }}] TEST"
+    name: "jvm / jdk-${{ matrix.java }} / test"
     strategy:
       fail-fast: false
       matrix:
@@ -77,7 +77,7 @@ jobs:
           if-no-files-found: error
 
   test_js:
-    name: "[JS: node-${{ matrix.node }}] TEST"
+    name: "js / node-${{ matrix.node }} / test"
     strategy:
       fail-fast: false
       matrix:
@@ -129,7 +129,7 @@ jobs:
           if-no-files-found: error
 
   test_native:
-    name: "[Native: ${{ matrix.target }}]"
+    name: "native / ${{ matrix.target }} / test"
     strategy:
       fail-fast: false
       matrix:
@@ -212,7 +212,7 @@ jobs:
           if-no-files-found: error
 
   static_analysis:
-    name: Static Analysis
+    name: analysis
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
@@ -262,7 +262,7 @@ jobs:
           fi
 
   snapshot:
-    name: Publish Snapshot
+    name: "publish / snapshot"
     needs:
       - test_jvm
       - test_js
@@ -299,7 +299,7 @@ jobs:
           SONATYPE_PASSWORD: ${{ secrets.OSS_PUBLISH_USER_PASSPHRASE }}
 
   release:
-    name: Publish Release
+    name: "publish / release"
     needs:
       - test_jvm
       - test_js
@@ -398,7 +398,7 @@ jobs:
             $prerelease_flag
 
   dependency-graph:
-    name: Update Dependency Graph
+    name: dependency-graph
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     permissions:
