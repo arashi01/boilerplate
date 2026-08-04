@@ -322,6 +322,33 @@ class EffSuite extends CatsEffectSuite:
     val narrowed: Eff[IoError, Int] = onApp.catchOnly((_: AppError) => Eff.fail[IoError](Closed))
     run(narrowed).map(r => assertEquals(r, Left(Closed)))
 
+  test("catchOnly with an infallible handler infers the narrow residual unascribed"):
+    val onApp: Eff[IoError | AppError, Int] = Eff.fail(NotFound("u2"))
+    // No ascription: the infallible-handler twin subtracts the handled arm. The witness is the
+    // compile-time lock - it fails if the residual ever widens again.
+    val handled = onApp.catchOnly((_: AppError) => Eff.succeed(-1))
+    val _ = summon[handled.type <:< Eff[IoError, Int]]
+    run(handled).map(r => assertEquals(r, Right(-1)))
+
+  test("catchOnly whose handler covers the whole channel infers an infallible residual"):
+    val root: Eff[AppError, Int] = Eff.fail(Invalid("all"))
+    val closed = root.catchOnly((_: AppError) => Eff.succeed(0))
+    val _ = summon[closed.type <:< UEff[Int]]
+    run(closed).map(r => assertEquals(r, Right(0)))
+
+  test("catchOnly on a root-typed channel stays bounded by the root"):
+    val root: Eff[AppError, Int] = Eff.fail(NotFound("x"))
+    val bounded = root.catchOnly((_: NotFound) => Eff.succeed(1))
+    val _ = summon[bounded.type <:< Eff[AppError, Int]]
+    run(bounded).map(r => assertEquals(r, Right(1)))
+
+  test("a defect downstream of an infallible-handler catchOnly propagates through catchAll"):
+    // The narrow residual is what keeps later observers honest: on a Throwable-widened channel the
+    // identity TypeTest would reify this defect as a typed Left and catchAll would swallow it.
+    val rogue: Eff[IoError | AppError, Int] = IO.raiseError(RuntimeException("DEFECT"))
+    val recovered = rogue.catchOnly((_: AppError) => Eff.succeed(-1))
+    recovered.catchAll(_ => Eff.succeed(0)).absolve.attempt.map(r => assert(r.left.exists(_.getMessage == "DEFECT")))
+
   test("mapError transforms the typed channel and leaves a defect untouched"):
     val boom: Eff[IoError, Int] = IO.raiseError(RuntimeException("boom"))
     for

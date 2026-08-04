@@ -38,7 +38,8 @@ import cats.effect.kernel.Resource
   * `EffResource`-typed position by subtyping alone, and `absolve` is the explicit way back.
   * Expressing the error in a covariant parameter of the resource type - rather than inside an
   * invariant `F` - is what lets an acquisition channel widen: composing resources of distinct error
-  * types infers their union with no `mapK` and no cast.
+  * types widens the channel exactly as [[boilerplate.effect.Eff Eff]] does (their join; the union
+  * by ascription) with no `mapK` and no cast.
   *
   * Release never carries a typed error. A finaliser runs on success, typed failure and cancellation
   * alike, and has no channel of its own to fail into; anything it raises is a defect on `IO`'s
@@ -79,7 +80,14 @@ object EffResource:
   val unit: EffResource[Nothing, Unit] = Resource.unit
 
   extension [E <: Throwable, A](self: EffResource[E, A])
-    /** Acquires, runs `f`, and releases - on success, typed failure and cancellation alike. */
+    /** Acquires, runs `f`, and releases - on success, typed failure and cancellation alike.
+      *
+      * The yielded value is alive only until release runs, and nothing here stops `f` returning it.
+      * For a payload release erases (a borrowed view, secret bytes), the scoped continuation APIs
+      * (`wiping` on the acquiring `IO[Slice]`, `useEff` on `Secret`) are the enforced read window -
+      * a resource has no binder to root a view's lifetime in, so enforcement lives at continuation
+      * seams.
+      */
     inline def use[E2 >: E <: Throwable, B](f: A => Eff[E2, B]): Eff[E2, B] =
       (self: Resource[IO, A]).use(a => f(a).absolve)
 
@@ -122,9 +130,10 @@ object EffResource:
 
   /** Retries ACQUISITION on typed failures, paced and bounded by `policy`; the final typed error
     * propagates once the policy stops. Only acquisition is in scope - the client-pool shape: a
-    * failed attempt has already released whatever prefix it acquired, the retried allocation is
-    * registered atomically once it succeeds, and the consumer of the resource is never re-run. A
-    * defect propagates without retrying.
+    * failed attempt has already released whatever prefix it acquired, the next attempt re-acquires
+    * the WHOLE composed resource (place `retry` on an inner stage before composing to re-run that
+    * stage alone), the retried allocation is registered atomically once it succeeds, and the
+    * consumer of the resource is never re-run. A defect propagates without retrying.
     */
   inline def retry[E <: Throwable, A](resource: EffResource[E, A], policy: RetryPolicy)(using
     TypeTest[Throwable, E]

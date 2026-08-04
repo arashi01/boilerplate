@@ -183,6 +183,21 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
       assertEquals(r, Right(1))
       assertEquals(c, Right(1))
 
+  test("catchOnly disambiguates the infallible-handler twin from the general overload"):
+    val consumed: Eff[NotFound | Invalid, Int] = Eff.fail(Invalid("boom"))
+    // Infallible handler -> the twin: the residual is inferred narrow with no ascription.
+    val narrowed = consumed.catchOnly((_: Invalid) => Eff.succeed(0))
+    val _ = summon[narrowed.type <:< Eff[NotFound, Int]]
+    // Fallible handler -> the general overload: the handler's return pins the residual.
+    val pinned = consumed.catchOnly((_: Invalid) => Eff.fail[NotFound](NotFound("x")))
+    val _ = summon[pinned.type <:< Eff[NotFound, Int]]
+    for
+      n <- narrowed.either
+      p <- pinned.either
+    yield
+      assertEquals(n, Right(0))
+      assertEquals(p, Left(NotFound("x")))
+
   test("catchSome on Eff is unique to boilerplate-effect (partial effectful recovery)"):
     val eff: Eff[AppError, Int] = Eff.fail(NotFound("known"))
 

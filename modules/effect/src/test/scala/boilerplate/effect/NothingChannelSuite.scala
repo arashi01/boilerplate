@@ -51,6 +51,10 @@ class NothingChannelSuite extends CatsEffectSuite:
     val _ = eff.mapError(identity)
     val _ = eff.fold(_ => 0, _ => 1)
     val _ = eff.orElseSucceed(())
+    // Both catchOnly forms: the infallible handler selects the residual-bounded twin (full
+    // coverage, so the residual is Nothing), the fallible one the general overload.
+    val _ = eff.catchOnly((_: E) => Eff.never)
+    val _ = eff.catchOnly((e: E) => Eff.fail(e))
     // `retry`/`retryWithBackoff` are companion functions, not observers, but they take the same
     // `TypeTest`; abstract `E` must resolve the general overloads, never the `Nothing` twins.
     val _ = Eff.retry(eff, 3)
@@ -72,6 +76,18 @@ class NothingChannelSuite extends CatsEffectSuite:
   test("catchAll does not recover")(propagates(defect.catchAll(absurd).absolve))
   test("catchSome does not recover")(propagates(defect.catchSome(PartialFunction.empty).absolve))
   test("catchOnly does not recover")(propagates(defect.catchOnly(absurd).absolve))
+  test("catchOnly does not recover an H-typed defect"):
+    // Sharper than the absurd row: the defect IS an AppError, but on the infallible channel it is
+    // a defect, so the identity twin must propagate it rather than hand it to either handler kind.
+    // Asserting the ORIGINAL error distinguishes identity propagation from capture-and-refail.
+    val typedDefect: UEff[Int] = IO.raiseError[Int](Invalid("DEFECT"))
+    def propagatesOriginal(io: IO[Int]): IO[Unit] =
+      io.attempt.map {
+        case Left(_: Invalid) => ()
+        case other            => fail(s"defect not propagated unchanged: $other")
+      }
+    propagatesOriginal(typedDefect.catchOnly((_: AppError) => Eff.succeed(0)).absolve) *>
+      propagatesOriginal(typedDefect.catchOnly((_: AppError) => Eff.fail(IoError.Closed)).absolve)
   test("alt does not fall back")(propagates(defect.alt(Eff.succeed(0)).absolve))
   test("orElseSucceed does not recover")(propagates(defect.orElseSucceed(0).absolve))
   test("orElseFail does not replace")(propagates(defect.orElseFail(new RuntimeException("other")).absolve))
