@@ -30,7 +30,8 @@ import scala.language.experimental.captureChecking
   *
   * The bytes are reachable only inside a scoped view: there is no accessor, no copy-out, and no
   * rendering of the contents. `toString` reports the length alone, `hashCode` is constant so a
-  * secret cannot seed a hash oracle, and equality is constant-time over the contents.
+  * secret cannot seed a hash oracle, and equality is constant-time over the contents. A destroyed
+  * secret is equal only to itself: erased bytes are an implementation artifact, not a value.
   *
   * The class is a bare carrier; every operation lives as an extension in [[Secret$]]. Construct
   * with [[Secret$.fill]], read with `use`, erase with `destroy`.
@@ -45,9 +46,22 @@ final class Secret private (private val bytes: Array[Byte]):
 
   override def hashCode: Int = 0
 
+  // Holding the read guard on BOTH carriers makes the destroyed-check atomic with the byte read
+  // and gives a concurrent `destroy` the same in-use protection as `use`; the identity test first
+  // keeps a destroyed secret reflexively equal.
   override def equals(that: Any): Boolean = that match
-    case other: Secret => Slice.of(bytes).constantTimeEquals(Slice.of(other.bytes))
-    case _             => false
+    case other: Secret =>
+      (this eq other) || {
+        if Secret.tryEnter(this) then
+          try
+            if Secret.tryEnter(other) then
+              try Slice.of(bytes).constantTimeEquals(Slice.of(other.bytes))
+              finally Secret.exit(other)
+            else false
+          finally Secret.exit(this)
+        else false
+      }
+    case _ => false
 end Secret
 
 /** Provides the constructor and the scoped-read, erase, and lifecycle extensions for
@@ -100,6 +114,14 @@ object Secret:
     val current = s.state.get()
     if current < 0 then throw new IllegalStateException("secret already destroyed") // scalafix:ok DisableSyntax.throw
     else if !s.state.compareAndSet(current, current + 1) then enter(s)
+
+  // As `enter`, but a destroyed carrier reports false instead of raising: equality must stay
+  // total, and its destroyed-check must be atomic with the read it guards.
+  @tailrec private def tryEnter(s: Secret): Boolean =
+    val current = s.state.get()
+    if current < 0 then false
+    else if s.state.compareAndSet(current, current + 1) then true
+    else tryEnter(s)
 
   private[boilerplate] def exit(s: Secret): Unit =
     val _ = s.state.decrementAndGet()

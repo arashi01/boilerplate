@@ -272,7 +272,9 @@ atomic cell tracks idle, in-use, and destroyed. Both are programmer errors, so b
 returning a typed error.
 
 `toString` reports the length alone (`Secret(32 bytes)`), `hashCode` is constant so a secret cannot
-seed a hash oracle, and equality compares contents in constant time.
+seed a hash oracle, and equality compares contents in constant time while holding the read guard on
+both carriers - a concurrent `destroy` raises rather than erasing mid-comparison. A destroyed
+secret is equal only to itself: erased bytes are an implementation artifact, not a value.
 
 Under `import language.experimental.captureChecking` the scope is enforced: `key.use(view => view)`
 does not compile, nor does `key.useEff(view => IO.pure(view))` - the escape through a suspended
@@ -381,7 +383,9 @@ import cats.effect.IO
 
 `Eff` is covariant in both parameters, so a value of `Eff[Narrow, A]` is usable wherever
 `Eff[Wide, A]` is expected with no call-site method, and a `flatMap` over steps with distinct error
-types infers their union. That widening is silent - the channel can grow wider than intended with no
+types widens the channel to their join: for arms of one sealed root that is the root itself, and
+for unrelated arms a structural type wider than their union - either the union or the root is
+reachable by ascription. That widening is silent - the channel can grow wider than intended with no
 compile error, so ascribe the result type, or use `mapError`/`catchOnly`, to contain it.
 
 ### Quick start
@@ -526,15 +530,20 @@ written at the call site; a library `given TypeTest[Throwable, Nothing]` covers 
 (`E = Nothing`) case, where every observer is degenerate and any handler is dead code.
 
 **Narrowing partial recovery (`catchOnly`).** Covariance lets you handle one arm of a union error
-while keeping the rest typed. The residual is inferred - no annotation needed:
+while keeping the rest typed. The residual is inferred - no annotation needed. An infallible
+handler selects a twin overload that bounds the residual by the receiver's channel and subtracts
+the handled arm (a handler covering the whole channel infers `Nothing`; a root-typed channel stays
+bounded by the root, which does not decompose); a fallible handler's own return type pins it:
 
 ```scala
 val consumed: Eff[IoError | AppError, Unit] = ...
-val handled: Eff[IoError, Unit] = consumed.catchOnly((app: AppError) => log(app))
+val handled = consumed.catchOnly((app: AppError) => log(app)) // : Eff[IoError, Unit]
 ```
 
-The handler may itself fail into the residual channel. The handled arm must be runtime-testable; an
-erasure-ambiguous choice is rejected at the call site.
+The handler may itself fail into the residual channel - ascribe its failure to the residual root
+(`Eff.fail(e): Eff[IoError, Nothing]`), or the solver pins the residual to the failure's concrete
+subtype. The handled arm must be runtime-testable; an erasure-ambiguous choice is rejected at the
+call site.
 
 **Writing your own error-observing API generic in `E`.** Threading `using TypeTest[Throwable, E]`
 sets a trap: where `E` would infer as `Nothing`, the solver silently widens it to `Throwable` (whose
@@ -550,7 +559,8 @@ built-in observers and `retry` use.
 `Resource[IO, A]`, and `E` is the same phantom, carrying the error type an **acquisition** may fail
 with. Putting the error in a covariant parameter of the resource type - rather than inside an
 invariant `F` - is what lets an acquisition channel widen, so composing resources of distinct error
-types infers their union with no `mapK` and no cast:
+types widens the channel exactly as `Eff` does (their join; the union by ascription) with no `mapK`
+and no cast:
 
 ```scala
 val config: EffResource[ConfigError, Config] = EffResource.make(loadConfig)(_ => IO.unit)

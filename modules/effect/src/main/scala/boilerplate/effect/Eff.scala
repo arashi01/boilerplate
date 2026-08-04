@@ -55,9 +55,10 @@ import cats.kernel.PartialOrder
   * that value, and the channel a context claims is the channel its observers filter by.
   *
   * `Eff` is covariant in both parameters. A `flatMap`/for-comprehension over steps with distinct
-  * error types therefore infers their union (`E1 | E2 | ...`); that widening is silent - the
-  * channel can grow wider than intended with no compile error, so ascribe the result type, or
-  * `mapError`/`catchOnly`, to contain it.
+  * error types therefore widens the channel to their join - the root itself for arms of one sealed
+  * root, a structural type wider than their union for unrelated arms; either the union or the root
+  * is reachable by ascribing the result type. That widening is silent - the channel can grow wider
+  * than intended with no compile error, so ascribe, or `mapError`/`catchOnly`, to contain it.
   *
   * Observing the typed channel (`either`, `catchAll`, `mapError`, `fold`, ...) filters the caught
   * `Throwable` by `TypeTest[Throwable, E]`, re-raising any non-`E` defect unchanged. For a concrete
@@ -69,8 +70,11 @@ import cats.kernel.PartialOrder
   * An API of your own that is GENERIC in `E` and threads `using TypeTest[Throwable, E]` must pin
   * `E` from a covariant value parameter (an effect or handler, ordered before the evidence) and
   * ship an `E = Nothing` overload: where `E` is left to inference against the evidence alone, the
-  * solver silently widens it to `Throwable`, whose synthesised test captures every defect. The
-  * combinators here follow exactly that discipline.
+  * solver silently widens it to `Throwable`, whose synthesised test captures every defect. The same
+  * holds for any channel variable a `using` witness alone constrains - bound it by the channel it
+  * refines (as `catchOnly`'s infallible-handler twin bounds its residual by `E`), or the solver
+  * discharges the witness by widening the variable to `Throwable`. The combinators here follow
+  * exactly that discipline.
   *
   * Refer to [[boilerplate.effect.Eff$ Eff]] for constructors, combinators, and type class
   * instances.
@@ -570,7 +574,9 @@ object Eff extends EffInstances:
 
     /** Recovers the `H` arm of a union error with an effect, narrowing the channel to the residual
       * `R` (where `E <: R | H`); unmatched errors stay typed as `R`, and `f` may itself fail into
-      * `R`. The residual is inferred from the `E <:< (R | H)` witness - no annotation is needed:
+      * `R`. The handler's return type pins the residual - a handler re-failing into it ascribes the
+      * residual root (`Eff.fail(e): Eff[R, Nothing]`), otherwise the solver pins `R` to the
+      * failure's concrete subtype. An infallible handler selects the twin below instead:
       *
       * {{{
       * val consumed: Eff[IoError | AppError, Unit] = ...
@@ -580,6 +586,24 @@ object Eff extends EffInstances:
       * `H` must be runtime-testable; an erasure-ambiguous `H` is rejected at the call site.
       */
     inline def catchOnly[H, R <: Throwable, B >: A](f: H => Eff[R, B])(using
+      ev: E <:< (R | H),
+      tt: TypeTest[Throwable, H]
+    ): Eff[R, B] =
+      val _ = ev
+      (self: IO[B]).handleErrorWith {
+        case tt(h) => f(h)
+        case other => IO.raiseError(other)
+      }
+
+    /** As [[catchOnly]], for an infallible handler, whose return type pins no residual: bounding
+      * `R` by the receiver's channel lets the solver subtract the handled arm, so on a union
+      * channel the residual is inferred narrow with no annotation - left unbounded it silently
+      * widens to `Throwable`, whose identity `TypeTest` makes every later observer capture defects.
+      * A handler whose domain covers the whole channel infers `Nothing`; a root-typed receiver
+      * stays bounded by the root, which does not decompose into its arms.
+      */
+    @targetName("catchOnlyInfallible")
+    inline def catchOnly[H, R <: E, B >: A](f: H => Eff[Nothing, B])(using
       ev: E <:< (R | H),
       tt: TypeTest[Throwable, H]
     ): Eff[R, B] =

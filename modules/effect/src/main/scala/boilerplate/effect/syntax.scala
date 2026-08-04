@@ -83,15 +83,15 @@ extension (secret: Secret.type)
 extension [A](io: IO[A])
   /** This effect viewed as an infallible `Eff` - identity at runtime, committing `E = Nothing`
     * (failures stay defects). Subtyping lifts an `IO` in every argument position already; this
-    * exists for the one position subtyping cannot reach - a leading `IO` generator in a
-    * for-comprehension selects `IO`'s own member `flatMap` before any typed step is considered,
-    * so mark that generator with `.eff` to keep the chain on the typed surface.
+    * exists for the one position subtyping cannot reach - an `IO` generator anywhere before a
+    * typed step in a for-comprehension selects `IO`'s own member `flatMap`, dropping the chain
+    * off the typed surface, so mark each such generator with `.eff`.
     */
   inline def eff: UEff[A] = io
 
 extension [A](resource: Resource[IO, A])
   /** This resource viewed as an infallible `EffResource` - identity at runtime; the `Resource`
-    * counterpart of `eff` on `IO`, for the same leading-generator position.
+    * counterpart of `eff` on `IO`, for the same generator position.
     */
   inline def eff: EffResource[Nothing, A] = resource
 

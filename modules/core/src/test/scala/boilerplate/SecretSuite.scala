@@ -59,12 +59,32 @@ class SecretSuite extends munit.FunSuite:
     assertNotEquals(filled(1, 2, 3, 4), filled(1, 2, 3, 5))
     assertNotEquals(filled(1, 2, 3), filled(1, 2, 3, 4))
 
-  test("two destroyed secrets of equal length compare equal, both being zeroed"):
+  test("a destroyed secret is equal only to itself"):
     val a = filled(1, 2, 3, 4)
+    a.destroy()
+    assertEquals(a, a)
     val b = filled(9, 8, 7, 6)
+    b.destroy()
+    assertNotEquals(a, b)
+
+  test("a destroyed secret and a live zero-filled one are unequal in both directions"):
+    val destroyed = filled(1, 2, 3, 4)
+    destroyed.destroy()
+    val zeros = Secret.fill(4)(_ => ())
+    assertNotEquals(destroyed, zeros)
+    assertNotEquals(zeros, destroyed)
+
+  test("equality releases the read guard, leaving both secrets destroyable"):
+    val a = filled(1, 2)
+    val b = filled(1, 2)
+    assertEquals(a, b)
     a.destroy()
     b.destroy()
-    assertEquals(a, b)
+
+  test("equality inside an in-flight use still compares, readers stacking"):
+    val a = filled(7, 7)
+    val b = filled(7, 7)
+    assert(a.use(_ => a == b))
 
   test("hashCode is constant, so a secret cannot seed a hash oracle"):
     assertEquals(filled(1, 2, 3, 4).hashCode, filled(9, 9).hashCode)
