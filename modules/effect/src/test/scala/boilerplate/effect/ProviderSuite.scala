@@ -56,7 +56,7 @@ final class K11(val a: K9)
 final class K12(val a: K10, val b: K11)
 
 class ProviderSuite extends CatsEffectSuite:
-  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either
+  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
 
   private def node[A](trace: Ref[IO, List[String]], label: String)(value: => A): EffResource[Nothing, A] =
     EffResource.make(trace.update(_ :+ s"acquire $label").map(_ => value))(_ => trace.update(_ :+ s"release $label"))

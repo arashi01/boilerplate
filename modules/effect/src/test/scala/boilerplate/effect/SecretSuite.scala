@@ -77,7 +77,7 @@ class SecretSuite extends CatsEffectSuite:
     for
       captured <- IO.ref(Option.empty[Secret])
       use = (s: Secret) => Eff.flatMap(captured.set(Some(s)))(_ => Eff.fail[IoError](Closed))
-      outcome <- Secret.scoped(2)(view => view(0) = 5).use(use).either
+      outcome <- Secret.scoped(2)(view => view(0) = 5).use(use).either.absolve
       secret <- captured.get
       raised <- IO(secret.map(_.use(_ => 0))).attempt
     yield

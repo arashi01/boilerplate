@@ -32,7 +32,7 @@ import boilerplate.effect.AppError.*
 import boilerplate.effect.IoError.*
 
 class EffResourceSuite extends CatsEffectSuite:
-  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either
+  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
 
   private def traced(trace: Ref[IO, List[String]], label: String): EffResource[Nothing, String] =
     EffResource.make(trace.update(_ :+ s"acquire $label").map(_ => label))(_ => trace.update(_ :+ s"release $label"))

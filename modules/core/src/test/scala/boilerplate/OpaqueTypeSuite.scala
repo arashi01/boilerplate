@@ -32,9 +32,9 @@ object NonEmptyString extends OpaqueType[NonEmptyString, String], OpaqueType.Eq[
   // The runtime-delegating shape the trait permits; the compile-time shape is CheckedPositive's.
   inline def apply(inline value: String): NonEmptyString = ofUnsafe(value)
 
-  protected inline def validate(s: String): Option[Error] =
-    if s.nonEmpty then None
-    else Some(new IllegalArgumentException("String must be non-empty"))
+  protected inline def validate(s: String): Either[Error, String] =
+    if s.nonEmpty then Right(s)
+    else Left(new IllegalArgumentException("String must be non-empty"))
 
 opaque type PositiveInt = Int
 
@@ -45,9 +45,9 @@ object PositiveInt extends OpaqueType[PositiveInt, Int], OpaqueType.Eq[PositiveI
   inline def unwrap(n: PositiveInt): Int = n
   inline def apply(inline value: Int): PositiveInt = ofUnsafe(value)
 
-  protected inline def validate(n: Int): Option[Error] =
-    if n > 0 then None
-    else Some(new IllegalArgumentException(s"$n must be positive"))
+  protected inline def validate(n: Int): Either[Error, Int] =
+    if n > 0 then Right(n)
+    else Left(new IllegalArgumentException(s"$n must be positive"))
 
 final class EmailError(message: String) extends RuntimeException(message)
 
@@ -63,9 +63,9 @@ object Email extends OpaqueType[Email, String], OpaqueType.Eq[Email]:
   inline def unwrap(e: Email): String = e
   inline def apply(inline value: String): Email = ofUnsafe(value)
 
-  protected inline def validate(s: String): Option[Error] =
-    if s.contains("@") then None
-    else Some(new EmailError(s"Invalid email format: $s"))
+  protected inline def validate(s: String): Either[Error, String] =
+    if s.contains("@") then Right(s)
+    else Left(new EmailError(s"Invalid email format: $s"))
 
 // Omits OpaqueType.Eq deliberately, so == on SecretToken is a compile error.
 opaque type SecretToken = String
@@ -77,9 +77,9 @@ object SecretToken extends OpaqueType[SecretToken, String]:
   inline def unwrap(s: SecretToken): String = s
   inline def apply(inline value: String): SecretToken = ofUnsafe(value)
 
-  protected inline def validate(s: String): Option[Error] =
-    if s.nonEmpty then None
-    else Some(new IllegalArgumentException("Token must be non-empty"))
+  protected inline def validate(s: String): Either[Error, String] =
+    if s.nonEmpty then Right(s)
+    else Left(new IllegalArgumentException("Token must be non-empty"))
 
   // The deliberate, author-scoped trusted seam over the protected `wrap`.
   private[boilerplate] inline def trusted(s: String): SecretToken = wrap(s)
@@ -98,9 +98,9 @@ object Distance:
     inline def unwrap(d: Distance[boilerplate.Metres]): Double = d
     inline def apply(inline value: Double): Distance[boilerplate.Metres] = ofUnsafe(value)
 
-    protected inline def validate(d: Double): Option[Error] =
-      if d >= 0.0 then None
-      else Some(new IllegalArgumentException(s"Distance cannot be negative: $d"))
+    protected inline def validate(d: Double): Either[Error, Double] =
+      if d >= 0.0 then Right(d)
+      else Left(new IllegalArgumentException(s"Distance cannot be negative: $d"))
 
   object Feet extends OpaqueType[Distance[boilerplate.Feet], Double], OpaqueType.Eq[Distance[boilerplate.Feet]]:
     type Error = IllegalArgumentException
@@ -109,9 +109,9 @@ object Distance:
     inline def unwrap(d: Distance[boilerplate.Feet]): Double = d
     inline def apply(inline value: Double): Distance[boilerplate.Feet] = ofUnsafe(value)
 
-    protected inline def validate(d: Double): Option[Error] =
-      if d >= 0.0 then None
-      else Some(new IllegalArgumentException(s"Distance cannot be negative: $d"))
+    protected inline def validate(d: Double): Either[Error, Double] =
+      if d >= 0.0 then Right(d)
+      else Left(new IllegalArgumentException(s"Distance cannot be negative: $d"))
 end Distance
 
 opaque type CheckedPositive = Int
@@ -122,9 +122,9 @@ object CheckedPositive extends OpaqueType[CheckedPositive, Int], OpaqueType.Eq[C
   protected inline def wrap(n: Int): CheckedPositive = n
   inline def unwrap(n: CheckedPositive): Int = n
 
-  protected inline def validate(n: Int): Option[Error] =
-    if n > 0 then None
-    else Some(new IllegalArgumentException(s"$n must be positive"))
+  protected inline def validate(n: Int): Either[Error, Int] =
+    if n > 0 then Right(n)
+    else Left(new IllegalArgumentException(s"$n must be positive"))
 
   inline def apply(inline value: Int): CheckedPositive =
     inline if value <= 0 then compiletime.error("value must be positive")

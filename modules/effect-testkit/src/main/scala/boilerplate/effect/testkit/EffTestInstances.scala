@@ -18,7 +18,7 @@
  * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package boilerplate.effect.laws
+package boilerplate.effect.testkit
 
 import scala.reflect.TypeTest
 
@@ -36,21 +36,21 @@ import boilerplate.effect.Eff
 // (needing a `TypeTest[Throwable, E]`, synthesised for the concrete law error) before comparing.
 trait EffTestInstances extends CatsEffectTestInstances with EffGenerators:
 
-  implicit def eqEff[E <: Throwable: Eq, A: Eq](using ticker: Ticker, tt: TypeTest[Throwable, E]): Eq[Eff[E, A]] =
-    Eq.by[Eff[E, A], IO[Either[E, A]]](_.either)(using eqIOA[Either[E, A]])
+  given eqEff[E <: Throwable: Eq, A: Eq](using ticker: Ticker, tt: TypeTest[Throwable, E]): Eq[Eff[E, A]] =
+    Eq.by[Eff[E, A], IO[Either[E, A]]](_.either.absolve)(using eqIOA[Either[E, A]])
 
-  implicit def cogenEff[E <: Throwable: Cogen, A: Cogen](using ticker: Ticker, tt: TypeTest[Throwable, E]): Cogen[Eff[E, A]] =
-    cogenIO[Either[E, A]].contramap(_.either)
+  given cogenEff[E <: Throwable: Cogen, A: Cogen](using ticker: Ticker, tt: TypeTest[Throwable, E]): Cogen[Eff[E, A]] =
+    cogenIO[Either[E, A]].contramap(_.either.absolve)
 
-  implicit def prettyEff[E <: Throwable, A](using ticker: Ticker, tt: TypeTest[Throwable, E]): Eff[E, A] => Pretty =
-    eff => Pretty(_ => unsafeRun(eff.either).toString)
+  given prettyEff[E <: Throwable, A](using ticker: Ticker, tt: TypeTest[Throwable, E]): (Eff[E, A] => Pretty) =
+    eff => Pretty(_ => unsafeRun(eff.either.absolve).toString)
 
-  implicit def isomorphismsEff[E <: Throwable]: Isomorphisms[Eff.Of[E]] =
+  given isomorphismsEff[E <: Throwable]: Isomorphisms[Eff.Of[E]] =
     Isomorphisms.invariant[Eff.Of[E]]
 
   // Passes only when the effect completes successfully with `Right(true)`.
-  implicit def effBooleanToProp[E <: Throwable](eff: Eff[E, Boolean])(using ticker: Ticker, tt: TypeTest[Throwable, E]): Prop =
-    Prop(unsafeRun(eff.either).fold(false, _ => false, _.fold(false)(_.fold(_ => false, identity))))
+  given effBooleanToProp[E <: Throwable](using ticker: Ticker, tt: TypeTest[Throwable, E]): Conversion[Eff[E, Boolean], Prop] =
+    eff => Prop(unsafeRun(eff.either.absolve).fold(false, _ => false, _.fold(false)(_.fold(_ => false, identity))))
 end EffTestInstances
 
 object EffTestInstances extends EffTestInstances

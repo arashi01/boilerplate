@@ -54,13 +54,26 @@ val `boilerplate-effect` =
     .jsPlatform(Seq(scala3))
     .snxPlatform(Seq(scala3))
 
-val `boilerplate-effect-laws` =
+val `boilerplate-testkit` =
   projectMatrix
-    .in(file("modules/effect-laws"))
+    .in(file("modules/testkit"))
+    .dependsOn(boilerplate)
+    .settings(compilerSettings)
+    .settings(unitTestSettings)
+    .settings(fileHeaderSettings)
+    .settings(publishSettings)
+    .settings(libraryDependencies += `munit-scalacheck`.value)
+    .jvmPlatform(Seq(scala3))
+    .jsPlatform(Seq(scala3))
+    .snxPlatform(Seq(scala3))
+
+val `boilerplate-effect-testkit` =
+  projectMatrix
+    .in(file("modules/effect-testkit"))
     .dependsOn(`boilerplate-effect`)
     .settings(compilerSettings)
     .settings(fileHeaderSettings)
-    .settings(publish / skip := true)
+    .settings(publishSettings)
     .settings(libraryDependencies += `cats-effect`.value)
     .settings(libraryDependencies += `cats-effect-laws`.value)
     .settings(libraryDependencies += `cats-effect-testkit`.value)
@@ -89,7 +102,8 @@ val `boilerplate-aggregate` =
     .snxPlatform(Seq(scala3), Seq.empty, _.aggregate(`boilerplate-native`))
     .aggregate(boilerplate)
     .aggregate(`boilerplate-effect`)
-    .aggregate(`boilerplate-effect-laws`)
+    .aggregate(`boilerplate-testkit`)
+    .aggregate(`boilerplate-effect-testkit`)
 
 def baseCompilerOptions = List(
   "-language:experimental.macros",

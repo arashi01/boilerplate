@@ -18,18 +18,12 @@
  * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package boilerplate.effect.laws
+package boilerplate.codec
 
-import cats.effect.*
-import org.scalacheck.Arbitrary
+import boilerplate.TypedError
 
-import boilerplate.effect.Eff
-
-trait EffGenerators:
-
-  implicit def arbitraryEff[E <: Throwable, A](using
-    arbIO: Arbitrary[IO[Either[E, A]]]
-  ): Arbitrary[Eff[E, A]] =
-    Arbitrary(arbIO.arbitrary.map(Eff.lift(_)))
-
-object EffGenerators extends EffGenerators
+/** Decode failure for the byte-to-text codecs: the input is not a well-formed - and, where the
+  * codec is canonical-strict, not the one canonical - encoding. The message names the violated
+  * constraint and never carries the offending input.
+  */
+final case class Malformed(detail: String) extends TypedError(detail, None)

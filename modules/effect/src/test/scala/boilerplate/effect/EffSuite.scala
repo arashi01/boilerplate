@@ -38,7 +38,7 @@ import boilerplate.effect.AppError.*
 import boilerplate.effect.IoError.*
 
 class EffSuite extends CatsEffectSuite:
-  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either
+  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
 
   // Constructors
 
