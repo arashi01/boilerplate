@@ -330,8 +330,8 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
   test("fold on Eff selects Eff extension (not EitherT)"):
     val eff: Eff[AppError, Int] = Eff.fail(Invalid("boom"))
 
-    val result: IO[String] = eff.fold(e => s"error: ${e.getMessage}", a => s"value: $a")
-    val control: IO[String] = Eff.fold(eff)(e => s"error: ${e.getMessage}", a => s"value: $a")
+    val result: UEff[String] = eff.fold(e => s"error: ${e.getMessage}", a => s"value: $a")
+    val control: UEff[String] = Eff.fold(eff)(e => s"error: ${e.getMessage}", a => s"value: $a")
 
     for
       r <- result
@@ -343,8 +343,8 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
   test("foldF on Eff selects Eff extension (not EitherT)"):
     val eff: Eff[AppError, Int] = Eff.fail(Invalid("boom"))
 
-    val result: IO[String] = eff.foldF(e => IO.pure(s"error: ${e.getMessage}"), a => IO.pure(s"value: $a"))
-    val control: IO[String] = Eff.foldF(eff)(e => IO.pure(s"error: ${e.getMessage}"), a => IO.pure(s"value: $a"))
+    val result: UEff[String] = eff.foldF(e => IO.pure(s"error: ${e.getMessage}"), a => IO.pure(s"value: $a"))
+    val control: UEff[String] = Eff.foldF(eff)(e => IO.pure(s"error: ${e.getMessage}"), a => IO.pure(s"value: $a"))
 
     for
       r <- result

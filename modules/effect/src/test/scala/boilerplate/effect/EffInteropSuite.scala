@@ -34,7 +34,7 @@ import boilerplate.effect.IoError.*
 // an `Eff` workflow with no lift, no `mapK`, and no import. Every row below states that for one
 // primitive.
 class EffInteropSuite extends CatsEffectSuite:
-  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either
+  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
 
   test("a raw Ref composes directly in an Eff workflow, preserving get/set/update"):
     IO.ref(0).flatMap { ref =>

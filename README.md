@@ -12,6 +12,10 @@ libraryDependencies += "africa.shuwari" %% "boilerplate" % "<version>"
 
 // Effect: typed-error effects atop cats-effect
 libraryDependencies += "africa.shuwari" %% "boilerplate-effect" % "<version>"
+
+// Test kits: ValueCodec law suites; Eff generators and law instances
+libraryDependencies += "africa.shuwari" %% "boilerplate-testkit" % "<version>" % Test
+libraryDependencies += "africa.shuwari" %% "boilerplate-effect-testkit" % "<version>" % Test
 ```
 
 On Scala.js and Scala Native, `%%` resolves the platform-specific artefact (the sbt 2.x replacement for `%%%`).
@@ -59,10 +63,15 @@ object UserId extends OpaqueType[UserId, String], OpaqueType.Eq[UserId]:
     inline if value == "" then compiletime.error("UserId cannot be empty")
     else wrap(value)
 
-  protected inline def validate(s: String): Option[Error] =
-    if s.nonEmpty then None
-    else Some(new IllegalArgumentException("UserId cannot be empty"))
+  protected inline def validate(s: String): Either[Error, String] =
+    if s.nonEmpty then Right(s)
+    else Left(new IllegalArgumentException("UserId cannot be empty"))
 ```
+
+`validate` returns the value to wrap, so a companion canonicalises while it validates: a
+normalising type (a lowercase header name, a trimmed identifier) returns the canonical form and
+every construction path produces the normalised value. Verbatim types return the input unchanged;
+total types set `Error = Nothing` and return `Right(value)`.
 
 `UserId("user-123")` validates the literal at compile time - an invalid constant is a compile
 error, and a non-constant argument fails to reduce, directing the caller to the validated
@@ -105,10 +114,11 @@ object SecretToken extends OpaqueType[SecretToken, String]:
 | `wrap(value)`       | `protected` - unvalidated construction, the companion author's tool|
 | `unwrap(value)`     | Extracts the underlying value                                      |
 | `apply(value)`      | Compile-time-validated literal construction                        |
-| `validate(value)`   | Returns `None` on success, `Some(error)` on failure                |
+| `validate(value)`   | Returns `Right(valueToWrap)` (canonical form) or `Left(error)`     |
 | `of(value)`         | Validated construction returning `Either[Error, A]`                |
 | `ofUnsafe(value)`   | Validated construction for trusted input; throws `Error`           |
 | `OpaqueType.Eq[A]`  | Mixin providing `CanEqual[A, A]` (opt-in equality)                 |
+| `OpaqueType.Codec[A]` | Mixin deriving a `ValueCodec` from `of`/`unwrap` (`Repr = String`) |
 
 ---
 
@@ -318,6 +328,83 @@ boundary does not nest it.
 
 ---
 
+### ValueCodec
+
+`ValueCodec[A]` is the scalar wire-text codec: the one `String <-> A` seam for path captures,
+query parameters, header values, form fields, environment variables, and command arguments. The
+typed failure travels as an abstract `Error <: Throwable` member - a domain scalar surfaces its
+own sealed family, so a direct decode site branches exhaustively, while a generic consumer widens
+to `Throwable` for free:
+
+```scala
+import boilerplate.ValueCodec
+
+summon[ValueCodec[Int]].decode("17")      // Right(17)
+summon[ValueCodec[Int]].decode("x")       // Left(ValueCodec.Invalid("not an integer"))
+
+// A codec from parts, error member preserved:
+val port: ValueCodec.Aux[Int, ValueCodec.Invalid] =
+  ValueCodec(s => s.toIntOption.toRight(ValueCodec.Invalid("not an integer")), _.toString)
+```
+
+Givens ship for `String` (`Error = Nothing`), `Int`, `Long`, and `Boolean`. Every constructor and
+given preserves the `Error` member (`ValueCodec.Aux[A, E]`); a seam returning bare
+`ValueCodec[A]` erases the family and with it exhaustivity, so hand codecs onward as `Aux`.
+Failure messages name the violated constraint and never carry the offending input.
+
+Laws: `decode(encode(a)) == Right(a)`; `encode` is total and canonical; a normalising `decode` is
+idempotent through re-encoding. `boilerplate-testkit` carries these as reusable law suites.
+
+Codecs for `Secret` and `Slice` are refused at compile time - an encode would render secret
+material to an immutable `String`, or a borrowed view past its lifetime. A deliberate local given
+can override the refusal; the guard catches accident, not intent.
+
+**Opaque types get their codec in one line** via the `OpaqueType.Codec[A]` mixin (`Repr =
+String`): `decode` is the companion's own `of` - so a normalising companion decodes to the
+canonical value - and `encode` is `unwrap`. For a non-`String` representation, write the given
+through the constructor, failing the text stage into the companion's own error family:
+
+```scala
+object HeaderName extends OpaqueType[HeaderName, String], OpaqueType.Codec[HeaderName]:
+  // type Error, wrap, unwrap, validate, apply as usual - and the codec given is derived.
+```
+
+---
+
+### codec: byte-to-text vocabulary
+
+`boilerplate.codec` carries the byte-to-text codecs every wire protocol spells values with -
+distinct from `ValueCodec` (`String <-> A`); these are `bytes <-> text`. Decode failures are the
+typed `codec.Malformed(detail)`; the detail names the violated constraint, never the input.
+
+```scala
+import boilerplate.codec.*
+
+Base64.encode(bytes)         // RFC 4648 s4, padded - PEM, MIME, Basic credentials
+Base64Url.encode(bytes)      // RFC 4648 s5, unpadded - JOSE, web tokens
+Base32.encode(bytes)         // RFC 4648 s6, unpadded upper case - enrolment URIs
+Hex.encode(bytes)            // RFC 4648 s8, lower case - digests, fingerprints
+
+Base64Url.decode(text)       // Either[Malformed, Array[Byte]] - strict canonical
+```
+
+The base-N decoders are **canonical-strict**: exactly one encoding per octet string is accepted -
+wrong padding, wrong alphabet, impossible lengths, and non-zero trailing bits are all rejected,
+so nothing keyed on the encoded string (a replay cache, a denylist, a unique-token column) can be
+bypassed by re-spelling it. `Hex.decode` alone accepts both letter cases (transcribed hex arrives
+in either) and documents that anything keyed on hex text must key on the decoded bytes instead.
+Encoders take `Slice` or `Array[Byte]`; decoders allocate a fresh `Array[Byte]` the caller owns -
+and may wipe.
+
+`Percent` covers RFC 3986 percent-encoding over UTF-8 with the keep-set as a predicate
+(`keepUnreserved` is the universal baseline; each URI component brings its own), and both decode
+disciplines the wire genuinely needs: `decode` is strict (`Malformed` on a truncated or non-hex
+escape - URI components), `decodeLenient` is total (invalid escapes pass through literally - form
+parsing). `Ascii` carries the locale-free operations wire parsers need: `lower` (the Turkish
+dotless-i can never reach a protocol token), and the RFC 9110 `isTokenChar`/`isToken` classes.
+
+---
+
 ### Platform (`boilerplate-native`, Scala Native only)
 
 Compile-time operating-system and architecture detection for Scala Native targets. Each OS/arch target is
@@ -414,8 +501,8 @@ val workflow: Eff[AppError, User] = for
   validated <- validateUser(user)
 yield validated
 
-// Exhaustive error handling - fold both channels back to IO
-val message: IO[String] = workflow.fold(
+// Exhaustive error handling - both channels consumed, so the result is infallible
+val message: UEff[String] = workflow.fold(
   {
     case AppError.NotFound(id) => s"user $id not found"
     case AppError.Invalid(msg) => s"invalid: $msg"
@@ -424,7 +511,7 @@ val message: IO[String] = workflow.fold(
 )
 
 // Reify the typed channel on demand
-val io: IO[Either[AppError, User]] = workflow.either
+val io: IO[Either[AppError, User]] = workflow.either.absolve
 ```
 
 ### Lifting: a raw `IO` already is an `Eff`
@@ -513,7 +600,7 @@ lifting, so `Eff.succeed` and `Eff.fail` are the only constructors most code rea
 | Observation   | `tap`, `tapError`, `flatTapError`, `attemptTap`                              |
 | Variance      | `assume`, `assumeError`                                                      |
 | Extraction    | `option`, `collectSome`, `collectRight`                                      |
-| Conversion    | `either`, `absolve`, `eitherT`                                               |
+| Conversion    | `either` (`UEff[Either[E, A]]`), `absolve` (the `IO` exit), `eitherT`        |
 | Resource      | `bracket`, `bracketCase`, `timeout`                                          |
 | Concurrency   | `start`, `race`, `both`, `background`                                        |
 | Temporal      | `delayBy(duration)`, `andWait(duration)`, `timed`, `timeoutTo(dur, fallback)` |
@@ -829,8 +916,24 @@ val withCleanup: Eff[AppError, User] =
     case Outcome.Canceled()   => IO.println("cancelled")
   }
 
-val io: IO[Either[AppError, User]] = concurrent.either
+val io: IO[Either[AppError, User]] = concurrent.either.absolve
 ```
+---
+
+## Test kits
+
+`boilerplate-testkit` ships the `ValueCodec` law suites as a `munit.ScalaCheckSuite` mixin:
+
+```scala
+class MyCodecsSuite extends munit.ScalaCheckSuite, boilerplate.testkit.ValueCodecLaws:
+  valueCodecLaws[UserId]("UserId")                          // round trip + canonical encode
+  valueCodecNormalisation[HeaderName]("HeaderName", texts)  // decode idempotent through re-encode
+```
+
+`boilerplate-effect-testkit` ships ScalaCheck generators (`EffGenerators`) and the
+cats-effect-testkit-based law instances (`EffTestInstances` - `Eq`, `Cogen`, `Prop` conversion
+under a `Ticker`) for property suites over `Eff` and `EffResource`.
+
 ---
 
 ## Licence

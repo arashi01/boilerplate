@@ -38,8 +38,8 @@ class NothingChannelSuite extends CatsEffectSuite:
   // A handler over the uninhabited typed channel; supplied where a combinator needs one, never run.
   private val absurd: Nothing => Nothing = identity
 
-  private def propagates[A](io: IO[A]): IO[Unit] =
-    io.attempt.map(r => assert(r.isLeft, s"defect not propagated: $r"))
+  private def propagates[A](eff: UEff[A]): IO[Unit] =
+    eff.absolve.attempt.map(r => assert(r.isLeft, s"defect not propagated: $r"))
 
   // Abstract-`E` generic code must still resolve the observers: the `Nothing` overloads must not
   // make them ambiguous when `E` is a type parameter (only `E` statically `Nothing` selects them).
@@ -101,7 +101,7 @@ class NothingChannelSuite extends CatsEffectSuite:
     // Sanity: the degenerate bodies must not break the happy path.
     for
       e <- Eff.succeed(1).either
-      o <- Eff.succeed(2).option.absolve
+      o <- Eff.succeed(2).option
       f <- Eff.succeed(3).fold(absurd, _ + 10)
       c <- Eff.succeed(4).catchAll(absurd).absolve
     yield
@@ -212,7 +212,7 @@ class NothingChannelSuite extends CatsEffectSuite:
     for
       counter <- IO.ref(0)
       typed: Eff[AppError, Int] = (counter.update(_ + 1): Eff[AppError, Unit]).flatMap(_ => Eff.fail(Invalid("boom")))
-      outcome <- Eff.retry(typed, 3).either
+      outcome <- Eff.retry(typed, 3).either.absolve
       count <- counter.get
     yield
       assertEquals(outcome, Left(Invalid("boom")))
@@ -222,7 +222,7 @@ class NothingChannelSuite extends CatsEffectSuite:
     for
       counter <- IO.ref(0)
       typed: Eff[AppError, Int] = (counter.update(_ + 1): Eff[AppError, Unit]).flatMap(_ => Eff.fail(Invalid("boom")))
-      outcome <- Eff.retryWithBackoff(typed, 3, 1.milli, None).either
+      outcome <- Eff.retryWithBackoff(typed, 3, 1.milli, None).either.absolve
       count <- counter.get
     yield
       assertEquals(outcome, Left(Invalid("boom")))
@@ -232,7 +232,7 @@ class NothingChannelSuite extends CatsEffectSuite:
     for
       counter <- IO.ref(0)
       typed: Eff[AppError, Int] = (counter.update(_ + 1): Eff[AppError, Unit]).flatMap(_ => Eff.fail(Invalid("boom")))
-      outcome <- Eff.retry(typed, RetryPolicy.constant(1.milli).withMaxAttempts(3)).either
+      outcome <- Eff.retry(typed, RetryPolicy.constant(1.milli).withMaxAttempts(3)).either.absolve
       count <- counter.get
     yield
       assertEquals(outcome, Left(Invalid("boom")))

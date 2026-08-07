@@ -18,7 +18,7 @@
  * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package boilerplate.effect.laws
+package boilerplate.effect.testkit
 
 import cats.*
 import cats.data.EitherT
@@ -86,7 +86,7 @@ class EffLawsSuite extends DisciplineSuite with EffTestInstances:
     cogenEff[E, A]
 
   implicit def testEffBoolToProp(eff: TestEff[Boolean]): Prop =
-    effBooleanToProp(eff)
+    effBooleanToProp[E](using summon, summon)(eff)
 
   implicit def prettyTestEff[A]: TestEff[A] => Pretty =
     prettyEff[E, A]

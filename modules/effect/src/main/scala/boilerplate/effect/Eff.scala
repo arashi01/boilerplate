@@ -524,8 +524,11 @@ object Eff extends EffInstances:
   end retryPolicyImpl
 
   extension [E <: Throwable, A](self: Eff[E, A])
-    /** Reifies to `IO[Either[E, A]]`; a non-`E` defect propagates on `IO`'s channel. */
-    inline def either(using TypeTest[Throwable, E]): IO[Either[E, A]] = reify[E, A](self)
+    /** Reifies the typed channel, staying on the typed surface: the result is infallible, so a
+      * following typed generator needs no marker, and `absolve` is the explicit `IO` exit. A
+      * non-`E` defect propagates on `IO`'s channel.
+      */
+    inline def either(using TypeTest[Throwable, E]): UEff[Either[E, A]] = reify[E, A](self)
 
     /** Absorbs the typed error into `IO`. O(0) identity - the failure is already there. */
     inline def absolve: IO[A] = self
@@ -620,13 +623,15 @@ object Eff extends EffInstances:
         case Right(a) => fa(a)
       }
 
-    /** Folds over both channels, returning to the base `IO`. */
-    inline def fold[B](fe: E => B, fa: A => B)(using TypeTest[Throwable, E]): IO[B] =
+    /** Folds over both channels; both are consumed, so the result is infallible. */
+    inline def fold[B](fe: E => B, fa: A => B)(using TypeTest[Throwable, E]): UEff[B] =
       reify[E, A](self).map(_.fold(fe, fa))
 
-    /** Effectfully folds both channels, allowing different continuations. */
-    inline def foldF[B](fe: E => IO[B], fa: A => IO[B])(using TypeTest[Throwable, E]): IO[B] =
-      reify[E, A](self).flatMap(_.fold(fe, fa))
+    /** Effectfully folds both channels; the continuations are infallible (an `IO` lambda lands by
+      * subtyping), so the result is too.
+      */
+    inline def foldF[B](fe: E => UEff[B], fa: A => UEff[B])(using TypeTest[Throwable, E]): UEff[B] =
+      reify[E, A](self).flatMap(ea => ea.fold(fe, fa): IO[B])
 
     /** Transforms the error channel. */
     inline def mapError[E2 <: Throwable](f: E => E2)(using tt: TypeTest[Throwable, E]): Eff[E2, A] =
@@ -843,7 +848,7 @@ object Eff extends EffInstances:
   // the value. No `TypeTest`, no `reify`.
   extension [A](self: Eff[Nothing, A])
     /** The success reified as `Right`; a defect propagates. */
-    inline def either: IO[Either[Nothing, A]] = (self: IO[A]).map(Right(_))
+    inline def either: UEff[Either[Nothing, A]] = (self: IO[A]).map(Right(_))
 
     /** Applies `f` to the (always-`Right`) success; a `Left` result fails, a defect propagates. */
     inline def transform[E2 <: Throwable, B](f: Either[Nothing, A] => Either[E2, B]): Eff[E2, B] =
@@ -867,10 +872,11 @@ object Eff extends EffInstances:
       (self: IO[A]).flatMap(a => fa(a))
 
     /** No typed error; `fa` folds the success. */
-    inline def fold[B](@unused fe: Nothing => B, fa: A => B): IO[B] = (self: IO[A]).map(fa)
+    inline def fold[B](@unused fe: Nothing => B, fa: A => B): UEff[B] = (self: IO[A]).map(fa)
 
     /** No typed error; `fa` folds the success. */
-    inline def foldF[B](@unused fe: Nothing => IO[B], fa: A => IO[B]): IO[B] = (self: IO[A]).flatMap(fa)
+    inline def foldF[B](@unused fe: Nothing => UEff[B], fa: A => UEff[B]): UEff[B] =
+      (self: IO[A]).flatMap(a => fa(a): IO[B])
 
     /** No typed error to map; identity. */
     inline def mapError[E2 <: Throwable](@unused f: Nothing => E2): Eff[E2, A] = self

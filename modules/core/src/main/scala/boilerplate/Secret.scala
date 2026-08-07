@@ -32,6 +32,9 @@ import scala.language.experimental.captureChecking
   * rendering of the contents. `toString` reports the length alone, `hashCode` is constant so a
   * secret cannot seed a hash oracle, and equality is constant-time over the contents. A destroyed
   * secret is equal only to itself: erased bytes are an implementation artifact, not a value.
+  * Equality participates in the read guard on BOTH carriers - the destroyed-state check is atomic
+  * with the byte comparison, and a concurrent [[Secret$.destroy destroy]] raises "secret is in
+  * use" exactly as it does against a scoped read.
   *
   * The class is a bare carrier; every operation lives as an extension in [[Secret$]]. Construct
   * with [[Secret$.fill]], read with `use`, erase with `destroy`.
