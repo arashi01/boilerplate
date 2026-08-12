@@ -28,7 +28,7 @@ import cats.effect.Ref
 import munit.CatsEffectSuite
 
 import boilerplate.effect.AppError.*
-import boilerplate.effect.IoError.*
+import boilerplate.effect.IOError.*
 
 // The wiring graph is a diamond: Config <- Db, Config <- Cache, (Db, Cache) <- Server. Config must
 // be constructed exactly once however many nodes depend on it.
@@ -107,15 +107,15 @@ class ProviderSuite extends CatsEffectSuite:
 
   test("the wired error channel is the union of the providers' own"):
     val config: Provider[EmptyTuple, NotFound, Config] = Provider(EffResource.eval(Eff.succeed(Config("u"))): EffResource[NotFound, Config])
-    val db: Provider[Tuple1[Config], IoError, Db] = Provider((c: Config) => EffResource.eval(Eff.succeed(Db(c))): EffResource[IoError, Db])
-    val wired: EffResource[NotFound | IoError, Db] = Provider.wire[Db](config, db)
+    val db: Provider[Tuple1[Config], IOError, Db] = Provider((c: Config) => EffResource.eval(Eff.succeed(Db(c))): EffResource[IOError, Db])
+    val wired: EffResource[NotFound | IOError, Db] = Provider.wire[Db](config, db)
     run(wired.use(d => Eff.succeed(d.config.url))).map(assertEquals(_, Right("u")))
 
   test("a mid-graph acquisition failure propagates typed and releases the acquired prefix in reverse"):
     for
       trace <- IO.ref(List.empty[String])
       config = Provider(node(trace, "Config")(Config("u")))
-      acquireDb: Eff[IoError, Db] = Eff.flatMap(trace.update(_ :+ "acquire Db"))(_ => Eff.fail(Closed))
+      acquireDb: Eff[IOError, Db] = Eff.flatMap(trace.update(_ :+ "acquire Db"))(_ => Eff.fail(Closed))
       db = Provider((_: Config) => EffResource.make(acquireDb)(_ => trace.update(_ :+ "release Db")))
       outcome <- run(Provider.wire[Db](config, db).use(d => Eff.succeed(d.config.url)))
       seen <- trace.get

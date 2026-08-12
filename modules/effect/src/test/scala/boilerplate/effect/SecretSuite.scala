@@ -24,7 +24,7 @@ import cats.effect.IO
 import munit.CatsEffectSuite
 
 import boilerplate.Secret
-import boilerplate.effect.IoError.*
+import boilerplate.effect.IOError.*
 
 class SecretSuite extends CatsEffectSuite:
   private def filled(bytes: Byte*): Secret =
@@ -51,7 +51,7 @@ class SecretSuite extends CatsEffectSuite:
   test("useEff releases the read guard when the effect fails typed"):
     val secret = filled(1, 2)
     for
-      failed <- secret.useEff(_ => Eff.fail[IoError](Closed)).either
+      failed <- secret.useEff(_ => Eff.fail[IOError](Closed)).either
       _ <- IO(secret.destroy())
       raised <- IO(secret.use(_ => 0)).attempt
     yield
@@ -76,7 +76,7 @@ class SecretSuite extends CatsEffectSuite:
   test("scoped destroys the secret on release after a typed failure"):
     for
       captured <- IO.ref(Option.empty[Secret])
-      use = (s: Secret) => Eff.flatMap(captured.set(Some(s)))(_ => Eff.fail[IoError](Closed))
+      use = (s: Secret) => Eff.flatMap(captured.set(Some(s)))(_ => Eff.fail[IOError](Closed))
       outcome <- Secret.scoped(2)(view => view(0) = 5).use(use).either.absolve
       secret <- captured.get
       raised <- IO(secret.map(_.use(_ => 0))).attempt

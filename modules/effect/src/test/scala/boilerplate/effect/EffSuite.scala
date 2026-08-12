@@ -35,7 +35,7 @@ import cats.syntax.parallel.*
 import munit.CatsEffectSuite
 
 import boilerplate.effect.AppError.*
-import boilerplate.effect.IoError.*
+import boilerplate.effect.IOError.*
 
 class EffSuite extends CatsEffectSuite:
   private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
@@ -45,7 +45,7 @@ class EffSuite extends CatsEffectSuite:
   test("succeed lands in the success channel and fail in IO's Throwable channel"):
     for
       s <- run(Eff.succeed(1))
-      f <- run(Eff.fail[IoError](Closed))
+      f <- run(Eff.fail[IOError](Closed))
     yield
       assertEquals(s, Right(1))
       assertEquals(f, Left(Closed))
@@ -68,7 +68,7 @@ class EffSuite extends CatsEffectSuite:
 
   test("lift absorbs an IO[Either] Left and supplies ifNone for an empty IO[Option]"):
     for
-      l <- run(Eff.lift(IO.pure(Left(Closed): Either[IoError, Int])))
+      l <- run(Eff.lift(IO.pure(Left(Closed): Either[IOError, Int])))
       lo <- run(Eff.lift(IO.pure(None: Option[Int]), Closed))
       ls <- run(Eff.lift(IO.pure(Some(5): Option[Int]), Closed))
     yield
@@ -107,8 +107,8 @@ class EffSuite extends CatsEffectSuite:
 
   test("delay suspends an Either-producing side effect until run, capturing Left and Right"):
     var executed = false // scalafix:ok DisableSyntax.var
-    val ok = Eff.delay[IoError, Int] { executed = true; Right(42) }
-    val ko = Eff.delay[IoError, Int](Left(Closed))
+    val ok = Eff.delay[IOError, Int] { executed = true; Right(42) }
+    val ko = Eff.delay[IOError, Int](Left(Closed))
     assert(!executed)
     for
       r <- run(ok)
@@ -120,8 +120,8 @@ class EffSuite extends CatsEffectSuite:
 
   test("blocking and suspendBlocking run on the blocking pool"):
     for
-      r <- run(Eff.blocking[IoError, Int](Right(7)))
-      l <- run(Eff.blocking[IoError, Int](Left(Closed)))
+      r <- run(Eff.blocking[IOError, Int](Right(7)))
+      l <- run(Eff.blocking[IOError, Int](Left(Closed)))
       s <- run(Eff.suspendBlocking(6 * 7))
     yield
       assertEquals(r, Right(7))
@@ -130,7 +130,7 @@ class EffSuite extends CatsEffectSuite:
 
   test("defer delays evaluation until run"):
     var evaluated = false // scalafix:ok DisableSyntax.var
-    val eff = Eff.defer[IoError, Int] { evaluated = true; Eff.succeed(42) }
+    val eff = Eff.defer[IOError, Int] { evaluated = true; Eff.succeed(42) }
     assert(!evaluated)
     run(eff).map { r =>
       assert(evaluated)
@@ -149,10 +149,10 @@ class EffSuite extends CatsEffectSuite:
 
   test("raiseWhen/raiseUnless raise only on the intended condition"):
     for
-      rw <- run(Eff.raiseWhen[IoError](true)(Closed))
-      rwN <- run(Eff.raiseWhen[IoError](false)(Closed))
-      ru <- run(Eff.raiseUnless[IoError](false)(Closed))
-      ruN <- run(Eff.raiseUnless[IoError](true)(Closed))
+      rw <- run(Eff.raiseWhen[IOError](true)(Closed))
+      rwN <- run(Eff.raiseWhen[IOError](false)(Closed))
+      ru <- run(Eff.raiseUnless[IOError](false)(Closed))
+      ruN <- run(Eff.raiseUnless[IOError](true)(Closed))
     yield
       assertEquals(rw, Left(Closed))
       assertEquals(rwN, Right(()))
@@ -218,11 +218,11 @@ class EffSuite extends CatsEffectSuite:
   // Mapping
 
   test("map and flatMap act on success and short-circuit on a typed failure"):
-    val base: Eff[IoError, Int] = Eff.succeed(10)
+    val base: Eff[IOError, Int] = Eff.succeed(10)
     for
       m <- run(base.map(_ + 1))
       fm <- run(base.flatMap(n => Eff.succeed(n * 2)))
-      skip <- run((Eff.fail[IoError](Closed): Eff[IoError, Int]).map(_ => 0))
+      skip <- run((Eff.fail[IOError](Closed): Eff[IOError, Int]).map(_ => 0))
     yield
       assertEquals(m, Right(11))
       assertEquals(fm, Right(20))
@@ -231,15 +231,15 @@ class EffSuite extends CatsEffectSuite:
   test("flatMap and subflatMap widen - never drop - the receiver's typed error"):
     // Both sequence, so the receiver's `E` must survive into the result. Without the `E2 >: E` lower
     // bound the error silently vanishes from the type and escapes as a defect.
-    val viaFlatMap: Eff[IoError, Int] = Eff.fail(Closed).flatMap(_ => Eff.succeed(1))
-    val viaSubflatMap: Eff[IoError, Int] = Eff.fail(Closed).subflatMap(_ => Right(1))
+    val viaFlatMap: Eff[IOError, Int] = Eff.fail(Closed).flatMap(_ => Eff.succeed(1))
+    val viaSubflatMap: Eff[IOError, Int] = Eff.fail(Closed).subflatMap(_ => Right(1))
 
-    // Narrowing the receiver's `IoError` away to an infallible channel must NOT typecheck.
+    // Narrowing the receiver's `IOError` away to an infallible channel must NOT typecheck.
     val flatMapDrop = scala.compiletime.testing.typeCheckErrors(
-      "val bad: boilerplate.effect.UEff[Int] = boilerplate.effect.Eff.fail(boilerplate.effect.IoError.Closed).flatMap(_ => boilerplate.effect.Eff.succeed(1))"
+      "val bad: boilerplate.effect.UEff[Int] = boilerplate.effect.Eff.fail(boilerplate.effect.IOError.Closed).flatMap(_ => boilerplate.effect.Eff.succeed(1))"
     )
     val subflatMapDrop = scala.compiletime.testing.typeCheckErrors(
-      "val bad: boilerplate.effect.UEff[Int] = boilerplate.effect.Eff.fail(boilerplate.effect.IoError.Closed).subflatMap(_ => Right(1))"
+      "val bad: boilerplate.effect.UEff[Int] = boilerplate.effect.Eff.fail(boilerplate.effect.IOError.Closed).subflatMap(_ => Right(1))"
     )
     assert(
       flatMapDrop.map(_.message).mkString.contains("boilerplate.effect.UEff[Int]"),
@@ -283,10 +283,10 @@ class EffSuite extends CatsEffectSuite:
   // Recovery
 
   test("catchAll recovers a typed error, allows an error-type change, and never swallows a defect"):
-    val boom: Eff[IoError, Int] = IO.raiseError(RuntimeException("boom"))
+    val boom: Eff[IOError, Int] = IO.raiseError(RuntimeException("boom"))
     for
-      recovered <- run((Eff.fail[IoError](Closed): Eff[IoError, Int]).catchAll(e => Eff.succeed(e.getMessage.length)))
-      changed <- run((Eff.fail[IoError](Closed): Eff[IoError, Int]).catchAll(_ => Eff.fail[AppError](Timeout)))
+      recovered <- run((Eff.fail[IOError](Closed): Eff[IOError, Int]).catchAll(e => Eff.succeed(e.getMessage.length)))
+      changed <- run((Eff.fail[IOError](Closed): Eff[IOError, Int]).catchAll(_ => Eff.fail[AppError](Timeout)))
       defect <- boom.catchAll(_ => Eff.succeed(0)).absolve.attempt
     yield
       assertEquals(recovered, Right(6))
@@ -304,11 +304,11 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(u, Left(Invalid("y")))
 
   test("catchOnly handles one union arm and narrows the residual at compile time"):
-    // The `Eff[IoError, Int]` ascriptions are load-bearing: they assert the residual is narrowed.
-    val onApp: Eff[IoError | AppError, Int] = Eff.fail(NotFound("u1"))
-    val onIo: Eff[IoError | AppError, Int] = Eff.fail(Failed(500))
-    val recovered: Eff[IoError, Int] = onApp.catchOnly((_: AppError) => Eff.succeed(-1))
-    val residual: Eff[IoError, Int] = onIo.catchOnly((_: AppError) => Eff.succeed(-1))
+    // The `Eff[IOError, Int]` ascriptions are load-bearing: they assert the residual is narrowed.
+    val onApp: Eff[IOError | AppError, Int] = Eff.fail(NotFound("u1"))
+    val onIo: Eff[IOError | AppError, Int] = Eff.fail(Failed(500))
+    val recovered: Eff[IOError, Int] = onApp.catchOnly((_: AppError) => Eff.succeed(-1))
+    val residual: Eff[IOError, Int] = onIo.catchOnly((_: AppError) => Eff.succeed(-1))
     for
       r <- run(recovered)
       s <- run(residual)
@@ -317,17 +317,17 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(s, Left(Failed(500)))
 
   test("catchOnly lets the handler re-fail into the residual channel"):
-    val onApp: Eff[IoError | AppError, Int] = Eff.fail(Invalid("bad"))
+    val onApp: Eff[IOError | AppError, Int] = Eff.fail(Invalid("bad"))
     // Re-failing into the residual: ascribe to the residual root so it is not inferred too narrowly.
-    val narrowed: Eff[IoError, Int] = onApp.catchOnly((_: AppError) => Eff.fail[IoError](Closed))
+    val narrowed: Eff[IOError, Int] = onApp.catchOnly((_: AppError) => Eff.fail[IOError](Closed))
     run(narrowed).map(r => assertEquals(r, Left(Closed)))
 
   test("catchOnly with an infallible handler infers the narrow residual unascribed"):
-    val onApp: Eff[IoError | AppError, Int] = Eff.fail(NotFound("u2"))
+    val onApp: Eff[IOError | AppError, Int] = Eff.fail(NotFound("u2"))
     // No ascription: the infallible-handler twin subtracts the handled arm. The witness is the
     // compile-time lock - it fails if the residual ever widens again.
     val handled = onApp.catchOnly((_: AppError) => Eff.succeed(-1))
-    val _ = summon[handled.type <:< Eff[IoError, Int]]
+    val _ = summon[handled.type <:< Eff[IOError, Int]]
     run(handled).map(r => assertEquals(r, Right(-1)))
 
   test("catchOnly whose handler covers the whole channel infers an infallible residual"):
@@ -345,14 +345,14 @@ class EffSuite extends CatsEffectSuite:
   test("a defect downstream of an infallible-handler catchOnly propagates through catchAll"):
     // The narrow residual is what keeps later observers honest: on a Throwable-widened channel the
     // identity TypeTest would reify this defect as a typed Left and catchAll would swallow it.
-    val rogue: Eff[IoError | AppError, Int] = IO.raiseError(RuntimeException("DEFECT"))
+    val rogue: Eff[IOError | AppError, Int] = IO.raiseError(RuntimeException("DEFECT"))
     val recovered = rogue.catchOnly((_: AppError) => Eff.succeed(-1))
     recovered.catchAll(_ => Eff.succeed(0)).absolve.attempt.map(r => assert(r.left.exists(_.getMessage == "DEFECT")))
 
   test("mapError transforms the typed channel and leaves a defect untouched"):
-    val boom: Eff[IoError, Int] = IO.raiseError(RuntimeException("boom"))
+    val boom: Eff[IOError, Int] = IO.raiseError(RuntimeException("boom"))
     for
-      mapped <- run((Eff.fail[IoError](Closed): Eff[IoError, Int]).mapError(e => Invalid(e.getMessage)))
+      mapped <- run((Eff.fail[IOError](Closed): Eff[IOError, Int]).mapError(e => Invalid(e.getMessage)))
       defect <- boom.mapError(e => Invalid(e.getMessage)).absolve.attempt
     yield
       assertEquals(mapped, Left(Invalid("closed")))
@@ -369,10 +369,10 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(u, Left(Invalid("y")))
 
   test("redeemAll handles both channels and can change the error type"):
-    val boom: Eff[IoError, Int] = Eff.fail(Closed)
+    val boom: Eff[IOError, Int] = Eff.fail(Closed)
     for
       fromErr <- run(boom.redeemAll(_ => Eff.succeed(-1), a => Eff.succeed(a)))
-      fromOk <- run((Eff.succeed(5): Eff[IoError, Int]).redeemAll(_ => Eff.succeed(-1), a => Eff.succeed(a)))
+      fromOk <- run((Eff.succeed(5): Eff[IOError, Int]).redeemAll(_ => Eff.succeed(-1), a => Eff.succeed(a)))
       changed <- run(boom.redeemAll(e => Eff.fail[AppError](Invalid(e.getMessage)), a => Eff.succeed(a)))
     yield
       assertEquals(fromErr, Right(-1))
@@ -380,10 +380,10 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(changed, Left(Invalid("closed")))
 
   test("fold and foldF collapse both channels to the base IO"):
-    val boom: Eff[IoError, Int] = Eff.fail(Closed)
+    val boom: Eff[IOError, Int] = Eff.fail(Closed)
     for
       e <- boom.fold(_.getMessage.length, _ => 0)
-      a <- (Eff.succeed(7): Eff[IoError, Int]).fold(_ => -1, identity)
+      a <- (Eff.succeed(7): Eff[IOError, Int]).fold(_ => -1, identity)
       ef <- boom.foldF(err => IO.pure(err.getMessage.length), v => IO.pure(v))
     yield
       assertEquals(e, 6)
@@ -391,7 +391,7 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(ef, 6)
 
   test("orElseSucceed, orElseFail, valueOr, and alt"):
-    val boom: Eff[IoError, Int] = Eff.fail(Closed)
+    val boom: Eff[IOError, Int] = Eff.fail(Closed)
     for
       os <- run(boom.orElseSucceed(0))
       of <- run(boom.orElseFail(Timeout))
@@ -407,7 +407,7 @@ class EffSuite extends CatsEffectSuite:
     end for
 
   test("tapError and flatTapError observe typed failures; a failing flatTapError replaces the error"):
-    val boom: Eff[IoError, Int] = Eff.fail(Closed)
+    val boom: Eff[IOError, Int] = Eff.fail(Closed)
     for
       tapObs <- IO.ref(Option.empty[String])
       tapR <- run(boom.tapError(e => tapObs.set(Some(e.getMessage))))
@@ -415,7 +415,7 @@ class EffSuite extends CatsEffectSuite:
       ftObs <- IO.ref(Option.empty[String])
       ftR <- run(boom.flatTapError(e => ftObs.set(Some(e.getMessage))))
       ftSeen <- ftObs.get
-      replaced <- run(boom.flatTapError(_ => Eff.fail[IoError](Failed(1))))
+      replaced <- run(boom.flatTapError(_ => Eff.fail[IOError](Failed(1))))
     yield
       assertEquals(tapR, Left(Closed))
       assertEquals(tapSeen, Some("closed"))
@@ -426,13 +426,13 @@ class EffSuite extends CatsEffectSuite:
 
   test("attemptTap observes the reified result and propagates a failing side effect"):
     for
-      seenErr <- IO.ref(Option.empty[Either[IoError, Int]])
-      errR <- run((Eff.fail[IoError](Closed): Eff[IoError, Int]).attemptTap(ea => seenErr.set(Some(ea))))
+      seenErr <- IO.ref(Option.empty[Either[IOError, Int]])
+      errR <- run((Eff.fail[IOError](Closed): Eff[IOError, Int]).attemptTap(ea => seenErr.set(Some(ea))))
       errObs <- seenErr.get
-      seenOk <- IO.ref(Option.empty[Either[IoError, Int]])
-      okR <- run((Eff.succeed(42): Eff[IoError, Int]).attemptTap(ea => seenOk.set(Some(ea))))
+      seenOk <- IO.ref(Option.empty[Either[IOError, Int]])
+      okR <- run((Eff.succeed(42): Eff[IOError, Int]).attemptTap(ea => seenOk.set(Some(ea))))
       okObs <- seenOk.get
-      prop <- run((Eff.succeed(42): Eff[IoError, Int]).attemptTap(_ => Eff.fail[IoError](Failed(9))))
+      prop <- run((Eff.succeed(42): Eff[IOError, Int]).attemptTap(_ => Eff.fail[IOError](Failed(9))))
     yield
       assertEquals(errR, Left(Closed))
       assertEquals(errObs, Some(Left(Closed)))
@@ -442,8 +442,8 @@ class EffSuite extends CatsEffectSuite:
 
   test("option, collectSome, and collectRight"):
     for
-      optS <- run((Eff.succeed(42): Eff[IoError, Int]).option)
-      optE <- run((Eff.fail[IoError](Closed): Eff[IoError, Int]).option)
+      optS <- run((Eff.succeed(42): Eff[IOError, Int]).option)
+      optE <- run((Eff.fail[IOError](Closed): Eff[IOError, Int]).option)
       cs <- run((Eff.succeed(Some(5)): Eff[AppError, Option[Int]]).collectSome(Timeout))
       csN <- run((Eff.succeed(None): Eff[AppError, Option[Int]]).collectSome(Timeout))
       cr <- run((Eff.succeed(Right(9)): Eff[AppError, Either[Int, Int]]).collectRight(n => Invalid(n.toString)))
@@ -458,24 +458,24 @@ class EffSuite extends CatsEffectSuite:
 
   test("either reifies the typed channel and eitherT wraps it as EitherT"):
     for
-      e <- (Eff.succeed(42): Eff[IoError, Int]).either
-      et <- (Eff.fail[IoError](Closed): Eff[IoError, Int]).eitherT.value
+      e <- (Eff.succeed(42): Eff[IOError, Int]).either
+      et <- (Eff.fail[IOError](Closed): Eff[IOError, Int]).eitherT.value
     yield
       assertEquals(e, Right(42))
       assertEquals(et, Left(Closed))
 
   test("absolve raises the typed error into IO's channel; success passes through"):
     for
-      ok <- (Eff.succeed(1): Eff[IoError, Int]).absolve
-      ko <- (Eff.fail[IoError](Closed): Eff[IoError, Int]).absolve.attempt
+      ok <- (Eff.succeed(1): Eff[IOError, Int]).absolve
+      ko <- (Eff.fail[IOError](Closed): Eff[IOError, Int]).absolve.attempt
     yield
       assertEquals(ok, 1)
       assertEquals(ko.left.toOption, Some(Closed))
 
   test("a typed error reifies to Left; a defect stays on the IO channel"):
-    val boom: Eff[IoError, Int] = IO.raiseError(RuntimeException("defect"))
+    val boom: Eff[IOError, Int] = IO.raiseError(RuntimeException("defect"))
     for
-      typed <- run(Eff.fail[IoError](Closed)).attempt
+      typed <- run(Eff.fail[IOError](Closed)).attempt
       defect <- run(boom).attempt
     yield
       assert(typed.isRight) // IO succeeds carrying Left
@@ -488,10 +488,10 @@ class EffSuite extends CatsEffectSuite:
   test("bracket releases on a typed use failure and skips release when acquire fails"):
     for
       relUse <- IO.ref(false)
-      useR <- run((Eff.succeed(42): Eff[IoError, Int]).bracket(_ => Eff.fail[IoError](Closed))(_ => relUse.set(true)))
+      useR <- run((Eff.succeed(42): Eff[IOError, Int]).bracket(_ => Eff.fail[IOError](Closed))(_ => relUse.set(true)))
       usedReleased <- relUse.get
       relAcq <- IO.ref(false)
-      acqR <- run((Eff.fail[IoError](Failed(1)): Eff[IoError, Int]).bracket(a => Eff.succeed(a))(_ => relAcq.set(true)))
+      acqR <- run((Eff.fail[IOError](Failed(1)): Eff[IOError, Int]).bracket(a => Eff.succeed(a))(_ => relAcq.set(true)))
       acqReleased <- relAcq.get
     yield
       assertEquals(useR, Left(Closed))
@@ -502,7 +502,7 @@ class EffSuite extends CatsEffectSuite:
   test("bracketCase surfaces Succeeded for a value and Errored for a typed use failure"):
     for
       okOc <- IO.ref("")
-      r <- run((Eff.succeed(42): Eff[IoError, Int]).bracketCase(a => Eff.succeed(a)) { (_, oc) =>
+      r <- run((Eff.succeed(42): Eff[IOError, Int]).bracketCase(a => Eff.succeed(a)) { (_, oc) =>
              oc match
                case Outcome.Succeeded(_) => okOc.set("succeeded")
                case Outcome.Errored(_)   => okOc.set("errored")
@@ -510,7 +510,7 @@ class EffSuite extends CatsEffectSuite:
            })
       okSeen <- okOc.get
       errOc <- IO.ref("")
-      e <- run((Eff.succeed(42): Eff[IoError, Int]).bracketCase(_ => Eff.fail[IoError](Closed)) { (_, oc) =>
+      e <- run((Eff.succeed(42): Eff[IOError, Int]).bracketCase(_ => Eff.fail[IOError](Closed)) { (_, oc) =>
              oc match
                case Outcome.Succeeded(_) => errOc.set("succeeded")
                case Outcome.Errored(_)   => errOc.set("errored")
@@ -524,18 +524,18 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(errSeen, "errored")
 
   test("race returns the winner, both returns the pair, and both fails fast on a typed error"):
-    val slowGood: Eff[IoError, Int] = IO.sleep(1.second).flatMap(_ => IO.pure(1))
+    val slowGood: Eff[IOError, Int] = IO.sleep(1.second).flatMap(_ => IO.pure(1))
     for
-      raced <- run((Eff.succeed(1): Eff[IoError, Int]).race(Eff.never: Eff[IoError, Int]))
-      paired <- run((Eff.succeed(1): Eff[IoError, Int]).both(Eff.succeed(2)))
-      failFast <- run(slowGood.both(Eff.fail[IoError](Closed)))
+      raced <- run((Eff.succeed(1): Eff[IOError, Int]).race(Eff.never: Eff[IOError, Int]))
+      paired <- run((Eff.succeed(1): Eff[IOError, Int]).both(Eff.succeed(2)))
+      failFast <- run(slowGood.both(Eff.fail[IOError](Closed)))
     yield
       assertEquals(raced, Right(Left(1)))
       assertEquals(paired, Right((1, 2)))
       assertEquals(failFast, Left(Closed))
 
   test("start: a successful join is Succeeded, a typed-failure join is Errored"):
-    def label(eff: Eff[IoError, Int]): Eff[IoError, String] =
+    def label(eff: Eff[IOError, Int]): Eff[IOError, String] =
       for
         fiber <- eff.start
         outcome <- fiber.join
@@ -552,7 +552,7 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(ko, Right("errored(Closed)"))
 
   test("background spawns a supervised fibre that completes Succeeded"):
-    (Eff.succeed(42): Eff[IoError, Int]).background
+    (Eff.succeed(42): Eff[IOError, Int]).background
       .use(join => IO.sleep(10.millis).flatMap(_ => join))
       .map {
         case Outcome.Succeeded(_) => ()
@@ -569,10 +569,10 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(slowR, Left(Timeout))
 
   test("timeoutTo returns the fallback on timeout and the value within duration"):
-    val slow: Eff[IoError, Int] = IO.sleep(1.second).flatMap(_ => IO.pure(1))
+    val slow: Eff[IOError, Int] = IO.sleep(1.second).flatMap(_ => IO.pure(1))
     for
       fb <- run(slow.timeoutTo(50.millis, Eff.succeed(42)))
-      within <- run((Eff.succeed(42): Eff[IoError, Int]).timeoutTo(1.second, Eff.succeed(0)))
+      within <- run((Eff.succeed(42): Eff[IOError, Int]).timeoutTo(1.second, Eff.succeed(0)))
     yield
       assertEquals(fb, Right(42))
       assertEquals(within, Right(42))
@@ -580,9 +580,9 @@ class EffSuite extends CatsEffectSuite:
   test("delayBy delays execution and andWait waits after it"):
     for
       start <- IO.monotonic
-      r1 <- run((Eff.succeed(42): Eff[IoError, Int]).delayBy(10.millis))
+      r1 <- run((Eff.succeed(42): Eff[IOError, Int]).delayBy(10.millis))
       mid <- IO.monotonic
-      r2 <- run((Eff.succeed(42): Eff[IoError, Int]).andWait(10.millis))
+      r2 <- run((Eff.succeed(42): Eff[IOError, Int]).andWait(10.millis))
       end <- IO.monotonic
     yield
       assertEquals(r1, Right(42))
@@ -591,7 +591,7 @@ class EffSuite extends CatsEffectSuite:
       assert(clue(end - mid) >= 9.millis)
 
   test("timed returns the result paired with a non-negative duration"):
-    run((Eff.succeed(42): Eff[IoError, Int]).timed).map {
+    run((Eff.succeed(42): Eff[IOError, Int]).timed).map {
       case Right((dur, value)) =>
         assertEquals(value, 42)
         assert(dur >= 0.nanos)
@@ -599,12 +599,12 @@ class EffSuite extends CatsEffectSuite:
     }
 
   test("&> and <& run in parallel, discarding the appropriate side, and short-circuit on error"):
-    val a: Eff[IoError, Int] = Eff.succeed(1)
-    val b: Eff[IoError, String] = Eff.succeed("two")
+    val a: Eff[IOError, Int] = Eff.succeed(1)
+    val b: Eff[IOError, String] = Eff.succeed("two")
     for
       r <- run(a &> b)
       l <- run(a <& b)
-      shortR <- run((Eff.fail[IoError](Closed): Eff[IoError, Int]) &> b)
+      shortR <- run((Eff.fail[IOError](Closed): Eff[IOError, Int]) &> b)
     yield
       assertEquals(r, Right("two"))
       assertEquals(l, Right(1))
@@ -616,11 +616,11 @@ class EffSuite extends CatsEffectSuite:
       canceledOc <- Eff.canceled.onCancel(onCancelRan.set(true)).absolve.start.flatMap(_.join)
       onCancelSeen <- onCancelRan.get
       onSuccessRan <- IO.ref(false)
-      okR <- run((Eff.succeed(42): Eff[IoError, Int]).onCancel(onSuccessRan.set(true)))
+      okR <- run((Eff.succeed(42): Eff[IOError, Int]).onCancel(onSuccessRan.set(true)))
       onSuccessSeen <- onSuccessRan.get
       guaranteeRan <- IO.ref(0)
-      gOk <- run((Eff.succeed(42): Eff[IoError, Int]).guarantee(guaranteeRan.update(_ + 1)))
-      gErr <- run((Eff.fail[IoError](Closed): Eff[IoError, Int]).guarantee(guaranteeRan.update(_ + 1)))
+      gOk <- run((Eff.succeed(42): Eff[IOError, Int]).guarantee(guaranteeRan.update(_ + 1)))
+      gErr <- run((Eff.fail[IOError](Closed): Eff[IOError, Int]).guarantee(guaranteeRan.update(_ + 1)))
       guaranteeCount <- guaranteeRan.get
     yield
       assert(canceledOc.isCanceled)
@@ -635,7 +635,7 @@ class EffSuite extends CatsEffectSuite:
     for
       onOk <- IO.ref("")
       onErr <- IO.ref("")
-      _ <- (Eff.succeed(1): Eff[IoError, Int])
+      _ <- (Eff.succeed(1): Eff[IOError, Int])
              .guaranteeCase {
                case Outcome.Succeeded(_) => onOk.set("succeeded")
                case Outcome.Errored(_)   => onOk.set("errored")
@@ -643,7 +643,7 @@ class EffSuite extends CatsEffectSuite:
              }
              .absolve
              .attempt
-      _ <- (Eff.fail[IoError](Closed): Eff[IoError, Int])
+      _ <- (Eff.fail[IOError](Closed): Eff[IOError, Int])
              .guaranteeCase {
                case Outcome.Succeeded(_) => onErr.set("succeeded")
                case Outcome.Errored(_)   => onErr.set("errored")
@@ -679,10 +679,10 @@ class EffSuite extends CatsEffectSuite:
 
   test("traverse short-circuits on the first error and collects successes"):
     for
-      ok <- run(Eff.traverse[IoError, Int, Int](List(1, 2, 3))(n => Eff.succeed(n * 2)))
+      ok <- run(Eff.traverse[IOError, Int, Int](List(1, 2, 3))(n => Eff.succeed(n * 2)))
       visited <- IO.ref(0)
-      ko <- run(Eff.traverse[IoError, Int, Int](List(1, 2, 3)) { n =>
-              (visited.update(_ + 1): Eff[IoError, Unit]).flatMap(_ => if n == 2 then Eff.fail(Failed(n)) else Eff.succeed(n))
+      ko <- run(Eff.traverse[IOError, Int, Int](List(1, 2, 3)) { n =>
+              (visited.update(_ + 1): Eff[IOError, Unit]).flatMap(_ => if n == 2 then Eff.fail(Failed(n)) else Eff.succeed(n))
             })
       seen <- visited.get
     yield
@@ -692,16 +692,16 @@ class EffSuite extends CatsEffectSuite:
 
   test("traverse preserves order for a large collection without stack overflow or quadratic blowup"):
     val n = 5000
-    run(Eff.traverse[IoError, Int, Int]((1 to n).toList)(Eff.succeed(_)))
+    run(Eff.traverse[IOError, Int, Int]((1 to n).toList)(Eff.succeed(_)))
       .map(r => assertEquals(r, Right((1 to n).toList)))
 
   test("sequence collects; traverse_ and sequence_ run for effect and discard"):
     for
-      seq <- run(Eff.sequence[IoError, Int](List(Eff.succeed(1), Eff.succeed(2), Eff.succeed(3))))
+      seq <- run(Eff.sequence[IOError, Int](List(Eff.succeed(1), Eff.succeed(2), Eff.succeed(3))))
       sum <- IO.ref(0)
-      tvU <- run(Eff.traverse_[IoError, Int, Unit](List(1, 2, 3))(n => sum.update(_ + n)))
+      tvU <- run(Eff.traverse_[IOError, Int, Unit](List(1, 2, 3))(n => sum.update(_ + n)))
       total <- sum.get
-      seqU <- run(Eff.sequence_[IoError, Int](List(Eff.succeed(1), Eff.succeed(2))))
+      seqU <- run(Eff.sequence_[IOError, Int](List(Eff.succeed(1), Eff.succeed(2))))
     yield
       assertEquals(seq, Right(List(1, 2, 3)))
       assertEquals(tvU, Right(()))
@@ -710,10 +710,10 @@ class EffSuite extends CatsEffectSuite:
 
   test("parTraverse runs in parallel and short-circuits; parSequence collects"):
     for
-      ok <- run(Eff.parTraverse[IoError, Int, Int](List(1, 2, 3))(n => Eff.succeed(n * 2)))
-      ko <- run(Eff.parTraverse[IoError, Int, Int](List(1, 2, 3))(n => if n == 2 then Eff.fail(Failed(n)) else Eff.succeed(n)))
-      ps <- run(Eff.parSequence[IoError, Int](List(Eff.succeed(1), Eff.succeed(2))))
-      psErr <- run(Eff.parSequence[IoError, Int](List(Eff.succeed(1), Eff.fail(Closed), Eff.succeed(3))))
+      ok <- run(Eff.parTraverse[IOError, Int, Int](List(1, 2, 3))(n => Eff.succeed(n * 2)))
+      ko <- run(Eff.parTraverse[IOError, Int, Int](List(1, 2, 3))(n => if n == 2 then Eff.fail(Failed(n)) else Eff.succeed(n)))
+      ps <- run(Eff.parSequence[IOError, Int](List(Eff.succeed(1), Eff.succeed(2))))
+      psErr <- run(Eff.parSequence[IOError, Int](List(Eff.succeed(1), Eff.fail(Closed), Eff.succeed(3))))
     yield
       assertEquals(ok, Right(List(2, 4, 6)))
       assertEquals(ko, Left(Failed(2)))
@@ -722,9 +722,9 @@ class EffSuite extends CatsEffectSuite:
 
   test("parTraverse_ and parSequence_ run all in parallel, discard, and propagate a typed error"):
     for
-      ok <- run(Eff.parTraverse_[IoError, Int, Int](List(1, 2, 3))(Eff.succeed(_)))
-      ko <- run(Eff.parTraverse_[IoError, Int, Int](List(1, 2, 3))(n => if n == 2 then Eff.fail(Failed(n)) else Eff.succeed(n)))
-      ps <- run(Eff.parSequence_[IoError, Int](List(Eff.succeed(1), Eff.succeed(2))))
+      ok <- run(Eff.parTraverse_[IOError, Int, Int](List(1, 2, 3))(Eff.succeed(_)))
+      ko <- run(Eff.parTraverse_[IOError, Int, Int](List(1, 2, 3))(n => if n == 2 then Eff.fail(Failed(n)) else Eff.succeed(n)))
+      ps <- run(Eff.parSequence_[IOError, Int](List(Eff.succeed(1), Eff.succeed(2))))
     yield
       assertEquals(ok, Right(()))
       assertEquals(ko, Left(Failed(2)))
@@ -732,15 +732,15 @@ class EffSuite extends CatsEffectSuite:
 
   // Retry
 
-  private def failingEff(counter: Ref[IO, Int], e: IoError): Eff[IoError, Int] =
-    val bump: Eff[IoError, Unit] = counter.update(_ + 1)
+  private def failingEff(counter: Ref[IO, Int], e: IOError): Eff[IOError, Int] =
+    val bump: Eff[IOError, Unit] = counter.update(_ + 1)
     bump.flatMap(_ => Eff.fail(e))
 
   test("retry re-runs a failing effect up to the limit, then propagates the final error"):
     for
       attempts <- IO.ref(0)
-      eff: Eff[IoError, Int] =
-        (attempts.updateAndGet(_ + 1): Eff[IoError, Int]).flatMap(n => if n < 3 then Eff.fail(Failed(n)) else Eff.succeed(n))
+      eff: Eff[IOError, Int] =
+        (attempts.updateAndGet(_ + 1): Eff[IOError, Int]).flatMap(n => if n < 3 then Eff.fail(Failed(n)) else Eff.succeed(n))
       r <- run(Eff.retry(eff, 5))
       count <- attempts.get
       exhausted <- IO.ref(0)
@@ -754,7 +754,7 @@ class EffSuite extends CatsEffectSuite:
 
   test("retryWithBackoff succeeds after transient failures"):
     var attempts = 0 // scalafix:ok DisableSyntax.var
-    val step: Eff[IoError, Int] =
+    val step: Eff[IOError, Int] =
       Eff.suspend(attempts += 1).flatMap(_ => if attempts < 3 then Eff.fail(Failed(attempts)) else Eff.succeed(42))
     run(Eff.retryWithBackoff(step, 5, 1.millis, Some(10.millis))).map { r =>
       assertEquals(r, Right(42))
@@ -767,7 +767,7 @@ class EffSuite extends CatsEffectSuite:
     // which under a loaded four-platform matrix is not a bound at all.
     TestControl.executeEmbed {
       var attempts = 0 // scalafix:ok DisableSyntax.var
-      val step: Eff[IoError, Int] = Eff.suspend(attempts += 1).flatMap(_ => Eff.fail(Closed))
+      val step: Eff[IOError, Int] = Eff.suspend(attempts += 1).flatMap(_ => Eff.fail(Closed))
       for
         start <- IO.monotonic
         result <- run(Eff.retryWithBackoff(step, 3, 10.millis, Some(1.millis)))
@@ -850,8 +850,8 @@ class EffSuite extends CatsEffectSuite:
     TestControl.executeEmbed {
       for
         attempts <- IO.ref(0)
-        eff: Eff[IoError, Int] =
-          (attempts.updateAndGet(_ + 1): Eff[IoError, Int]).flatMap(n => if n < 3 then Eff.fail(Failed(n)) else Eff.succeed(n))
+        eff: Eff[IOError, Int] =
+          (attempts.updateAndGet(_ + 1): Eff[IOError, Int]).flatMap(n => if n < 3 then Eff.fail(Failed(n)) else Eff.succeed(n))
         out <- run(Eff.retry(eff, RetryPolicy.constant(10.millis).withMaxAttempts(5)))
         n <- attempts.get
       yield
@@ -862,7 +862,7 @@ class EffSuite extends CatsEffectSuite:
   test("policy retry honours the retryOn predicate per error"):
     TestControl.executeEmbed {
       val policy = RetryPolicy.constant(10.millis).withMaxAttempts(3)
-      val retriable = (e: IoError) =>
+      val retriable = (e: IOError) =>
         e match
           case _: Failed => true
           case Closed    => false
@@ -887,7 +887,7 @@ class EffSuite extends CatsEffectSuite:
       for
         counter <- IO.ref(0)
         delays <- IO.ref(List.empty[(Int, FiniteDuration)])
-        hook = (attempt: Int, _: IoError, d: FiniteDuration) => delays.update((attempt, d) :: _)
+        hook = (attempt: Int, _: IOError, d: FiniteDuration) => delays.update((attempt, d) :: _)
         _ <- run(Eff.retry(failingEff(counter, Closed), policy, hook))
         ds <- delays.get
       yield
@@ -905,7 +905,7 @@ class EffSuite extends CatsEffectSuite:
       for
         counter <- IO.ref(0)
         delays <- IO.ref(List.empty[FiniteDuration])
-        hook = (_: Int, _: IoError, d: FiniteDuration) => delays.update(d :: _)
+        hook = (_: Int, _: IOError, d: FiniteDuration) => delays.update(d :: _)
         _ <- run(Eff.retry(failingEff(counter, Closed), policy, hook))
         ds <- delays.get.map(_.reverse)
       yield
@@ -923,13 +923,13 @@ class EffSuite extends CatsEffectSuite:
     TestControl.executeEmbed {
       for
         counter <- IO.ref(0)
-        seen <- IO.ref(List.empty[(Int, IoError, FiniteDuration)])
+        seen <- IO.ref(List.empty[(Int, IOError, FiniteDuration)])
         policy = RetryPolicy.constant(10.millis).withMaxAttempts(3)
-        hook = (n: Int, e: IoError, d: FiniteDuration) => seen.update((n, e, d) :: _)
+        hook = (n: Int, e: IOError, d: FiniteDuration) => seen.update((n, e, d) :: _)
         _ <- run(Eff.retry(failingEff(counter, Closed), policy, hook))
         entries <- seen.get.map(_.reverse)
       yield
-        val expected: List[(Int, IoError, FiniteDuration)] = List((1, Closed, 10.millis), (2, Closed, 10.millis))
+        val expected: List[(Int, IOError, FiniteDuration)] = List((1, Closed, 10.millis), (2, Closed, 10.millis))
         assertEquals(entries, expected)
     }
 
@@ -968,12 +968,12 @@ class EffSuite extends CatsEffectSuite:
   // Summoned instances
 
   test("the summoned MonadError instance handles the typed error channel"):
-    val F = summon[cats.MonadError[Eff.Of[IoError], IoError]]
+    val F = summon[cats.MonadError[Eff.Of[IOError], IOError]]
     run(F.handleError(F.raiseError[Int](Closed))(_.getMessage.length))
       .map(r => assertEquals(r, Right(6)))
 
   test("the summoned GenConcurrent instance runs a concurrent program"):
-    val F = summon[cats.effect.kernel.GenConcurrent[Eff.Of[IoError], Throwable]]
+    val F = summon[cats.effect.kernel.GenConcurrent[Eff.Of[IOError], Throwable]]
     val program =
       for
         ref <- F.ref(0)
@@ -983,9 +983,9 @@ class EffSuite extends CatsEffectSuite:
     run(program).map(r => assertEquals(r, Right(1)))
 
   test("the summoned GenTemporal instance raises TimeoutException on the defect channel"):
-    val T = summon[cats.effect.kernel.GenTemporal[Eff.Of[IoError], Throwable]]
+    val T = summon[cats.effect.kernel.GenTemporal[Eff.Of[IOError], Throwable]]
     val slow = T.flatMap(T.sleep(1.second))(_ => T.pure(42))
-    // A timeout is a defect (TimeoutException in IO's channel), not the typed IoError channel.
+    // A timeout is a defect (TimeoutException in IO's channel), not the typed IOError channel.
     T.timeout(slow, 10.millis).absolve.attempt.map {
       case Left(_: java.util.concurrent.TimeoutException) => ()
       case Right(_)                                       => fail("should have timed out")
@@ -994,8 +994,8 @@ class EffSuite extends CatsEffectSuite:
 
   test("the Parallel instance enables parMapN and short-circuits on error"):
     for
-      ok <- run(((Eff.succeed(1): Eff[IoError, Int]), (Eff.succeed(2): Eff[IoError, Int])).parMapN(_ + _))
-      ko <- run(((Eff.succeed(1): Eff[IoError, Int]), (Eff.fail[IoError](Closed): Eff[IoError, Int])).parMapN(_ + _))
+      ok <- run(((Eff.succeed(1): Eff[IOError, Int]), (Eff.succeed(2): Eff[IOError, Int])).parMapN(_ + _))
+      ko <- run(((Eff.succeed(1): Eff[IOError, Int]), (Eff.fail[IOError](Closed): Eff[IOError, Int])).parMapN(_ + _))
     yield
       assertEquals(ok, Right(3))
       assertEquals(ko, Left(Closed))
@@ -1003,8 +1003,8 @@ class EffSuite extends CatsEffectSuite:
   test("evalOn preserves both channels across the executor shift"):
     for
       ec <- IO.executionContext
-      ok <- run((Eff.succeed(1): Eff[IoError, Int]).evalOn(ec))
-      ko <- run((Eff.fail[IoError](Closed): Eff[IoError, Int]).evalOn(ec))
+      ok <- run((Eff.succeed(1): Eff[IOError, Int]).evalOn(ec))
+      ko <- run((Eff.fail[IOError](Closed): Eff[IOError, Int]).evalOn(ec))
     yield
       assertEquals(ok, Right(1))
       assertEquals(ko, Left(Closed))

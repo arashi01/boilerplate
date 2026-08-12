@@ -347,8 +347,9 @@ val port: ValueCodec.Aux[Int, ValueCodec.Invalid] =
   ValueCodec(s => s.toIntOption.toRight(ValueCodec.Invalid("not an integer")), _.toString)
 ```
 
-Givens ship for `String` (`Error = Nothing`), `Int`, `Long`, and `Boolean`. Every constructor and
-given preserves the `Error` member (`ValueCodec.Aux[A, E]`); a seam returning bare
+Givens ship for `String` (`Error = Nothing`), `Int`, `Long`, and `Boolean`. The numeric givens
+admit ASCII wire forms alone - no Unicode digits, no `+` sign (leading zeros normalise); they are
+wire parsers, not `toIntOption`. Every constructor and given preserves the `Error` member (`ValueCodec.Aux[A, E]`); a seam returning bare
 `ValueCodec[A]` erases the family and with it exhaustivity, so hand codecs onward as `Aux`.
 Failure messages name the violated constraint and never carry the offending input.
 
@@ -400,8 +401,18 @@ and may wipe.
 (`keepUnreserved` is the universal baseline; each URI component brings its own), and both decode
 disciplines the wire genuinely needs: `decode` is strict (`Malformed` on a truncated or non-hex
 escape - URI components), `decodeLenient` is total (invalid escapes pass through literally - form
-parsing). `Ascii` carries the locale-free operations wire parsers need: `lower` (the Turkish
-dotless-i can never reach a protocol token), and the RFC 9110 `isTokenChar`/`isToken` classes.
+parsing).
+
+`ASCII` carries the locale-free operations wire parsers need: `lower`/`upper` (the Turkish
+dotless-i can never reach a protocol token), the RFC 9110 `isTokenChar`/`isToken` classes, the
+character and whole-string predicates (`isDigit`/`isLetter`/`isAlphanumeric`, `isDigits`/
+`isLetters`) that keep `Character.isDigit`'s whole-Unicode classes out of numeric wire fields, and
+the strict unsigned reads `uint`/`ulong` - ASCII digits alone, no sign, `None` on overflow.
+
+`Decimal` is the money-class plain-decimal seam: `render` emits the one canonical plain form
+(trailing zeros stripped, never scientific notation - `BigDecimal.toString` after
+`stripTrailingZeros` renders `250` as `2.5E+2`), and `parse` admits plain forms alone, rejecting
+exponents, `+` signs, and non-ASCII digits that `BigDecimal(String)` itself accepts.
 
 ---
 
@@ -623,12 +634,12 @@ the handled arm (a handler covering the whole channel infers `Nothing`; a root-t
 bounded by the root, which does not decompose); a fallible handler's own return type pins it:
 
 ```scala
-val consumed: Eff[IoError | AppError, Unit] = ...
-val handled = consumed.catchOnly((app: AppError) => log(app)) // : Eff[IoError, Unit]
+val consumed: Eff[IOError | AppError, Unit] = ...
+val handled = consumed.catchOnly((app: AppError) => log(app)) // : Eff[IOError, Unit]
 ```
 
 The handler may itself fail into the residual channel - ascribe its failure to the residual root
-(`Eff.fail(e): Eff[IoError, Nothing]`), or the solver pins the residual to the failure's concrete
+(`Eff.fail(e): Eff[IOError, Nothing]`), or the solver pins the residual to the failure's concrete
 subtype. The handled arm must be runtime-testable; an erasure-ambiguous choice is rejected at the
 call site.
 
@@ -928,6 +939,7 @@ val io: IO[Either[AppError, User]] = concurrent.either.absolve
 class MyCodecsSuite extends munit.ScalaCheckSuite, boilerplate.testkit.ValueCodecLaws:
   valueCodecLaws[UserId]("UserId")                          // round trip + canonical encode
   valueCodecNormalisation[HeaderName]("HeaderName", texts)  // decode idempotent through re-encode
+  valueCodecRenderWithin[Amount]("Amount")(plainDecimal)    // no exponent or locale leakage
 ```
 
 `boilerplate-effect-testkit` ships ScalaCheck generators (`EffGenerators`) and the

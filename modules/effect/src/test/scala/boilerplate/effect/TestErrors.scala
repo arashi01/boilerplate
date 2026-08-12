@@ -23,14 +23,14 @@ package boilerplate.effect
 import scala.util.control.NoStackTrace
 
 // Two independent roots so the suites can exercise both the subtype lattice (covariance) and the
-// union channel (`AppError | IoError`).
+// union channel (`AppError | IOError`).
 sealed abstract class AppError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
 object AppError:
   final case class NotFound(id: String) extends AppError(s"not found: $id")
   final case class Invalid(reason: String) extends AppError(s"invalid: $reason")
   case object Timeout extends AppError("timed out")
 
-sealed abstract class IoError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
-object IoError:
-  final case class Failed(code: Int) extends IoError(s"io failed: $code")
-  case object Closed extends IoError("closed")
+sealed abstract class IOError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
+object IOError:
+  final case class Failed(code: Int) extends IOError(s"io failed: $code")
+  case object Closed extends IOError("closed")

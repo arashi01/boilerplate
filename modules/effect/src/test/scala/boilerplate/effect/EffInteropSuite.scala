@@ -27,7 +27,7 @@ import cats.effect.kernel.Outcome
 import cats.effect.std.*
 import munit.CatsEffectSuite
 
-import boilerplate.effect.IoError.*
+import boilerplate.effect.IOError.*
 
 // `IO[A]` is a subtype of every `Eff[E, A]`, so the whole `cats.effect` primitive vocabulary is
 // already `Eff` vocabulary: a `Ref`, `Queue`, `Semaphore` or `Resource` built over `IO` drops into
@@ -38,9 +38,9 @@ class EffInteropSuite extends CatsEffectSuite:
 
   test("a raw Ref composes directly in an Eff workflow, preserving get/set/update"):
     IO.ref(0).flatMap { ref =>
-      val eff: Eff[IoError, Int] =
+      val eff: Eff[IOError, Int] =
         for
-          _ <- ref.set(42): Eff[IoError, Unit]
+          _ <- ref.set(42): Eff[IOError, Unit]
           _ <- ref.update(_ + 3)
           v <- ref.get
         yield v
@@ -49,9 +49,9 @@ class EffInteropSuite extends CatsEffectSuite:
 
   test("a raw Deferred composes directly in an Eff workflow, preserving complete/get"):
     Deferred[IO, Int].flatMap { deferred =>
-      val eff: Eff[IoError, (Boolean, Int)] =
+      val eff: Eff[IOError, (Boolean, Int)] =
         for
-          completed <- deferred.complete(42): Eff[IoError, Boolean]
+          completed <- deferred.complete(42): Eff[IOError, Boolean]
           v <- deferred.get
         yield (completed, v)
       for
@@ -64,9 +64,9 @@ class EffInteropSuite extends CatsEffectSuite:
 
   test("a raw Queue composes directly in an Eff workflow, preserving FIFO offer/take"):
     Queue.unbounded[IO, Int].flatMap { queue =>
-      val eff: Eff[IoError, (Int, Int)] =
+      val eff: Eff[IOError, (Int, Int)] =
         for
-          _ <- queue.offer(1): Eff[IoError, Unit]
+          _ <- queue.offer(1): Eff[IOError, Unit]
           _ <- queue.offer(2)
           first <- queue.take
           second <- queue.take
@@ -78,9 +78,9 @@ class EffInteropSuite extends CatsEffectSuite:
     for
       sem <- Semaphore[IO](1)
       ref <- IO.ref(0)
-      guarded: Eff[IoError, Int] = (sem.permit: EffResource[Nothing, Unit]).use { _ =>
+      guarded: Eff[IOError, Int] = (sem.permit: EffResource[Nothing, Unit]).use { _ =>
                                      for
-                                       current <- ref.get: Eff[IoError, Int]
+                                       current <- ref.get: Eff[IOError, Int]
                                        _ <- ref.set(current + 1)
                                        updated <- ref.get
                                      yield updated
@@ -93,9 +93,9 @@ class EffInteropSuite extends CatsEffectSuite:
 
   test("a raw CountDownLatch composes directly in an Eff workflow, releasing awaiters at zero"):
     CountDownLatch[IO](1).flatMap { latch =>
-      val eff: Eff[IoError, Unit] =
+      val eff: Eff[IOError, Unit] =
         for
-          _ <- latch.release: Eff[IoError, Unit]
+          _ <- latch.release: Eff[IOError, Unit]
           _ <- latch.await
         yield ()
       run(eff).map(r => assertEquals(r, Right(())))
@@ -103,15 +103,15 @@ class EffInteropSuite extends CatsEffectSuite:
 
   test("a raw CyclicBarrier composes directly in an Eff workflow, releasing at the party count"):
     CyclicBarrier[IO](1).flatMap { barrier =>
-      val eff: Eff[IoError, Unit] = barrier.await
+      val eff: Eff[IOError, Unit] = barrier.await
       run(eff).map(r => assertEquals(r, Right(())))
     }
 
   test("a raw AtomicCell composes directly in an Eff workflow and writes through"):
     AtomicCell[IO].of(10).flatMap { cell =>
-      val eff: Eff[IoError, Int] =
+      val eff: Eff[IOError, Int] =
         for
-          _ <- cell.set(42): Eff[IoError, Unit]
+          _ <- cell.set(42): Eff[IOError, Unit]
           v <- cell.get
         yield v
       for
@@ -125,9 +125,9 @@ class EffInteropSuite extends CatsEffectSuite:
   test("a raw Supervisor supervises an Eff fibre whose typed failure joins as Outcome.Errored"):
     Supervisor[IO](await = true).use { sup =>
       val boom = Failed(1)
-      val eff: Eff[IoError, Int] =
+      val eff: Eff[IOError, Int] =
         for
-          fiber <- sup.supervise((Eff.fail(boom): Eff[IoError, Int]).absolve): Eff[IoError, Fiber[IO, Throwable, Int]]
+          fiber <- sup.supervise((Eff.fail(boom): Eff[IOError, Int]).absolve): Eff[IOError, Fiber[IO, Throwable, Int]]
           outcome <- fiber.join
         yield outcome match
           case Outcome.Errored(e) if e eq boom => 1
@@ -139,9 +139,9 @@ class EffInteropSuite extends CatsEffectSuite:
     for
       ref <- IO.ref(List.empty[String])
       queue <- Queue.unbounded[IO, Int]
-      workflow: Eff[IoError, List[String]] =
+      workflow: Eff[IOError, List[String]] =
         for
-          _ <- queue.offer(1): Eff[IoError, Unit]
+          _ <- queue.offer(1): Eff[IOError, Unit]
           _ <- queue.offer(2)
           n1 <- queue.take
           _ <- ref.update(_ :+ s"got $n1")
@@ -154,11 +154,11 @@ class EffInteropSuite extends CatsEffectSuite:
 
   test("a typed failure short-circuits the workflow and preserves prior Ref writes"):
     IO.ref(0).flatMap { ref =>
-      val workflow: Eff[IoError, Int] =
+      val workflow: Eff[IOError, Int] =
         for
-          _ <- ref.set(42): Eff[IoError, Unit]
-          _ <- Eff.fail[IoError](Closed)
-          _ <- ref.set(99): Eff[IoError, Unit] // must not run
+          _ <- ref.set(42): Eff[IOError, Unit]
+          _ <- Eff.fail[IOError](Closed)
+          _ <- ref.set(99): Eff[IOError, Unit] // must not run
         yield 0
       for
         result <- run(workflow)
@@ -173,7 +173,7 @@ class EffInteropSuite extends CatsEffectSuite:
       released <- IO.ref(0)
       res: EffResource[Nothing, Int] = Resource.make(IO.pure(42))(_ => released.update(_ + 1))
       succeeding: Eff[Nothing, Int] = res.use(a => Eff.succeed(a + 1))
-      failing: Eff[IoError, Int] = res.use(_ => Eff.fail(Closed))
+      failing: Eff[IOError, Int] = res.use(_ => Eff.fail(Closed))
       ok <- run(succeeding)
       afterOk <- released.get
       ko <- run(failing)

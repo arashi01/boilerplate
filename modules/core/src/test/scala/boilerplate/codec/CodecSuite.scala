@@ -118,19 +118,47 @@ class CodecSuite extends FunSuite:
     assertEquals(Percent.decodeLenient("%GG"), "%GG")
     assertEquals(Percent.decodeLenient("café%20x"), "café x")
 
-  test("Ascii.lower folds A-Z alone and fast-paths already-lower input"):
-    assertEquals(Ascii.lower("Content-Type"), "content-type")
+  test("ASCII.lower folds A-Z alone and fast-paths already-lower input"):
+    assertEquals(ASCII.lower("Content-Type"), "content-type")
     val already = "content-type"
-    assert(Ascii.lower(already) eq already, "already-lower input must be returned unchanged")
-    assertEquals(Ascii.lower("MIXEDÄcase"), "mixedÄcase")
+    assert(ASCII.lower(already) eq already, "already-lower input must be returned unchanged")
+    assertEquals(ASCII.lower("MIXEDÄcase"), "mixedÄcase")
 
-  test("Ascii token classes are RFC 9110 tchar"):
-    assert(Ascii.isToken("GET"))
-    assert(Ascii.isToken("x-request-id"))
-    assert(Ascii.isTokenChar('~') && Ascii.isTokenChar('!'))
-    assert(!Ascii.isToken(""))
-    assert(!Ascii.isToken("a b"))
-    assert(!Ascii.isTokenChar('(') && !Ascii.isTokenChar('@'))
+  test("ASCII token classes are RFC 9110 tchar"):
+    assert(ASCII.isToken("GET"))
+    assert(ASCII.isToken("x-request-id"))
+    assert(ASCII.isTokenChar('~') && ASCII.isTokenChar('!'))
+    assert(!ASCII.isToken(""))
+    assert(!ASCII.isToken("a b"))
+    assert(!ASCII.isTokenChar('(') && !ASCII.isTokenChar('@'))
+
+  test("ASCII.upper folds a-z alone and fast-paths already-upper input"):
+    assertEquals(ASCII.upper("content-type"), "CONTENT-TYPE")
+    val already = "CONTENT-TYPE"
+    assert(ASCII.upper(already) eq already, "already-upper input must be returned unchanged")
+    assertEquals(ASCII.upper("mixedäCASE"), "MIXEDäCASE")
+
+  test("ASCII character predicates admit the ASCII classes alone"):
+    assert(ASCII.isDigit('7') && !ASCII.isDigit('٤') && !ASCII.isDigit('a'))
+    assert(ASCII.isLetter('a') && ASCII.isLetter('Z') && !ASCII.isLetter('ä') && !ASCII.isLetter('7'))
+    assert(ASCII.isAlphanumeric('a') && ASCII.isAlphanumeric('7') && !ASCII.isAlphanumeric('-'))
+    assert(ASCII.isDigits("0419") && !ASCII.isDigits("٤١٩") && !ASCII.isDigits("") && !ASCII.isDigits("41a"))
+    assert(ASCII.isLetters("abc") && !ASCII.isLetters("ab1") && !ASCII.isLetters(""))
+    assert(ASCII.isAlphanumeric("ab12") && !ASCII.isAlphanumeric("ab-12") && !ASCII.isAlphanumeric(""))
+
+  test("ASCII unsigned reads admit ASCII digits alone, no sign, leading zeros accepted"):
+    assertEquals(ASCII.uint("419"), Some(419))
+    assertEquals(ASCII.uint("0419"), Some(419))
+    assertEquals(ASCII.uint("0"), Some(0))
+    assertEquals(ASCII.uint("2147483647"), Some(Int.MaxValue))
+    assertEquals(ASCII.uint("2147483648"), None)
+    assertEquals(ASCII.uint("٤١٩"), None)
+    assertEquals(ASCII.uint("+419"), None)
+    assertEquals(ASCII.uint("-419"), None)
+    assertEquals(ASCII.uint(""), None)
+    assertEquals(ASCII.ulong("9223372036854775807"), Some(Long.MaxValue))
+    assertEquals(ASCII.ulong("9223372036854775808"), None)
+    assertEquals(ASCII.ulong("٤١٩"), None)
 
   test("byte codecs round-trip arbitrary binary content"):
     val data = Array.tabulate(257)(i => (i * 31 % 256).toByte)
@@ -138,6 +166,28 @@ class CodecSuite extends FunSuite:
     assertEquals(Base64Url.decode(Base64Url.encode(data)).map(_.toList), Right(data.toList))
     assertEquals(Base32.decode(Base32.encode(data)).map(_.toList), Right(data.toList))
     assertEquals(Hex.decode(Hex.encode(data)).map(_.toList), Right(data.toList))
+
+  test("Decimal.render emits the one plain form - no exponent, trailing zeros stripped"):
+    assertEquals(Decimal.render(BigDecimal("250")), "250")
+    assertEquals(Decimal.render(BigDecimal("2.50")), "2.5")
+    assertEquals(Decimal.render(BigDecimal("0.00")), "0")
+    assertEquals(Decimal.render(BigDecimal("1E+2")), "100")
+    assertEquals(Decimal.render(BigDecimal("0.010")), "0.01")
+    assertEquals(Decimal.render(BigDecimal("-0.0")), "0")
+    assertEquals(Decimal.render(BigDecimal("100.000")), "100")
+    assertEquals(Decimal.render(BigDecimal("-2.5")), "-2.5")
+
+  test("Decimal.parse admits plain forms alone and normalises through render"):
+    assertEquals(Decimal.parse("2.5").map(Decimal.render), Right("2.5"))
+    assertEquals(Decimal.parse("-0250.500").map(Decimal.render), Right("-250.5"))
+    assertEquals(Decimal.parse("0").map(Decimal.render), Right("0"))
+    assert(Decimal.parse("2.5E+2").isLeft, "exponent must be rejected")
+    assert(Decimal.parse("+2.5").isLeft, "plus sign must be rejected")
+    assert(Decimal.parse(".5").isLeft, "edge dot must be rejected")
+    assert(Decimal.parse("5.").isLeft, "edge dot must be rejected")
+    assert(Decimal.parse("٤١٩").isLeft, "non-ASCII digits must be rejected")
+    assert(Decimal.parse("1,5").isLeft, "grouping separators must be rejected")
+    assert(Decimal.parse("").isLeft)
 
   test("Malformed names the violated constraint"):
     Base64.decode("Zg") match

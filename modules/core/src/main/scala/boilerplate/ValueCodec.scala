@@ -74,9 +74,46 @@ object ValueCodec:
 
   given string: Aux[String, Nothing] = ValueCodec(Right(_), identity)
 
-  given int: Aux[Int, Invalid] = ValueCodec(s => s.toIntOption.toRight(Invalid("not an integer")), _.toString)
+  // NOT `toIntOption`/`toLongOption`: those admit any Unicode decimal digit and a leading `+`
+  // ("\u0664\u0661\u0669".toIntOption is Some(419)), which no wire field may accept. The reads
+  // here admit ASCII digits and a single leading `-` alone; leading zeros normalise.
+  given int: Aux[Int, Invalid] = ValueCodec(
+    s =>
+      val magnitude = if s.startsWith("-") then codec.ASCII.ulong(s.substring(1)) else codec.ASCII.ulong(s)
+      magnitude match
+        case Some(m) if s.startsWith("-") && m <= 2147483648L   => Right((-m).toInt)
+        case Some(m) if !s.startsWith("-") && m <= Int.MaxValue => Right(m.toInt)
+        case _                                                  => Left(Invalid("not an integer"))
+    ,
+    _.toString
+  )
 
-  given long: Aux[Long, Invalid] = ValueCodec(s => s.toLongOption.toRight(Invalid("not an integer")), _.toString)
+  given long: Aux[Long, Invalid] = ValueCodec(
+    s =>
+      // Negative accumulation so Long.MinValue's magnitude needs no unsigned headroom.
+      val negative = s.startsWith("-")
+      val digits = if negative then s.substring(1) else s
+      if !codec.ASCII.isDigits(digits) then Left(Invalid("not an integer"))
+      else
+        // scalafix:off DisableSyntax.var, DisableSyntax.while
+        var acc = 0L
+        var i = 0
+        var bad = false
+        while !bad && i < digits.length do
+          val d = (digits.charAt(i) - '0').toLong
+          if acc < (Long.MinValue + d) / 10L then bad = true
+          else
+            acc = acc * 10L - d
+            i += 1
+        // scalafix:on DisableSyntax.var, DisableSyntax.while
+        if bad then Left(Invalid("not an integer"))
+        else if negative then Right(acc)
+        else if acc == Long.MinValue then Left(Invalid("not an integer"))
+        else Right(-acc)
+      end if
+    ,
+    _.toString
+  )
 
   given boolean: Aux[Boolean, Invalid] = ValueCodec(
     {

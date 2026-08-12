@@ -582,8 +582,8 @@ object Eff extends EffInstances:
       * failure's concrete subtype. An infallible handler selects the twin below instead:
       *
       * {{{
-      * val consumed: Eff[IoError | AppError, Unit] = ...
-      * consumed.catchOnly((app: AppError) => log(app)) // : Eff[IoError, Unit]
+      * val consumed: Eff[IOError | AppError, Unit] = ...
+      * consumed.catchOnly((app: AppError) => log(app)) // : Eff[IOError, Unit]
       * }}}
       *
       * `H` must be runtime-testable; an erasure-ambiguous `H` is rejected at the call site.
