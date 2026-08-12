@@ -51,8 +51,8 @@ object WireHeader extends OpaqueType[WireHeader, String], OpaqueType.Eq[WireHead
   def unwrap(h: WireHeader): String = h
   protected inline def validate(s: String): Either[WireError, String] =
     if s.isEmpty then Left(WireError("empty"))
-    else if !codec.Ascii.isToken(s) then Left(WireError("not a token"))
-    else Right(codec.Ascii.lower(s))
+    else if !codec.ASCII.isToken(s) then Left(WireError("not a token"))
+    else Right(codec.ASCII.lower(s))
   inline def apply(inline value: String): WireHeader = ofUnsafe(value)
 
 // Non-String representation: the documented hand-written given through the constructor.
@@ -67,7 +67,7 @@ object WirePort extends OpaqueType[WirePort, Int], OpaqueType.Eq[WirePort]:
     inline if value < 0 || value > 65535 then scala.compiletime.error("port out of range") else wrap(value)
 
   given valueCodec: ValueCodec.Aux[WirePort, WireError] =
-    ValueCodec(s => s.toIntOption.toRight(WireError("not an integer")).flatMap(i => of(i)), p => unwrap(p).toString)
+    ValueCodec(s => codec.ASCII.uint(s).toRight(WireError("not an integer")).flatMap(i => of(i)), p => unwrap(p).toString)
 end WirePort
 
 class ValueCodecSuite extends FunSuite:
@@ -80,6 +80,19 @@ class ValueCodecSuite extends FunSuite:
     assertEquals(summon[ValueCodec[Boolean]].decode("true"), Right(true))
     assertEquals(summon[ValueCodec[Boolean]].decode("TRUE"), Left(ValueCodec.Invalid("not a boolean")))
     assertEquals(summon[ValueCodec[String]].decode("anything"), Right("anything"))
+
+  test("the numeric givens admit ASCII wire forms alone"):
+    // toIntOption would accept all three of these; a wire field must not.
+    assertEquals(summon[ValueCodec[Int]].decode("٤١٩"), Left(ValueCodec.Invalid("not an integer")))
+    assertEquals(summon[ValueCodec[Int]].decode("+419"), Left(ValueCodec.Invalid("not an integer")))
+    assertEquals(summon[ValueCodec[Long]].decode("٤١٩"), Left(ValueCodec.Invalid("not an integer")))
+    // Leading zeros normalise (fixed-width wire fields pad with them); idempotent through re-encode.
+    assertEquals(summon[ValueCodec[Int]].decode("007"), Right(7))
+    assertEquals(summon[ValueCodec[Int]].decode("-0"), Right(0))
+    assertEquals(summon[ValueCodec[Int]].decode("-2147483648"), Right(Int.MinValue))
+    assertEquals(summon[ValueCodec[Int]].decode("2147483648"), Left(ValueCodec.Invalid("not an integer")))
+    assertEquals(summon[ValueCodec[Long]].decode("-9223372036854775808"), Right(Long.MinValue))
+    assertEquals(summon[ValueCodec[Long]].decode("9223372036854775808"), Left(ValueCodec.Invalid("not an integer")))
 
   test("primitive given failure messages never carry the offending input"):
     summon[ValueCodec[Int]].decode("secret-value-123") match

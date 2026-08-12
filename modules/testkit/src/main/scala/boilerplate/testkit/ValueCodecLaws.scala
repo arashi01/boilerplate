@@ -60,6 +60,16 @@ trait ValueCodecLaws:
       }
   end valueCodecLaws
 
+  /** Registers the render-character law: every encoded form stays within `allowed` - for a
+    * decimal-bearing instance, the plain-decimal class (ASCII digits, `-`, `.`) catches
+    * scientific-notation and locale leakage at every member.
+    */
+  def valueCodecRenderWithin[A](name: String)(allowed: Char => Boolean)(using codec: ValueCodec[A], arb: Arbitrary[A]): Unit =
+    property(s"$name: encode emits only allowed characters"):
+      forAll { (a: A) =>
+        codec.encode(a).forall(allowed)
+      }
+
   /** Registers the normalisation law over arbitrary wire text: an accepted input decodes to a value
     * whose encoding is a fixed point - `decode` is idempotent through re-encoding. Rejected inputs
     * are outside the law.

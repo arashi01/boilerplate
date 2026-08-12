@@ -29,7 +29,7 @@ import cats.effect.Resource
 import munit.CatsEffectSuite
 
 import boilerplate.effect.AppError.*
-import boilerplate.effect.IoError.*
+import boilerplate.effect.IOError.*
 
 class EffResourceSuite extends CatsEffectSuite:
   private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
@@ -77,7 +77,7 @@ class EffResourceSuite extends CatsEffectSuite:
   test("makeFull acquires uncancelably outside the polled region"):
     for
       trace <- IO.ref(List.empty[String])
-      resource = EffResource.makeFull[IoError, String](poll => trace.update(_ :+ "acquire").flatMap(_ => poll(IO.pure("held"))))(_ =>
+      resource = EffResource.makeFull[IOError, String](poll => trace.update(_ :+ "acquire").flatMap(_ => poll(IO.pure("held"))))(_ =>
                    trace.update(_ :+ "release")
                  )
       outcome <- run(resource.use(v => Eff.succeed(v)))
@@ -123,7 +123,7 @@ class EffResourceSuite extends CatsEffectSuite:
 
   test("evalMap transforms the acquired value and widens the error channel"):
     val resource: EffResource[Nothing, Int] = EffResource.pure(2)
-    val mapped: EffResource[IoError, Int] = resource.evalMap(n => Eff.succeed(n * 3))
+    val mapped: EffResource[IOError, Int] = resource.evalMap(n => Eff.succeed(n * 3))
     for
       ok <- run(mapped.use(n => Eff.succeed(n)))
       ko <- run(resource.evalMap(_ => Eff.fail(Closed)).use(n => Eff.succeed(n)))
@@ -179,14 +179,14 @@ class EffResourceSuite extends CatsEffectSuite:
     yield assertEquals(seen, List("acquire a", "release a"))
 
   test("absolve returns the underlying cats-effect Resource"):
-    val resource: EffResource[IoError, Int] = EffResource.eval(Eff.fail(Closed))
+    val resource: EffResource[IOError, Int] = EffResource.eval(Eff.fail(Closed))
     val raw: Resource[IO, Int] = resource.absolve
     raw.use(IO.pure).attempt.map(r => assertEquals(r.left.toOption, Some(Closed)))
 
   test("the transferred Async instance drives cats combinators, not just summons"):
     import cats.syntax.traverse.*
-    val gathered: EffResource.Of[IoError][List[Int]] =
-      List(1, 2, 3).traverse(n => EffResource.pure(n): EffResource.Of[IoError][Int])
+    val gathered: EffResource.Of[IOError][List[Int]] =
+      List(1, 2, 3).traverse(n => EffResource.pure(n): EffResource.Of[IOError][Int])
     gathered.use(ns => Eff.succeed(ns.sum)).absolve.map(assertEquals(_, 6))
 
   test("retry re-acquires per policy, runs the consumer once, and releases once"):
@@ -194,7 +194,7 @@ class EffResourceSuite extends CatsEffectSuite:
       attempts <- IO.ref(0)
       released <- IO.ref(0)
       used <- IO.ref(0)
-      acquire: Eff[IoError, Int] =
+      acquire: Eff[IOError, Int] =
         Eff.flatMap(attempts.updateAndGet(_ + 1))(n => if n < 3 then Eff.fail(Closed) else Eff.succeed(n))
       retried = EffResource.retry(
                   EffResource.make(acquire)(_ => released.update(_ + 1)),
@@ -214,7 +214,7 @@ class EffResourceSuite extends CatsEffectSuite:
     for
       trace <- IO.ref(List.empty[String])
       good = EffResource.make(trace.update(_ :+ "acquire a").map(_ => "a"))(_ => trace.update(_ :+ "release a"))
-      bad: EffResource[IoError, String] =
+      bad: EffResource[IOError, String] =
         EffResource.make(Eff.flatMap(trace.update(_ :+ "attempt b"))(_ => Eff.fail(Closed)))(_ => trace.update(_ :+ "release b"))
       out <- run(EffResource.retry(good.flatMap(_ => bad), RetryPolicy.constant(1.milli).withMaxAttempts(3)).use(Eff.succeed))
       seen <- trace.get
@@ -228,19 +228,19 @@ class EffResourceSuite extends CatsEffectSuite:
       rejected <- run(
                     EffResource
                       .retry(
-                        EffResource.eval(Eff.flatMap(rejectCount.update(_ + 1))(_ => Eff.fail[IoError](Closed))),
+                        EffResource.eval(Eff.flatMap(rejectCount.update(_ + 1))(_ => Eff.fail[IOError](Closed))),
                         RetryPolicy.constant(1.milli).withMaxAttempts(4),
-                        (_: IoError) => false
+                        (_: IOError) => false
                       )
                       .use(Eff.succeed)
                   )
       n <- rejectCount.get
       seen <- IO.ref(List.empty[Int])
-      hook = (attempt: Int, _: IoError, _: FiniteDuration) => seen.update(_ :+ attempt)
+      hook = (attempt: Int, _: IOError, _: FiniteDuration) => seen.update(_ :+ attempt)
       _ <- run(
              EffResource
                .retry(
-                 EffResource.eval(Eff.fail[IoError](Closed): Eff[IoError, Int]),
+                 EffResource.eval(Eff.fail[IOError](Closed): Eff[IOError, Int]),
                  RetryPolicy.constant(1.milli).withMaxAttempts(3),
                  hook
                )

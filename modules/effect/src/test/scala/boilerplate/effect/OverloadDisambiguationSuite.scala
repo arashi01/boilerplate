@@ -27,7 +27,7 @@ import cats.syntax.all.*
 import munit.CatsEffectSuite
 
 import boilerplate.effect.AppError.*
-import boilerplate.effect.IoError.*
+import boilerplate.effect.IOError.*
 
 // Every row pairs an infix `eff.map`/`.flatMap`/... call with the expanded `Eff.method(eff)(...)`
 // control and asserts they agree, all under a blanket `import cats.syntax.all.*` - the scope in
@@ -215,11 +215,11 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
     val eff: Eff[AppError, Int] = Eff.fail(Invalid("boom"))
 
     // cats uses `redeemWith` with a different signature; `redeemAll` is ours and may change `E`.
-    val result: Eff[IoError, String] = eff.redeemAll(
+    val result: Eff[IOError, String] = eff.redeemAll(
       e => Eff.succeed(s"recovered: ${e.getMessage}"),
       a => Eff.succeed(s"value: $a")
     )
-    val control: Eff[IoError, String] = Eff.redeemAll(eff)(
+    val control: Eff[IOError, String] = Eff.redeemAll(eff)(
       e => Eff.succeed(s"recovered: ${e.getMessage}"),
       a => Eff.succeed(s"value: $a")
     )
@@ -263,10 +263,10 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
 
   test("alt on Eff is unique to boilerplate-effect (allows error type change)"):
     val eff: Eff[AppError, Int] = Eff.fail(Invalid("first error"))
-    val fallback: Eff[IoError, Int] = Eff.succeed(42)
+    val fallback: Eff[IOError, Int] = Eff.succeed(42)
 
-    val result: Eff[IoError, Int] = eff.alt(fallback)
-    val control: Eff[IoError, Int] = Eff.alt(eff)(fallback)
+    val result: Eff[IOError, Int] = eff.alt(fallback)
+    val control: Eff[IOError, Int] = Eff.alt(eff)(fallback)
 
     for
       r <- result.either
@@ -291,8 +291,8 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
   test("orElseFail on Eff is unique to boilerplate-effect"):
     val eff: Eff[AppError, Int] = Eff.fail(Invalid("error"))
 
-    val result: Eff[IoError, Int] = eff.orElseFail(Closed)
-    val control: Eff[IoError, Int] = Eff.orElseFail(eff)(Closed)
+    val result: Eff[IOError, Int] = eff.orElseFail(Closed)
+    val control: Eff[IOError, Int] = Eff.orElseFail(eff)(Closed)
 
     for
       r <- result.either
@@ -438,9 +438,9 @@ class OverloadDisambiguationSuite extends CatsEffectSuite:
   // and allows the error type to change.
 
   test("alt falls back only on failure, leaving a success untouched"):
-    val recovered: Eff[IoError, Int] =
+    val recovered: Eff[IOError, Int] =
       (Eff.fail(Invalid("boom")): Eff[AppError, Int]).alt(Eff.succeed(42))
-    val untouched: Eff[IoError, Int] =
+    val untouched: Eff[IOError, Int] =
       (Eff.succeed(1): Eff[AppError, Int]).alt(Eff.succeed(2))
 
     for

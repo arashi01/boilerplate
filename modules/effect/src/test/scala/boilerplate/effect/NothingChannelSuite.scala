@@ -87,7 +87,7 @@ class NothingChannelSuite extends CatsEffectSuite:
         case other            => fail(s"defect not propagated unchanged: $other")
       }
     propagatesOriginal(typedDefect.catchOnly((_: AppError) => Eff.succeed(0)).absolve) *>
-      propagatesOriginal(typedDefect.catchOnly((_: AppError) => Eff.fail(IoError.Closed)).absolve)
+      propagatesOriginal(typedDefect.catchOnly((_: AppError) => Eff.fail(IOError.Closed)).absolve)
   test("alt does not fall back")(propagates(defect.alt(Eff.succeed(0)).absolve))
   test("orElseSucceed does not recover")(propagates(defect.orElseSucceed(0).absolve))
   test("orElseFail does not replace")(propagates(defect.orElseFail(new RuntimeException("other")).absolve))

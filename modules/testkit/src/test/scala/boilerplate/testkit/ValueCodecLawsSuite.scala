@@ -27,7 +27,7 @@ import org.scalacheck.Gen
 import boilerplate.OpaqueType
 import boilerplate.TypedError
 import boilerplate.ValueCodec
-import boilerplate.codec.Ascii
+import boilerplate.codec.ASCII
 
 final case class KitError(detail: String) extends TypedError(detail, None)
 
@@ -37,7 +37,7 @@ object KitName extends OpaqueType[KitName, String], OpaqueType.Eq[KitName], Opaq
   protected inline def wrap(s: String): KitName = s
   def unwrap(n: KitName): String = n
   protected inline def validate(s: String): Either[KitError, String] =
-    if s.isEmpty then Left(KitError("empty")) else Right(Ascii.lower(s))
+    if s.isEmpty then Left(KitError("empty")) else Right(ASCII.lower(s))
   inline def apply(inline value: String): KitName = ofUnsafe(value)
 
 class ValueCodecLawsSuite extends ScalaCheckSuite, ValueCodecLaws:
@@ -52,4 +52,6 @@ class ValueCodecLawsSuite extends ScalaCheckSuite, ValueCodecLaws:
   valueCodecLaws[KitName]("KitName")
   valueCodecNormalisation[KitName]("KitName", Gen.alphaStr)
   valueCodecNormalisation[Int]("Int", Gen.numStr)
+  valueCodecRenderWithin[Int]("Int")(c => ASCII.isDigit(c) || c == '-')
+  valueCodecRenderWithin[Long]("Long")(c => ASCII.isDigit(c) || c == '-')
 end ValueCodecLawsSuite

@@ -166,7 +166,7 @@ object OpaqueType:
     *
     * {{{
     * given codec: ValueCodec.Aux[Port, Error] =
-    *   ValueCodec(s => s.toIntOption.toRight(PortError("not an integer")).flatMap(i => of(i)), p => unwrap(p).toString)
+    *   ValueCodec(s => codec.ASCII.uint(s).toRight(PortError("not an integer")).flatMap(i => of(i)), p => unwrap(p).toString)
     * }}}
     *
     * where `PortError` is the companion's own `Error` constructor, so both stages fail into one
