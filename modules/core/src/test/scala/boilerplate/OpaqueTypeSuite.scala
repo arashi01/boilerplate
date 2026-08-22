@@ -114,6 +114,24 @@ object Distance:
       else Left(new IllegalArgumentException(s"Distance cannot be negative: $d"))
 end Distance
 
+// A wire-form type: its representation IS its wire text, so its doors are parse/render.
+final case class HashError(detail: String) extends TypedError(detail, None)
+
+opaque type PasswordHash = String
+
+object PasswordHash extends OpaqueType.Wire[PasswordHash], OpaqueType.Eq[PasswordHash]:
+  type Error = HashError
+
+  protected inline def wrap(text: String): PasswordHash = text
+  def render(value: PasswordHash): String = value
+
+  protected inline def validate(text: String): Either[HashError, String] =
+    if text.startsWith("$argon2id$") then Right(text) else Left(HashError("not a PHC string"))
+
+  inline def apply(inline text: String): PasswordHash =
+    inline if text == "" then compiletime.error("PasswordHash cannot be empty") else wrap(text)
+end PasswordHash
+
 opaque type CheckedPositive = Int
 
 object CheckedPositive extends OpaqueType[CheckedPositive, Int], OpaqueType.Eq[CheckedPositive]:
@@ -334,5 +352,33 @@ class OpaqueTypeSuite extends FunSuite:
   test("apply compile-time error for negative literal"):
     val errors = scala.compiletime.testing.typeCheckErrors("boilerplate.CheckedPositive(-1)")
     assert(errors.exists(_.message.contains("value must be positive")), errors.map(_.message).mkString)
+
+  test("Wire parse and render round-trip through the derived codec"):
+    val codec = summon[ValueCodec[PasswordHash]]
+    assertEquals(codec.decode("$argon2id$x").map(codec.encode), Right("$argon2id$x"))
+    assertEquals(PasswordHash.parse("$argon2id$x").map(PasswordHash.render), Right("$argon2id$x"))
+
+  test("Wire refuses text with the companion's own error, and parseUnsafe throws it"):
+    assertEquals(PasswordHash.parse("plain"), Left(HashError("not a PHC string")))
+    val thrown = intercept[HashError](PasswordHash.parseUnsafe("plain"))
+    assertEquals(thrown.detail, "not a PHC string")
+
+  test("Wire's codec carries the companion's error member exactly"):
+    val _ = summon[ValueCodec.Aux[PasswordHash, HashError]]
+    assert(!scala.compiletime.testing.typeChecks("summon[boilerplate.ValueCodec.Aux[boilerplate.PasswordHash, Nothing]]"))
+
+  test("Wire has one door: there is no of for a type whose representation is its wire text"):
+    assert(!scala.compiletime.testing.typeChecks("""boilerplate.PasswordHash.of("x")"""))
+    assert(!scala.compiletime.testing.typeChecks("""boilerplate.PasswordHash.ofUnsafe("x")"""))
+
+  test("Wire's literal door validates at compile time"):
+    assert(!scala.compiletime.testing.typeChecks("""boilerplate.PasswordHash("")"""))
+    assertEquals(PasswordHash.render(PasswordHash("$argon2id$x")), "$argon2id$x")
+
+  test("Codec's self-type rejects a companion whose representation is not the one it names"):
+    val errors = scala.compiletime.testing.typeCheckErrors(
+      "object Bad extends boilerplate.OpaqueType[boilerplate.WirePort, Int], boilerplate.OpaqueType.Codec[boilerplate.WirePort, String]"
+    )
+    assert(errors.nonEmpty, "a Codec mixin naming the wrong representation was accepted")
 
 end OpaqueTypeSuite

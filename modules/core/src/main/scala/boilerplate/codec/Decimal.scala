@@ -39,6 +39,9 @@ object Decimal:
   def render(value: BigDecimal): String = value.underlying.stripTrailingZeros.toPlainString
 
   def parse(text: String): Either[Malformed, BigDecimal] =
+    // Walks the text once to establish the plain-decimal grammar before handing it to `BigDecimal`,
+    // whose own parser accepts the exponents and signs this form refuses; a cursor is what the
+    // grammar's three sections need, and money text is read on every inbound amount.
     // scalafix:off DisableSyntax.var, DisableSyntax.while
     val start = if text.startsWith("-") then 1 else 0
     var i = start

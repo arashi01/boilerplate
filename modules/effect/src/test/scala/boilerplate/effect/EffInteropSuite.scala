@@ -20,13 +20,12 @@
  */
 package boilerplate.effect
 
-import scala.reflect.TypeTest
-
 import cats.effect.*
 import cats.effect.kernel.Outcome
 import cats.effect.std.*
 import munit.CatsEffectSuite
 
+import boilerplate.ErrorTest
 import boilerplate.effect.IOError.*
 
 // `IO[A]` is a subtype of every `Eff[E, A]`, so the whole `cats.effect` primitive vocabulary is
@@ -34,7 +33,7 @@ import boilerplate.effect.IOError.*
 // an `Eff` workflow with no lift, no `mapK`, and no import. Every row below states that for one
 // primitive.
 class EffInteropSuite extends CatsEffectSuite:
-  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
+  private def run[E <: Throwable, A](eff: Eff[E, A])(using ErrorTest[E]): IO[Either[E, A]] = eff.either.absolve
 
   test("a raw Ref composes directly in an Eff workflow, preserving get/set/update"):
     IO.ref(0).flatMap { ref =>

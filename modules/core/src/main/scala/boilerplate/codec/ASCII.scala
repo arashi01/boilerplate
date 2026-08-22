@@ -52,6 +52,8 @@ object ASCII:
     * non-digit, or overflow past `Int.MaxValue`.
     */
   def uint(value: String): Option[Int] =
+    // Reads a numeric field on every inbound message of a text protocol; accumulating in place
+    // keeps the overflow test on the running value, which no folding form can express.
     // scalafix:off DisableSyntax.var, DisableSyntax.while
     var acc = 0
     var i = 0
@@ -69,8 +71,15 @@ object ASCII:
     // scalafix:on DisableSyntax.var, DisableSyntax.while
   end uint
 
+  /** As [[uint]], for a fixed-width wire field: `None` unless the string is exactly `width` ASCII
+    * digits, so a short or over-long field is refused rather than silently read.
+    */
+  def uint(value: String, width: Int): Option[Int] =
+    if value.length != width then None else uint(value)
+
   /** As [[uint]], reading into `Long`; `None` past `Long.MaxValue`. */
   def ulong(value: String): Option[Long] =
+    // As `uint`: the overflow test reads the running accumulator, so the walk is explicit.
     // scalafix:off DisableSyntax.var, DisableSyntax.while
     var acc = 0L
     var i = 0
@@ -88,6 +97,12 @@ object ASCII:
     // scalafix:on DisableSyntax.var, DisableSyntax.while
   end ulong
 
+  /** As [[ulong]], for a fixed-width wire field: `None` unless the string is exactly `width` ASCII
+    * digits.
+    */
+  def ulong(value: String, width: Int): Option[Long] =
+    if value.length != width then None else ulong(value)
+
   /** Whether `c` is an RFC 9110 `tchar` - the character class of protocol tokens (header names,
     * method names, parameter keys).
     */
@@ -102,6 +117,8 @@ object ASCII:
     * already lower case, which is the common case for wire-canonical names.
     */
   def lower(value: String): String =
+    // Runs per header name on every request, where the input is already canonical almost always;
+    // the scan-then-copy shape returns the input itself in that case and allocates nothing.
     // scalafix:off DisableSyntax.var, DisableSyntax.while
     var upper = -1
     var i = 0
@@ -125,6 +142,7 @@ object ASCII:
     * unchanged-input fast path.
     */
   def upper(value: String): String =
+    // As `lower`, on the same seam and for the same unchanged-input case.
     // scalafix:off DisableSyntax.var, DisableSyntax.while
     var lowerAt = -1
     var i = 0

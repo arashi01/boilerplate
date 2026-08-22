@@ -34,6 +34,7 @@ import boilerplate.ValueCodec
   * class MyCodecsSuite extends ScalaCheckSuite, ValueCodecLaws:
   *   valueCodecLaws[UserId]("UserId")            // canonical values from the Arbitrary
   *   valueCodecNormalisation[HeaderName]("HeaderName", headerTexts)
+  *   valueCodecRefuses[HeaderName]("HeaderName", notTokens)
   * }}}
   */
 trait ValueCodecLaws:
@@ -69,6 +70,14 @@ trait ValueCodecLaws:
       forAll { (a: A) =>
         codec.encode(a).forall(allowed)
       }
+
+  /** Registers the refusal law: every text `texts` produces is rejected. The generator carries the
+    * shapes the codec must not admit - a neighbouring format, a lax spelling, a non-ASCII numeral -
+    * so a decode that quietly widens is caught by the law rather than by a consumer.
+    */
+  def valueCodecRefuses[A](name: String, texts: Gen[String])(using codec: ValueCodec[A]): Unit =
+    property(s"$name: decode refuses every text outside the accepted form"):
+      forAll(texts)(text => codec.decode(text).isLeft)
 
   /** Registers the normalisation law over arbitrary wire text: an accepted input decodes to a value
     * whose encoding is a fixed point - `decode` is idempotent through re-encoding. Rejected inputs

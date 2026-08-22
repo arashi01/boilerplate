@@ -58,7 +58,7 @@ jobs:
         uses: coursier/cache-action@95e5b1029b6b86e7bac033ee44a0697d8a527d2d # v8.1.1
 
       - name: Test
-        run: sbt --server "boilerplate-aggregate/test"
+        run: sbt --server "boilerplate-aggregate/Test/testOnly *"
 
       - name: Package
         run: sbt --server "boilerplate-aggregate/package"
@@ -110,7 +110,7 @@ jobs:
         uses: coursier/cache-action@95e5b1029b6b86e7bac033ee44a0697d8a527d2d # v8.1.1
 
       - name: Test
-        run: sbt --server "boilerplate-aggregateJS/test"
+        run: sbt --server "boilerplate-aggregateJS/Test/testOnly *"
 
       - name: Package
         run: sbt --server "boilerplate-aggregateJS/package"
@@ -185,7 +185,7 @@ jobs:
 
       - name: Test
         shell: bash
-        run: sbt --server "boilerplate-aggregateNative/test"
+        run: sbt --server "boilerplate-aggregateNative/Test/testOnly *"
 
       # Stage native artefacts UNSIGNED on a release tag; the release job signs the merged tree centrally
       # on Linux (the Windows VS2026 images have no gpg). Each artefact is published from exactly one

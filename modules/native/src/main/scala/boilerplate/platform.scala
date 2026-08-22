@@ -21,8 +21,8 @@
 package boilerplate
 
 /** Operating system of the build target; see [[Platform$ Platform]] for the value. */
-enum Os derives CanEqual:
-  case Linux, Mac, Windows
+enum OS derives CanEqual:
+  case Linux, Darwin, Windows
 
 /** CPU architecture of the build target; see [[Platform$ Platform]] for the value. */
 enum Arch derives CanEqual:

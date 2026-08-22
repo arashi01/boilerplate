@@ -51,6 +51,8 @@ object Percent:
     * always escaped; `keep` decides only over the ASCII range.
     */
   def encode(value: String, keep: Char => Boolean): String =
+    // Runs over every URI component of every request; the builder is filled in one pass so an
+    // escaped byte costs three appends rather than a fresh string.
     // scalafix:off DisableSyntax.var, DisableSyntax.while
     val bytes = value.getBytes(StandardCharsets.UTF_8)
     val out = new java.lang.StringBuilder(bytes.length)
@@ -84,6 +86,8 @@ object Percent:
       case Left(_)     => value // unreachable: the lenient pass never fails
 
   private def run(value: String, lenient: Boolean): Either[Malformed, String] =
+    // The decode counterpart of `encode`, on the same seam: an escape consumes three characters, so
+    // the cursor advances by a variable step that no fold over the characters expresses.
     // scalafix:off DisableSyntax.var, DisableSyntax.while
     val out = new java.io.ByteArrayOutputStream(value.length)
     var i = 0

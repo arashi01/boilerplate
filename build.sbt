@@ -23,6 +23,7 @@ val `cats-effect` = Def.setting("org.typelevel" %% "cats-effect" % "3.7.0")
 val `cats-effect-laws` = Def.setting("org.typelevel" %% "cats-effect-laws" % "3.7.0")
 val `cats-effect-testkit` = Def.setting("org.typelevel" %% "cats-effect-testkit" % "3.7.0")
 val `discipline-munit` = Def.setting("org.typelevel" %% "discipline-munit" % "2.0.0")
+val fs2 = Def.setting("co.fs2" %% "fs2-core" % "3.13.0")
 val munit = Def.setting("org.scalameta" %% "munit" % "1.3.5")
 val `munit-cats-effect` = Def.setting("org.typelevel" %% "munit-cats-effect" % "2.2.0")
 val `munit-scalacheck` = Def.setting("org.scalameta" %% "munit-scalacheck" % "1.3.0")
@@ -49,6 +50,20 @@ val `boilerplate-effect` =
     .settings(publishSettings)
     .settings(libraryDependencies += `cats-effect`.value)
     .settings(libraryDependencies += `cats-effect-testkit`.value % Test)
+    .settings(libraryDependencies += `munit-cats-effect`.value % Test)
+    .jvmPlatform(Seq(scala3))
+    .jsPlatform(Seq(scala3))
+    .snxPlatform(Seq(scala3))
+
+val `boilerplate-fs2` =
+  projectMatrix
+    .in(file("modules/fs2"))
+    .dependsOn(`boilerplate-effect`)
+    .settings(compilerSettings)
+    .settings(unitTestSettings)
+    .settings(fileHeaderSettings)
+    .settings(publishSettings)
+    .settings(libraryDependencies += fs2.value)
     .settings(libraryDependencies += `munit-cats-effect`.value % Test)
     .jvmPlatform(Seq(scala3))
     .jsPlatform(Seq(scala3))
@@ -102,16 +117,16 @@ val `boilerplate-aggregate` =
     .snxPlatform(Seq(scala3), Seq.empty, _.aggregate(`boilerplate-native`))
     .aggregate(boilerplate)
     .aggregate(`boilerplate-effect`)
+    .aggregate(`boilerplate-fs2`)
     .aggregate(`boilerplate-testkit`)
     .aggregate(`boilerplate-effect-testkit`)
 
-def baseCompilerOptions = List(
+def compilerOptions = List(
   "-language:experimental.macros",
   "-language:higherKinds",
   "-language:implicitConversions",
   "-language:strictEquality",
   "-Xkind-projector",
-  "-Xmax-inlines:64",
   "-unchecked",
   "-deprecation",
   "-feature",
@@ -132,15 +147,9 @@ def baseCompilerOptions = List(
   "-Werror"
 )
 
-def compilerOptions = baseCompilerOptions ++ List(
-  "-Yexplicit-nulls",
-  "-Xcheck-macros",
-  "-Werror"
-)
-
 def compilerSettings = List(
   Compile / compile / scalacOptions ++= compilerOptions,
-  Test / compile / scalacOptions ++= baseCompilerOptions,
+  Test / compile / scalacOptions ++= compilerOptions,
   Compile / doc / scalacOptions := Nil,
   Test / doc / scalacOptions := Nil
 ) ++ scalafixSourceSettings
@@ -199,6 +208,14 @@ def publishSettings: List[Setting[?]] = List(
   },
   pomIncludeRepository := (_ => false),
   publishMavenStyle := true
+)
+
+// `test` is `testQuick` on sbt 2 (sbt's own Defaults.scala: `test := testQuick.evaluated`), so on a
+// warm tree it runs only the suites affected by the last change and still reports success. This
+// alias is the full run: every suite on every platform, whatever the incremental state.
+addCommandAlias(
+  "testFull",
+  "boilerplate-aggregate/Test/testOnly *; boilerplate-aggregateJS/Test/testOnly *; boilerplate-aggregateNative/Test/testOnly *"
 )
 
 addCommandAlias("format", "scalafixAll; scalafmtAll; scalafmtSbt; headerCreateAll")

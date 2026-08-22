@@ -116,6 +116,18 @@ class SecretSuite extends munit.FunSuite:
     assertEquals(raised.getMessage, "secret is in use")
     assertEquals(secret.use(v => v(0)), 1.toByte)
 
+  test("of copies the source bytes, leaving the source the caller's to wipe"):
+    val source = Array[Byte](1, 2, 3)
+    val secret = Secret.of(Slice.of(source))
+    assertEquals(secret.use(_.toArray.toList), List[Byte](1, 2, 3))
+    assertEquals(source.toList, List[Byte](1, 2, 3))
+    Slice.of(source).wipe()
+    // Wiping the source must not reach the carrier: `of` copied, it did not adopt.
+    assertEquals(secret.use(_.toArray.toList), List[Byte](1, 2, 3))
+
+  test("of over an empty source yields an empty secret"):
+    assertEquals(Secret.of(Slice.of(Array.empty[Byte])).use(_.length), 0)
+
   test("a use that throws still releases the read guard, leaving the secret destroyable"):
     val secret = filled(1, 2)
     val _ = intercept[IllegalStateException](secret.use(_ => throw new IllegalStateException("body"))) // scalafix:ok DisableSyntax.throw

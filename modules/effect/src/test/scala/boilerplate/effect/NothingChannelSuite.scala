@@ -44,7 +44,7 @@ class NothingChannelSuite extends CatsEffectSuite:
   // Abstract-`E` generic code must still resolve the observers: the `Nothing` overloads must not
   // make them ambiguous when `E` is a type parameter (only `E` statically `Nothing` selects them).
   @annotation.nowarn("msg=unused")
-  private def genericObservers[E <: Throwable, A](eff: Eff[E, A])(using scala.reflect.TypeTest[Throwable, E]): Unit =
+  private def genericObservers[E <: Throwable, A](eff: Eff[E, A])(using boilerplate.ErrorTest[E]): Unit =
     val _ = eff.either
     val _ = eff.option
     val _ = eff.catchAll(Eff.fail(_))
@@ -55,10 +55,8 @@ class NothingChannelSuite extends CatsEffectSuite:
     // coverage, so the residual is Nothing), the fallible one the general overload.
     val _ = eff.catchOnly((_: E) => Eff.never)
     val _ = eff.catchOnly((e: E) => Eff.fail(e))
-    // `retry`/`retryWithBackoff` are companion functions, not observers, but they take the same
-    // `TypeTest`; abstract `E` must resolve the general overloads, never the `Nothing` twins.
-    val _ = Eff.retry(eff, 3)
-    val _ = Eff.retryWithBackoff(eff, 3, 1.milli, None)
+    // `retry` is a companion function, not an observer, but it takes the same evidence; abstract
+    // `E` must resolve the general overloads, never the `Nothing` twins.
     val _ = Eff.retry(eff, RetryPolicy.constant(1.milli))
     val _ = Eff.retry(eff, RetryPolicy.constant(1.milli), (_: E) => true)
     val _ = Eff.retry(eff, RetryPolicy.constant(1.milli), (_: Int, _: E, _: FiniteDuration) => IO.unit)
@@ -166,20 +164,6 @@ class NothingChannelSuite extends CatsEffectSuite:
       assertEquals(count, 1)
     }
 
-  test("a bare IO pins Eff.retry to the Nothing twin - the defect executes exactly once"):
-    for
-      counter <- IO.ref(0)
-      outcome <- Eff.retry(failing(counter, new RuntimeException("DEFECT")), 3).absolve.attempt
-      _ <- executedOnce(counter, outcome)
-    yield ()
-
-  test("a bare IO pins Eff.retryWithBackoff to the Nothing twin - the defect executes exactly once"):
-    for
-      counter <- IO.ref(0)
-      outcome <- Eff.retryWithBackoff(failing(counter, new RuntimeException("DEFECT")), 3, 1.milli, None).absolve.attempt
-      _ <- executedOnce(counter, outcome)
-    yield ()
-
   test("a bare IO pins every policy retry overload to the Nothing twin - the defect executes exactly once"):
     val policy = RetryPolicy.constant(1.milli).withMaxAttempts(3)
     for
@@ -207,27 +191,7 @@ class NothingChannelSuite extends CatsEffectSuite:
     yield ()
     end for
 
-  // The dual: a genuine typed error still retries the full count (1 initial + `maxRetries`).
-  test("Eff.retry still retries a typed error the full count"):
-    for
-      counter <- IO.ref(0)
-      typed: Eff[AppError, Int] = (counter.update(_ + 1): Eff[AppError, Unit]).flatMap(_ => Eff.fail(Invalid("boom")))
-      outcome <- Eff.retry(typed, 3).either.absolve
-      count <- counter.get
-    yield
-      assertEquals(outcome, Left(Invalid("boom")))
-      assertEquals(count, 4)
-
-  test("Eff.retryWithBackoff still retries a typed error the full count"):
-    for
-      counter <- IO.ref(0)
-      typed: Eff[AppError, Int] = (counter.update(_ + 1): Eff[AppError, Unit]).flatMap(_ => Eff.fail(Invalid("boom")))
-      outcome <- Eff.retryWithBackoff(typed, 3, 1.milli, None).either.absolve
-      count <- counter.get
-    yield
-      assertEquals(outcome, Left(Invalid("boom")))
-      assertEquals(count, 4)
-
+  // The dual: a genuine typed error still retries up to the policy's bound.
   test("Eff.retry with a policy still retries a typed error up to maxAttempts total executions"):
     for
       counter <- IO.ref(0)

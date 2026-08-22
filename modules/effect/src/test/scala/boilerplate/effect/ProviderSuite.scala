@@ -21,12 +21,12 @@
 package boilerplate.effect
 
 import scala.compiletime.testing.typeCheckErrors
-import scala.reflect.TypeTest
 
 import cats.effect.IO
 import cats.effect.Ref
 import munit.CatsEffectSuite
 
+import boilerplate.ErrorTest
 import boilerplate.effect.AppError.*
 import boilerplate.effect.IOError.*
 
@@ -56,7 +56,7 @@ final class K11(val a: K9)
 final class K12(val a: K10, val b: K11)
 
 class ProviderSuite extends CatsEffectSuite:
-  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
+  private def run[E <: Throwable, A](eff: Eff[E, A])(using ErrorTest[E]): IO[Either[E, A]] = eff.either.absolve
 
   private def node[A](trace: Ref[IO, List[String]], label: String)(value: => A): EffResource[Nothing, A] =
     EffResource.make(trace.update(_ :+ s"acquire $label").map(_ => value))(_ => trace.update(_ :+ s"release $label"))
@@ -109,6 +109,26 @@ class ProviderSuite extends CatsEffectSuite:
     val config: Provider[EmptyTuple, NotFound, Config] = Provider(EffResource.eval(Eff.succeed(Config("u"))): EffResource[NotFound, Config])
     val db: Provider[Tuple1[Config], IOError, Db] = Provider((c: Config) => EffResource.eval(Eff.succeed(Db(c))): EffResource[IOError, Db])
     val wired: EffResource[NotFound | IOError, Db] = Provider.wire[Db](config, db)
+    run(wired.use(d => Eff.succeed(d.config.url))).map(assertEquals(_, Right("u")))
+
+  test("the wired value's static channel is exactly the union, not a wider one"):
+    val config: Provider[EmptyTuple, NotFound, Config] = Provider(EffResource.eval(Eff.succeed(Config("u"))): EffResource[NotFound, Config])
+    val db: Provider[Tuple1[Config], IOError, Db] = Provider((c: Config) => EffResource.eval(Eff.succeed(Db(c))): EffResource[IOError, Db])
+    // `wire` is transparent, so the value below carries the macro's own result type; the witness
+    // fails if the emitted tree ever surfaces a wider or differently-shaped channel.
+    val wired = Provider.wire[Db](config, db)
+    val _ = summon[wired.type <:< EffResource[NotFound | IOError, Db]]
+    // Over-narrow ascription is rejected: neither provider's arm may be dropped.
+    assert(
+      !scala.compiletime.testing.typeChecks("""
+        import boilerplate.effect.*
+        val config: Provider[EmptyTuple, AppError.NotFound, Config] =
+          Provider(EffResource.eval(Eff.succeed(Config("u"))): EffResource[AppError.NotFound, Config])
+        val db: Provider[Tuple1[Config], IOError, Db] =
+          Provider((c: Config) => EffResource.eval(Eff.succeed(Db(c))): EffResource[IOError, Db])
+        val narrow: EffResource[AppError.NotFound, Db] = Provider.wire[Db](config, db)
+      """)
+    )
     run(wired.use(d => Eff.succeed(d.config.url))).map(assertEquals(_, Right("u")))
 
   test("a mid-graph acquisition failure propagates typed and releases the acquired prefix in reverse"):

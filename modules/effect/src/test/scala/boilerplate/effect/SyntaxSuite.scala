@@ -20,18 +20,17 @@
  */
 package boilerplate.effect
 
-import scala.reflect.TypeTest
-
 import cats.effect.IO
 import munit.CatsEffectSuite
 
+import boilerplate.ErrorTest
 import boilerplate.effect.AppError.*
 
 // The fibre-join extensions over `Fiber[Eff.Of[E], Throwable, A]`: a typed failure arrives as
 // `Outcome.Errored`, so joining has to re-raise it on the typed channel rather than report success.
 class SyntaxSuite extends CatsEffectSuite:
 
-  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
+  private def run[E <: Throwable, A](eff: Eff[E, A])(using ErrorTest[E]): IO[Either[E, A]] = eff.either.absolve
 
   test("Fiber.joinNever returns a success and re-raises a typed failure as Errored"):
     def joined(eff: Eff[AppError, Int]): Eff[AppError, Int] =

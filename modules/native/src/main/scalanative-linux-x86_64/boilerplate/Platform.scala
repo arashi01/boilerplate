@@ -22,14 +22,16 @@ package boilerplate
 
 /** Compile-time constants identifying the Scala Native build target.
   *
-  * Exactly one of [[linux]]/[[mac]]/[[windows]] and one of [[x86_64]]/[[aarch64]] is `true` per
-  * build.
+  * Exactly one of [[linux]]/[[darwin]]/[[windows]] and one of [[x86_64]]/[[aarch64]] is `true` per
+  * build, because each target publishes as its own classified NIR jar. The names are sbt-snx's own
+  * `snx.OS` and `snx.Arch` case for case, so a build definition and a consumed artefact agree on
+  * what a target is called; the plugin's `osx` classifier token is this enum's `Darwin`.
   */
 object Platform:
 
   inline val linux = true
 
-  inline val mac = false
+  inline val darwin = false
 
   inline val windows = false
 
@@ -37,11 +39,11 @@ object Platform:
 
   inline val aarch64 = false
 
-  /** The [[Os]] of the build target, as a compile-time constant. */
-  inline def os: Os =
-    inline if linux then Os.Linux
-    else inline if mac then Os.Mac
-    else Os.Windows
+  /** The [[OS]] of the build target, as a compile-time constant. */
+  inline def os: OS =
+    inline if linux then OS.Linux
+    else inline if darwin then OS.Darwin
+    else OS.Windows
 
   /** The [[Arch]] of the build target, as a compile-time constant. */
   inline def arch: Arch =

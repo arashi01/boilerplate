@@ -13,6 +13,9 @@ libraryDependencies += "africa.shuwari" %% "boilerplate" % "<version>"
 // Effect: typed-error effects atop cats-effect
 libraryDependencies += "africa.shuwari" %% "boilerplate-effect" % "<version>"
 
+// Streams: the fs2 vocabulary over the typed channel
+libraryDependencies += "africa.shuwari" %% "boilerplate-fs2" % "<version>"
+
 // Test kits: ValueCodec law suites; Eff generators and law instances
 libraryDependencies += "africa.shuwari" %% "boilerplate-testkit" % "<version>" % Test
 libraryDependencies += "africa.shuwari" %% "boilerplate-effect-testkit" % "<version>" % Test
@@ -43,6 +46,10 @@ construction that cannot fail at runtime - compile-time-validated literals. `wra
 with no validation at all - is `protected`: the companion author's tool, never part of a derived
 companion's public API.
 
+That vocabulary is for a **component** type - one built from a representation that is not its wire
+text. A type whose representation *is* its wire text (a hostname, a PHC password hash) has one door
+instead, `parse`, and mixes in `OpaqueType.Wire[A]`; see [wire-form types](#wire-form-types) below.
+
 **Multiversal equality is opt-in** via `OpaqueType.Eq[A]`. Security-sensitive types (tokens, keys,
 password hashes) should omit it, making `==` a compile error under `strictEquality`.
 
@@ -51,10 +58,14 @@ password hashes) should omit it, making `==` a compile error under `strictEquali
 ```scala
 import boilerplate.*
 
+sealed abstract class UserIdError(message: String) extends TypedError(message, None)
+object UserIdError:
+  case object Empty extends UserIdError("UserId cannot be empty")
+
 opaque type UserId = String
 
 object UserId extends OpaqueType[UserId, String], OpaqueType.Eq[UserId]:
-  type Error = IllegalArgumentException
+  type Error = UserIdError
 
   protected inline def wrap(s: String): UserId = s
   inline def unwrap(id: UserId): String        = id
@@ -64,9 +75,12 @@ object UserId extends OpaqueType[UserId, String], OpaqueType.Eq[UserId]:
     else wrap(value)
 
   protected inline def validate(s: String): Either[Error, String] =
-    if s.nonEmpty then Right(s)
-    else Left(new IllegalArgumentException("UserId cannot be empty"))
+    if s.nonEmpty then Right(s) else Left(UserIdError.Empty)
 ```
+
+`Error` is bounded by `Throwable`, but the family a companion refuses with is the module's own
+[`TypedError`](#typederror) root, so a decode site branches over named cases rather than over a
+stock exception.
 
 `validate` returns the value to wrap, so a companion canonicalises while it validates: a
 normalising type (a lowercase header name, a trimmed identifier) returns the canonical form and
@@ -78,10 +92,10 @@ error, and a non-constant argument fails to reduce, directing the caller to the 
 constructors:
 
 ```scala
-val direct: UserId                                 = UserId("user-123")
-val safe: Either[IllegalArgumentException, UserId] = UserId.of(input)
-val trusted: UserId                                = UserId.ofUnsafe(input) // throws Error on invalid
-val underlying: String                             = UserId.unwrap(direct)
+val direct: UserId                      = UserId("user-123")
+val safe: Either[UserIdError, UserId]   = UserId.of(input)
+val trusted: UserId                     = UserId.ofUnsafe(input) // throws Error on invalid
+val underlying: String                  = UserId.unwrap(direct)
 ```
 
 A module whose own code needs trusted zero-validation construction (an already-validated decode,
@@ -100,7 +114,7 @@ For types where equality comparison should be forbidden, omit the `Eq` mixin:
 opaque type SecretToken = String
 
 object SecretToken extends OpaqueType[SecretToken, String]:
-  type Error = IllegalArgumentException
+  type Error = TokenError
   // ...
   // SecretToken values cannot be compared with == (compile error under strictEquality)
 ```
@@ -118,7 +132,52 @@ object SecretToken extends OpaqueType[SecretToken, String]:
 | `of(value)`         | Validated construction returning `Either[Error, A]`                |
 | `ofUnsafe(value)`   | Validated construction for trusted input; throws `Error`           |
 | `OpaqueType.Eq[A]`  | Mixin providing `CanEqual[A, A]` (opt-in equality)                 |
-| `OpaqueType.Codec[A]` | Mixin deriving a `ValueCodec` from `of`/`unwrap` (`Repr = String`) |
+| `OpaqueType.Codec[A, Repr]` | Mixin deriving a `ValueCodec` from the representation's codec and `of` |
+
+#### Wire-form types
+
+Some types have no representation distinct from their wire text: a hostname is a `String`, a PHC
+password hash is a `String`, a base64url credential identifier is a `String`. Giving those an `of`
+door alongside a `parse` one would be two names for a single act, so `OpaqueType.Wire[A]` ships the
+one door and derives the codec from it:
+
+```scala
+opaque type Hostname = String
+
+object Hostname extends OpaqueType.Wire[Hostname], OpaqueType.Eq[Hostname]:
+  type Error = HostnameError
+
+  protected inline def wrap(text: String): Hostname = text
+  def render(value: Hostname): String               = value
+
+  protected inline def validate(text: String): Either[HostnameError, String] =
+    if isHostname(text) then Right(codec.ASCII.lower(text)) else Left(HostnameError(text.length))
+
+  inline def apply(inline text: String): Hostname =
+    inline if text == "" then compiletime.error("Hostname cannot be empty") else wrap(text)
+```
+
+```scala
+val parsed: Either[HostnameError, Hostname] = Hostname.parse(input)
+val trusted: Hostname                       = Hostname.parseUnsafe(input) // throws Error
+val literal: Hostname                       = Hostname("example.com")     // validated at compile time
+val text: String                            = Hostname.render(literal)
+val codec: ValueCodec.Aux[Hostname, HostnameError] = summon                // by construction
+```
+
+`validate` returns the text to wrap, so a normalising type canonicalises there and every door -
+`parse`, `parseUnsafe`, and the derived codec - produces the canonical form. There is no `of` and
+no `ofUnsafe`: `Hostname.of("x")` is a compile error, which is the point.
+
+| Member              | Description                                                        |
+|---------------------|--------------------------------------------------------------------|
+| `type Error`        | Typed error produced when the text is refused                      |
+| `wrap(text)`        | `protected` - unvalidated construction, the companion author's tool |
+| `render(value)`     | The canonical wire text                                            |
+| `validate(text)`    | Returns `Right(textToWrap)` (canonical form) or `Left(error)`      |
+| `parse(text)`       | Validated construction returning `Either[Error, A]`                |
+| `parseUnsafe(text)` | Validated construction for trusted text; throws `Error`            |
+| `apply(text)`       | Compile-time-validated literal construction                        |
 
 ---
 
@@ -275,6 +334,15 @@ val tag = key.use(view => mac(view, message))   // the view is valid for this ca
 key.destroy()                                    // zeroed in place
 ```
 
+Bytes that already exist elsewhere - a backend's output buffer, a decoded field - are adopted by
+copy through `Secret.of`. The copy is the point: the source stays the caller's, and erasing it once
+the carrier holds a copy is the caller's to do.
+
+```scala
+val adopted = Secret.of(backendBuffer)
+backendBuffer.wipe()
+```
+
 `fill` allocates the buffer inside the carrier, so no unwiped copy is left outside it; if `init`
 throws, the buffer is erased before the throwable propagates. `use` raises rather than let a read
 observe a destroyed secret, and `destroy` raises rather than erase bytes a read is holding - one
@@ -296,10 +364,51 @@ release.
 | Member                | Description                                                        |
 |-----------------------|--------------------------------------------------------------------|
 | `Secret.fill(n)(init)`| Allocate `n` zeroed bytes and fill them through a scoped view       |
+| `Secret.of(source)`   | Copy `source` into a new carrier; the source stays the caller's     |
 | `use(f)`              | Read through a view valid for that call alone (raises if destroyed) |
 | `destroy()`           | Erase in place; idempotent, raises while a read is in flight        |
 | `useEff(f)`           | `use` holding the guard across the returned effect (effect module)  |
 | `Secret.scoped(n)(init)` | `EffResource[Nothing, Secret]` destroying on release (effect module) |
+
+---
+
+### UUID
+
+An RFC 9562 UUID: 128 bits held as two `Long`s, big-endian, compared as unsigned octets. It exists
+because the JDK's `UUID` gets two things wrong for wire work - `fromString` accepts forms no
+protocol should (`1-1-1-1-1`, a leading `+`, groups of the wrong length), and `compareTo` compares
+the halves as *signed* longs, which is not the order RFC 9562 section 6.11 specifies.
+
+```scala
+import boilerplate.UUID
+
+val id      = UUID.v4(randomBytes)                 // 16 caller-supplied random bytes
+val ordered = UUID.v7(clock.millis(), randomBytes) // time-ordered
+val parsed  = UUID.parse(text)                     // Either[ValueCodec.Invalid, UUID]
+val octets  = id.toArray                           // 16 big-endian bytes
+id.copyInto(wireBuffer)                            // or write them in place
+```
+
+Randomness and the clock stay the caller's: `v4` and `v7` take bytes, so the generator is chosen
+where the security requirement is known rather than inherited from this library. Construction sets
+the version and variant bits and nothing else - `v4` keeps 122 of the caller's bits, `v7` keeps 74
+and puts `unixMillis` in the leading 48.
+
+`parse` reads the 8-4-4-4-12 hex form in either letter case and nothing else: no braces, no
+`urn:uuid:` prefix, no short or over-long groups, no non-ASCII digit. `render` and `toString` emit
+the canonical lower-case form. The `Ordering` and the `ValueCodec.Aux[UUID, ValueCodec.Invalid]`
+given ship in the companion; `nil` and `max` are the RFC's two sentinels, and neither carries a
+meaningful `version`.
+
+| Member                    | Description                                                      |
+|---------------------------|------------------------------------------------------------------|
+| `UUID.of(bytes)`          | The 16 octets verbatim; `Left` on any other length               |
+| `UUID.v4(random)`         | Version 4 over 16 caller-supplied random bytes                   |
+| `UUID.v7(millis, random)` | Version 7: timestamp then 74 bits of the caller's random bytes   |
+| `UUID.parse(text)` / `render(u)` | The strict RFC 9562 text form, lower case out            |
+| `UUID.nil` / `UUID.max`   | The all-zero and all-one sentinels                               |
+| `version`                 | The version field, meaningful only for the RFC 9562 variant      |
+| `toArray` / `copyInto(dst)` | A fresh 16-byte copy, or the octets written in place           |
 
 ---
 
@@ -313,18 +422,55 @@ import boilerplate.TypedError
 
 sealed abstract class StoreError(message: String, cause: Option[Throwable]) extends TypedError(message, cause)
 object StoreError:
-  sealed abstract class Missing private () extends StoreError("missing", None)
-  case object Missing extends Missing
+  case object Missing extends StoreError("missing", None)
 
   final class Unexpected private (cause: Throwable) extends StoreError("unexpected store failure", Some(cause))
   object Unexpected:
     def apply(cause: Throwable): StoreError = TypedError.idempotent[StoreError, Unexpected](cause)(new Unexpected(_))
 ```
 
+A payload-free arm is a plain `case object`, with no companion class beside it: `ErrorTest` tests a
+singleton by identity, so such an arm is observable on a union channel exactly as a class arm is.
+
 The base is deliberately not sealed - the module declares its own `sealed` root over it, and that
 root, not this class, is what exhaustivity checks against. `TypedError.idempotent` returns a cause
 that already belongs to the root unchanged, so wrapping an error that has already crossed the
 boundary does not nest it.
+
+### ErrorTest
+
+`ErrorTest[E]` is the runtime evidence that a `Throwable` is an `E` - what every observer of a typed
+error channel filters by, and so what the [`Eff`](#effect) combinators below are stated in terms of.
+Instances are derived by macro for any concrete channel: a class by `isInstanceOf`, a stable
+singleton by identity, a union arm by arm.
+
+Nothing is written at a call site whose channel is concrete. It is written where code is **generic**
+in its error type, which is the one place the compiler cannot derive it:
+
+```scala
+def audited[E <: Throwable, A](name: String)(body: Eff[E, A])(using ErrorTest[E]): Eff[E, A] =
+  body.tapError(e => IO.println(s"$name failed: $e"))
+```
+
+Inside such code the evidence composes: holding `ErrorTest[E]`, an `ErrorTest[StoreError | E]` for a
+channel widened with a concrete arm derives from it. What is refused is a channel that cannot be
+tested honestly - an abstract type with no evidence in scope, a parameterised or refined type, and an
+*intersection*, which is what the compiler infers when a continuation's branches fail with unrelated
+arms, or when a type parameter is instantiated from a union the compiler itself inferred. Deriving a
+test for that intersection would capture unrelated failures as typed, so it is a compile error naming
+the remedy: name the precise union, by declaring the value's type or ascribing the branches.
+
+`ErrorTest` is deliberately **not** a `scala.reflect.TypeTest`. The compiler casts a `TypeTest`
+extractor's bound result to one arm of a union, which throws at any `object` arm - a hand-written,
+obviously correct `TypeTest` fails identically. `ErrorTest`'s own `unapply` binds the union itself:
+
+```scala
+val et = summon[ErrorTest[StoreError.Missing.type | StoreError.Unexpected]]
+
+throwable match
+  case et(e) => s"typed: ${e.getMessage}"
+  case other => s"defect: $other"
+```
 
 ---
 
@@ -360,15 +506,30 @@ Codecs for `Secret` and `Slice` are refused at compile time - an encode would re
 material to an immutable `String`, or a borrowed view past its lifetime. A deliberate local given
 can override the refusal; the guard catches accident, not intent.
 
-**Opaque types get their codec in one line** via the `OpaqueType.Codec[A]` mixin (`Repr =
-String`): `decode` is the companion's own `of` - so a normalising companion decodes to the
-canonical value - and `encode` is `unwrap`. For a non-`String` representation, write the given
-through the constructor, failing the text stage into the companion's own error family:
+**Opaque types get their codec in one line** via the `OpaqueType.Codec[A, Repr]` mixin: `decode`
+reads a `Repr` from the text with the representation's own codec and passes it through `of` - so a
+normalising companion decodes to the canonical value - and `encode` renders `unwrap`.
 
 ```scala
-object HeaderName extends OpaqueType[HeaderName, String], OpaqueType.Codec[HeaderName]:
+object HeaderName extends OpaqueType[HeaderName, String], OpaqueType.Codec[HeaderName, String]:
   // type Error, wrap, unwrap, validate, apply as usual - and the codec given is derived.
+
+object Port extends OpaqueType[Port, Int], OpaqueType.Eq[Port], OpaqueType.Codec[Port, Int]:
+  // ...
 ```
+
+The codec's error member is the precise union of both stages, so a decode site tells a malformed
+text apart from a rejected value:
+
+```scala
+summon[ValueCodec[Port]].decode("eighty")  // Left(ValueCodec.Invalid("not an integer"))
+summon[ValueCodec[Port]].decode("70000")   // Left(PortError("out of range"))
+// the member is ValueCodec.Aux[Port, PortError | ValueCodec.Invalid] - both arms match exhaustively
+```
+
+For `Repr = String` the text stage is infallible, so the union collapses to the companion's own
+`Error`. A type whose representation *is* its wire text takes `OpaqueType.Wire` instead, which
+derives its codec from `parse`/`render`.
 
 ---
 
@@ -407,7 +568,9 @@ parsing).
 dotless-i can never reach a protocol token), the RFC 9110 `isTokenChar`/`isToken` classes, the
 character and whole-string predicates (`isDigit`/`isLetter`/`isAlphanumeric`, `isDigits`/
 `isLetters`) that keep `Character.isDigit`'s whole-Unicode classes out of numeric wire fields, and
-the strict unsigned reads `uint`/`ulong` - ASCII digits alone, no sign, `None` on overflow.
+the strict unsigned reads `uint`/`ulong` - ASCII digits alone, no sign, `None` on overflow - each
+with a fixed-width form (`uint(text, width)`) that refuses anything but exactly `width` digits, for
+the padded numeric fields wire formats are built from.
 
 `Decimal` is the money-class plain-decimal seam: `render` emits the one canonical plain form
 (trailing zeros stripped, never scientific notation - `BigDecimal.toString` after
@@ -423,18 +586,18 @@ published as its own classified NIR jar, so the constants reflect the actual bui
 whichever host happened to build the artefact.
 
 ```scala
-import boilerplate.{Platform, Os, Arch}
+import boilerplate.{Platform, OS, Arch}
 
 // Compile-time branching - unreachable branches are eliminated
 inline if Platform.linux then linuxImpl()
-else inline if Platform.mac then macImpl()
+else inline if Platform.darwin then darwinImpl()
 else windowsImpl()
 
 // Enum values for runtime dispatch
 Platform.os match
-  case Os.Linux   => // ...
-  case Os.Mac     => // ...
-  case Os.Windows => // ...
+  case OS.Linux   => // ...
+  case OS.Darwin  => // ...
+  case OS.Windows => // ...
 
 Platform.arch match
   case Arch.X86_64  => // ...
@@ -444,14 +607,19 @@ Platform.arch match
 | Member    | Type      | Description                                    |
 |-----------|-----------|------------------------------------------------|
 | `linux`   | `Boolean` | `true` when the target OS is Linux             |
-| `mac`     | `Boolean` | `true` when the target OS is macOS             |
+| `darwin`  | `Boolean` | `true` when the target OS is Darwin (macOS)    |
 | `windows` | `Boolean` | `true` when the target OS is Windows           |
 | `x86_64`  | `Boolean` | `true` when the target architecture is x86-64  |
 | `aarch64` | `Boolean` | `true` when the target architecture is AArch64 |
-| `os`      | `Os`      | Enum value for the build-target OS             |
+| `os`      | `OS`      | Enum value for the build-target OS             |
 | `arch`    | `Arch`    | Enum value for the build-target architecture   |
 
 `inline if` branches on these constants produce zero-overhead platform-specific code.
+
+`OS` and `Arch` name their cases exactly as sbt-snx's own `snx.OS` and `snx.Arch` do, so a build
+definition and a consumed artefact agree on what a target is called - the plugin's `osx` classifier
+token is this enum's `Darwin`. Neither side can consume the other's type: one is a build plugin, the
+other a published NIR artefact, so the alignment is by name and documented rather than shared.
 
 ---
 
@@ -477,21 +645,33 @@ import cats.effect.IO
 | `TEff[A]`              | `Eff[Throwable, A]` | Throwable-errored effect                       |
 | `EffResource[E, A]`    | `Resource[IO, A]`   | Lifecycle-scoped resource with a typed acquire |
 | `Provider[R, E, A]`    | -                   | A recipe for one service, wired at compile time |
+| `Pool[E, A]`           | -                   | A bounded pool whose lease carries a typed channel |
 | `RetryPolicy`          | -                   | Declarative retry pacing and bounds            |
 
 `Eff` is covariant in both parameters, so a value of `Eff[Narrow, A]` is usable wherever
-`Eff[Wide, A]` is expected with no call-site method, and a `flatMap` over steps with distinct error
-types widens the channel to their join: for arms of one sealed root that is the root itself, and
-for unrelated arms a structural type wider than their union - either the union or the root is
-reachable by ascription. That widening is silent - the channel can grow wider than intended with no
-compile error, so ascribe the result type, or use `mapError`/`catchOnly`, to contain it.
+`Eff[Wide, A]` is expected with no call-site method. Composition is exact: every combinator that
+joins two channels yields their **precise union**, so a for-comprehension over steps that fail
+differently infers `Eff[NotFound | Invalid, A]` with no ascription, and reifying it gives an
+`Either` whose `Left` matches exhaustively.
+
+Two shapes still lose the union, and both are Scala's own widening of an inferred union rather than
+anything this library introduces:
+
+- A continuation whose channel comes from an `if` or `match` over branches that fail differently
+  infers their **join**, not their union. Ascribe the lambda's result, or its branches, where the
+  precise union matters. The join of unrelated roots is an intersection, and observing one is a
+  compile error rather than a silent capture of unrelated failures - see [`ErrorTest`](#errortest).
+- An enum's **simple case** widens to the enum type (`Eff.fail(Refused.Malformed)` is
+  `Eff[Refused, Nothing]`), so a channel that is a strict subset of an enum's simple cases has to be
+  ascribed or pinned with an explicit type argument. `case object` arms and parameterised enum cases
+  are unaffected.
 
 ### Quick start
 
 ```scala
-import scala.util.control.NoStackTrace
+import boilerplate.TypedError
 
-sealed abstract class AppError(msg: String) extends Exception(msg) with NoStackTrace derives CanEqual
+sealed abstract class AppError(msg: String) extends TypedError(msg, None)
 object AppError:
   final case class NotFound(id: String) extends AppError(s"not found: $id")
   final case class Invalid(reason: String) extends AppError(s"invalid: $reason")
@@ -550,14 +730,15 @@ val narrow: UEff[Int] = typed    // rejected - covariance widens E, it does not 
 **Lifting commits nothing about the error channel.** An `IO` placed where `Eff[E, A]` is expected
 simply *is* that value; the channel a context claims is the channel its observers filter by. Where a
 bare `IO` is passed to an entry point generic in `E`, `E` pins to `Nothing` and the infallible
-overload is selected - so `Eff.retry(io, 3)` runs `io` exactly once, a defect being no typed error.
+overload is selected - so `Eff.retry(io, policy)` runs `io` exactly once, a defect being no typed
+error.
 
 One consequence to know: in a for-comprehension each generator's `flatMap` comes from its own
 receiver, and `IO` has a member `flatMap` of its own, which wins over the extension. So an `IO`
 generator may not be **followed** by an `Eff` generator - and one `IO` generator downgrades every
 generator after it, not merely the next:
 
-| shape          |          |
+| shape          | result   |
 |----------------|----------|
 | `eff; io`      | compiles |
 | `io; io`       | compiles |
@@ -593,7 +774,7 @@ yield user
 | Async        | `fromFuture(IO[Future], ifFailure)`, `fromFuture(pf)`, `async`, `asyncAttempt(ifDefect)` |
 | Conditional  | `when`, `unless`, `raiseWhen`, `raiseUnless`, `cond(pred, ifTrue, ifFalse)`     |
 | Collection   | `traverse`, `sequence`, `parTraverse`, `parSequence` (each with a `_` discard variant) |
-| Retry        | `retry(eff, maxRetries)`, `retryWithBackoff(eff, maxRetries, delay, maxDelay)`, `retry(eff, policy[, retryOn][, onRetry])` |
+| Retry        | `retry(eff, policy[, retryOn][, onRetry])`                                      |
 
 Entering the effect needs nothing beyond these and a raw `IO`: the supertype bound carries the
 lifting, so `Eff.succeed` and `Eff.fail` are the only constructors most code reaches for.
@@ -602,30 +783,31 @@ lifting, so `Eff.succeed` and `Eff.fail` are the only constructors most code rea
 
 | Category      | Methods                                                                      |
 |---------------|------------------------------------------------------------------------------|
-| Mapping       | `map`, `flatMap`, `semiflatMap`, `subflatMap`, `transform`                   |
-| Composition   | `*>`, `<*`, `productR`, `productL`, `product`, `void`, `as`, `flatTap`       |
+| Mapping       | `map`, `flatMap`, `subflatMap`, `transform`                                  |
+| Composition   | `*>`, `<*`, `product`, `void`, `as`, `flatTap`                               |
 | Recovery      | `valueOr`, `catchAll`, `catchSome`, `catchOnly`                              |
 | Error mapping | `mapError`, `mapErrorPartial`                                                |
 | Alternative   | `alt`, `orElseSucceed`, `orElseFail`                                         |
 | Folding       | `fold`, `foldF`, `redeemAll`                                                 |
-| Observation   | `tap`, `tapError`, `flatTapError`, `attemptTap`                              |
-| Variance      | `assume`, `assumeError`                                                      |
+| Observation   | `tapError`, `flatTapError`, `attemptTap`                                     |
 | Extraction    | `option`, `collectSome`, `collectRight`                                      |
 | Conversion    | `either` (`UEff[Either[E, A]]`), `absolve` (the `IO` exit), `eitherT`        |
-| Resource      | `bracket`, `bracketCase`, `timeout`                                          |
+| Resource      | `bracket`, `bracketCase`                                                     |
 | Concurrency   | `start`, `race`, `both`, `background`                                        |
-| Temporal      | `delayBy(duration)`, `andWait(duration)`, `timed`, `timeoutTo(dur, fallback)` |
+| Temporal      | `delayBy(duration)`, `andWait(duration)`, `timed`, `timeout(dur, onTimeout)`, `timeoutTo(dur, fallback)` |
 | Executor      | `evalOn(ec)` - channel-neutral shift, `E` preserved                          |
 | Cancellation  | `onCancel(fin)`, `guarantee(fin)`, `guaranteeCase(fin)`                      |
 | Parallel      | `&>`, `<&`                                                                   |
 
+An `IO` argument needs no separate name: `IO[A]` is `Eff[Nothing, A]`, so `flatMap` with an `IO`
+lambda keeps the receiver's channel exactly and `flatTap` observes without widening it.
+
 **Observing the typed channel.** The combinators that observe or transform the error - `either`,
 `catchAll`, `mapError`, `fold`, `catchOnly`, `option`, `redeemAll`, `orElseFail`, `valueOr`, `alt`,
-`tapError`, `attemptTap`, `retry`, ... - filter the caught `Throwable` through a
-`TypeTest[Throwable, E]`, re-raising any non-`E` defect unchanged. For a concrete `E` (a sealed
-`Throwable` root, or a union of them) the compiler **synthesises** that `TypeTest`, so nothing is
-written at the call site; a library `given TypeTest[Throwable, Nothing]` covers the infallible
-(`E = Nothing`) case, where every observer is degenerate and any handler is dead code.
+`tapError`, `attemptTap`, `retry`, ... - filter the caught `Throwable` through
+[`ErrorTest[E]`](#errortest), re-raising any non-`E` defect unchanged. For a concrete `E` the
+evidence is derived at the call site with nothing written there, singleton arms included; on the
+infallible channel (`E = Nothing`) every observer is degenerate and any handler is dead code.
 
 **Narrowing partial recovery (`catchOnly`).** Covariance lets you handle one arm of a union error
 while keeping the rest typed. The residual is inferred - no annotation needed. An infallible
@@ -643,22 +825,19 @@ The handler may itself fail into the residual channel - ascribe its failure to t
 subtype. The handled arm must be runtime-testable; an erasure-ambiguous choice is rejected at the
 call site.
 
-**Writing your own error-observing API generic in `E`.** Threading `using TypeTest[Throwable, E]`
-sets a trap: where `E` would infer as `Nothing`, the solver silently widens it to `Throwable` (whose
-test is the identity, so every defect is captured) instead of committing to the shipped
-`given TypeTest[Throwable, Nothing]` - it happens during inference, so importing the given does not
-prevent it. Pin `E` from a covariant parameter (order the parameter lists so an effect or handler
-argument fixes `E` first) and add a `Nothing`-pinned overload for the infallible case - the shape the
-built-in observers and `retry` use.
+**Writing your own error-observing API generic in `E`.** Threading `using ErrorTest[E]` sets a trap:
+where `E` would infer as `Nothing`, the solver silently widens it to `Throwable` (whose test is the
+identity, so every defect is captured). Pin `E` from a covariant parameter - order the parameter
+lists so an effect or handler argument fixes `E` first - and add a `Nothing`-pinned overload for the
+infallible case, the shape the built-in observers and `retry` use.
 
 ### EffResource
 
 `EffResource[E, A]` is the resource vocabulary in the same shape: the representation is exactly
 `Resource[IO, A]`, and `E` is the same phantom, carrying the error type an **acquisition** may fail
 with. Putting the error in a covariant parameter of the resource type - rather than inside an
-invariant `F` - is what lets an acquisition channel widen, so composing resources of distinct error
-types widens the channel exactly as `Eff` does (their join; the union by ascription) with no `mapK`
-and no cast:
+invariant `F` - is what lets acquisition channels compose, so sequencing resources that fail
+differently yields their precise union exactly as `Eff` does, with no `mapK` and no cast:
 
 ```scala
 val config: EffResource[ConfigError, Config] = EffResource.make(loadConfig)(_ => IO.unit)
@@ -689,7 +868,7 @@ alike, and has no channel of its own to fail into.
 | `EffResource.retry(res, policy[, retryOn][, onRetry])` | Retry ACQUISITION per policy            |
 | `absolve`                            | The underlying `Resource[IO, A]`                     |
 
-**Retrying acquisition.** `EffResource.retry` applies a [`RetryPolicy`](#eff-constructors) to the
+**Retrying acquisition.** `EffResource.retry` applies a [`RetryPolicy`](#retry-and-retrypolicy) to the
 acquisition alone - the client-pool shape: a failed attempt has already released whatever prefix it
 acquired, and the consumer of the resource is never re-run. A defect never retries, on any overload.
 
@@ -759,13 +938,60 @@ val retried: Eff[AppError, User] =
   Eff.retry(workflow, policy, { case _: AppError.NotFound => true; case _: AppError.Invalid => false })
 ```
 
+### Pool
+
+`Pool[E, A]` is a bounded pool of values built by an `EffResource`. Its `lease` is itself an
+`EffResource`, so an entry is held for the lease's scope and returned on release - after success,
+after a typed failure, and after cancellation alike - and the lease's channel says exactly what can
+go wrong: the factory's own error, or `Pool.Exhausted`.
+
+```scala
+import boilerplate.effect.*
+
+val connections: EffResource[Nothing, Pool[ConnError, Conn]] =
+  Pool(EffResource.make(open)(close), Pool.Config(8).withIdleTimeout(30.seconds))
+
+connections.use { pool =>
+  pool.lease.use(conn => query(conn))   // : Eff[ConnError | Pool.Exhausted, Rows]
+}
+```
+
+Capacity is a semaphore and eviction happens on lease, so a pool holds no background fibre and no
+timer: an entry that has expired or gone unhealthy is destroyed when it is next reached for, and no
+stale entry is ever lent. When the pool's own scope ends, every idle entry is destroyed; an entry
+still lent is destroyed when its lease releases it.
+
+A pooled value is a **reference** (`A <: AnyRef`): entries are tracked by identity, which is what
+lets `invalidate` name one of several live entries. An opaque handle type over a reference declares
+`<: AnyRef` to be poolable.
+
+Retrying is composed rather than configured - `EffResource.retry(create, policy)` on the factory,
+which is the same `RetryPolicy` everything else uses, so the pool has no policy of its own.
+
+| Member                          | Description                                                     |
+|---------------------------------|-----------------------------------------------------------------|
+| `Pool(create, config)`          | A pool over `create`, closed with its own scope                 |
+| `Pool(create, config, healthy)` | As above, checking an idle entry before lending it              |
+| `pool.lease`                    | `EffResource[E \| Exhausted, A]` - an entry for the scope        |
+| `pool.invalidate(a)`            | Destroy the leased `a` on return instead of reusing it          |
+| `Pool.stats(pool)`              | Idle, in-use, and waiting counts                                |
+| `Config(capacity)`              | `withExhaustion`, `withIdleTimeout`, `withObserver`             |
+| `Exhaustion.Fail \| Wait(deadline)` | Raise at once, or wait until the deadline                   |
+| `Event` / `Reason`              | What the observer is told, and why an entry was destroyed       |
+
+`Exhaustion.Fail` raises `Exhausted(capacity)` as soon as every entry is in use; `Wait(deadline)`
+queues the lease and raises at the deadline instead. Waiters are served in arrival order, and a
+cancelled waiter leaks no capacity. A typed failure *during use* is not evidence the entry is
+broken, so it is returned like any other - `invalidate` and the health check are the explicit seams
+for saying otherwise.
+
 ### cats interop
 
 Every cats and cats-effect instance is available on `Eff.Of[E]` (the type lambda
 `[A] =>> Eff[E, A]`) at no cost - `E` is a phantom, so `IO`'s own `Async[IO]` **is** the
 `Async[Eff.Of[E]]`. The one bespoke instance is the typed `MonadError[_, E]`, whose
-`handleErrorWith` filters `IO`'s `Throwable` channel through a `TypeTest[Throwable, E]`, catching
-only a genuine `E` and re-raising any other defect.
+`handleErrorWith` filters `IO`'s `Throwable` channel through an `ErrorTest[E]`, catching only a
+genuine `E` and re-raising any other defect.
 
 <details>
 <summary><strong>Effect typeclasses</strong></summary>
@@ -773,11 +999,11 @@ only a genuine `E` and re-raising any other defect.
 | Typeclass                     | Requirement                | Capability                           |
 |-------------------------------|----------------------------|--------------------------------------|
 | `Monad`                       | -                          | `flatMap`, `pure` (also `Functor`)   |
-| `MonadError[_, E]`            | `TypeTest[Throwable, E]`   | Typed error channel `E`              |
+| `MonadError[_, E]`            | `ErrorTest[E]`             | Typed error channel `E`              |
 | `Async`                       | -                          | `async`, `evalOn`, `fromFuture`      |
 | `Sync`, `GenTemporal`, `GenConcurrent`, `GenSpawn`, `MonadCancel`, `Clock`, `Unique`, `Defer` | - | Inherited from `Async` by subtyping |
 | `Parallel`                    | -                          | `.parMapN`, `.parTraverse`           |
-| `SemigroupK`                  | `TypeTest[Throwable, E]`   | `combineK` / `<+>` (choice via `alt`)|
+| `SemigroupK`                  | `ErrorTest[E]`             | `combineK` / `<+>` (choice via `alt`)|
 | `Semigroup`                   | `Semigroup[A]`             | `combine` on success values          |
 | `Monoid`                      | `Monoid[A]`                | `combine` with `empty`               |
 
@@ -785,20 +1011,11 @@ only a genuine `E` and re-raising any other defect.
 
 </details>
 
-<details>
-<summary><strong>Data typeclasses</strong></summary>
-
-| Typeclass      | Requirement           | Behaviour                                 |
-|----------------|-----------------------|-------------------------------------------|
-| `Show`         | `Show[IO[A]]`         | Textual representation (delegates to `IO`)|
-| `Eq`           | `Eq[IO[A]]`           | Equality comparison                       |
-| `PartialOrder` | `PartialOrder[IO[A]]` | Partial ordering                          |
-
 Because the error is a `Throwable` in `IO`'s channel rather than a foldable value, there are no
 `Bifunctor`, `Foldable`, `Traverse`, `Bifoldable`, or `Bitraverse` instances - mapping the error to a
-non-`Throwable` would be unsound - and `Show`/`Eq`/`PartialOrder` delegate straight to `IO[A]`.
-
-</details>
+non-`Throwable` would be unsound. `Show`, `Eq`, and `PartialOrder` are not provided either: they
+would have to delegate to `IO` instances that exist only in cats-effect's test kit, and
+`boilerplate-effect-testkit` defines its own `Eq` for law suites.
 
 With cats syntax in scope (`import cats.syntax.all.*`, or the error modules specifically), the
 standard operators resolve on the typed `MonadError[_, E]`:
@@ -808,10 +1025,31 @@ standard operators resolve on the typed `MonadError[_, E]`:
 | `ApplicativeError` | `recover`, `recoverWith`, `onError`, `adaptError`      |
 | `MonadError`       | `ensure`, `ensureOr`, `rethrow`, `redeem`, `redeemWith`|
 
-The blanket import coexists with union inference: `map` and `flatMap` are declared at package level
-as well as on the companions, for `Eff` and `EffResource` alike, so they stay selected ahead of cats'
-own syntax - which would otherwise pin a for-comprehension's error type to the first step's `E` and
-reject a workflow whose steps carry distinct error types.
+**Import this package with a wildcard where cats syntax is also in scope.** Every combinator whose
+name cats or cats-effect syntax also provides is declared at package level as well as on the
+companion, and the package-level copy is what keeps it selected: an imported conversion sits in
+lexical scope, a companion's extensions only in implicit scope, and lexical is searched first.
+`import boilerplate.effect.*` is what brings those package-level copies in. A file that imports
+`boilerplate.effect.Eff` **by name** and also imports `cats.syntax.all.*` or
+`cats.effect.syntax.all.*` has the conversions in lexical scope and nothing of ours there, so its
+calls are captured exactly as though the copies did not exist.
+
+A captured call is not a compile error you would notice - it resolves one `F` for both operands, so
+the channel is pinned to a single type instead of their union and the loss shows up later, where the
+next observer asks for evidence at the wrong type. Three of them do fail outright, our signatures
+differing from the conversions': `timeout` takes the failure to raise, and `flatTap` and
+`bracketCase` take `Eff` continuations.
+
+Carried at package level for `Eff`: `map`, `flatMap`, `*>`, `<*`, `&>`, `<&`, `product`, `flatTap`,
+`void`, `as`, `bracket`, `bracketCase`, `start`, `background`, `race`, `both`, `onCancel`,
+`guarantee`, `guaranteeCase`, `delayBy`, `andWait`, `timed`, `evalOn`, `timeout`, `timeoutTo`,
+`attemptTap`; for `EffResource`: `map`, `flatMap`, `both`. That list is not maintained by hand - a
+suite row derives the colliding names from the classpath, so a cats or cats-effect release that adds
+one, or drops one, fails a test rather than quietly changing what your code means.
+
+Names cats provides that this library does not shadow - `recover`, `recoverWith`, `onError`,
+`adaptError`, `ensure`, `rethrow`, `redeem`, `redeemWith`, `parMapN`, `<+>`, `memoize` - resolve on
+the instances above and work as they do for any other effect.
 
 ### Cats-effect primitives
 
@@ -875,22 +1113,18 @@ effect's channel, while a `Succeeded` returns its value.
 ### Complete example
 
 ```scala
+import boilerplate.TypedError
 import boilerplate.effect.*
 import cats.effect.IO
 import cats.effect.kernel.Outcome
 import scala.concurrent.duration.*
-import scala.util.control.NoStackTrace
 
-sealed abstract class AppError(msg: String) extends Exception(msg) with NoStackTrace derives CanEqual
+sealed abstract class AppError(msg: String) extends TypedError(msg, None)
 object AppError:
   final case class NotFound(id: String) extends AppError(s"not found: $id")
   final case class ValidationError(reason: String) extends AppError(s"invalid: $reason")
-  // Payload-free cases as class + case object, so type positions can name the class: reified
-  // unions over `.type` singleton arms mis-erase (Scala 3.8.4), classes are sound.
-  sealed abstract class Cancelled private () extends AppError("cancelled")
-  case object Cancelled extends Cancelled
-  sealed abstract class Timeout private () extends AppError("timed out")
-  case object Timeout extends Timeout
+  case object Cancelled extends AppError("cancelled")
+  case object Timeout extends AppError("timed out")
 
 case class User(id: String, name: String)
 
@@ -931,6 +1165,47 @@ val io: IO[Either[AppError, User]] = concurrent.either.absolve
 ```
 ---
 
+## Streams (`boilerplate-fs2`)
+
+`boilerplate-fs2` is the fs2 vocabulary over the typed channel - two aliases and the observers fs2
+itself cannot provide, on `fs2-core` 3.13.0.
+
+```scala
+import boilerplate.stream.*
+
+val rows: EffStream[DbError, Row]           = Stream.eval(query).flatMap(Stream.emits)
+val parse: EffPipe[ParseError, Row, Record] = _.evalMap(decode)
+
+val records: EffStream[DbError | ParseError, Record] =
+  rows.through(parse.widen[DbError | ParseError])
+
+val collected: Eff[DbError | ParseError, List[Record]] = records.compile.toList
+```
+
+`EffStream[E, O]` is `Stream[Eff.Of[E], O]` and `EffPipe[E, I, O]` is `Pipe[Eff.Of[E], I, O]`, so
+fs2's entire combinator surface is available unchanged and compiling a stream lands on `Eff`. A
+stream widens by subtyping, `Stream` being covariant in its effect, and a raw `Stream[IO, O]` lands
+in a typed position for the same reason `IO` does. A **pipe** does not: `Pipe` is a function alias
+whose effect is invariant, and `through` takes its function's input at the receiver's own effect -
+hence `widen`, which claims a pipe at a wider channel without changing what it can fail with.
+
+| Extension              | Description                                                        |
+|------------------------|--------------------------------------------------------------------|
+| `catchAll(f)`          | Recover typed failures with another stream; a defect propagates     |
+| `reify`                | Typed failure as a final `Left` element; a defect propagates        |
+| `mapError(f)`          | Transform the typed channel; a defect propagates                    |
+| `absolve`              | The stream on `IO`'s channel - the one-directional exit             |
+| `pipe.widen[E2]`       | The same pipe claimed at a wider channel                            |
+| `ioStream.eff`         | A raw `Stream[IO, O]` as an infallible `EffStream`, for a generator |
+
+**One hazard to know.** fs2's own `attempt` and `handleErrorWith` take every `Throwable`, defects
+included, and they are *members* of `Stream` - so on this alias they win over the extensions above.
+Reach for `reify` and `catchAll` by name; a call to `attempt` or `handleErrorWith` on an `EffStream`
+is fs2's untyped behaviour, not this vocabulary's. `reify` is named apart from `Eff.either` for the
+same reason: `Stream#either` is fs2's merge.
+
+---
+
 ## Test kits
 
 `boilerplate-testkit` ships the `ValueCodec` law suites as a `munit.ScalaCheckSuite` mixin:
@@ -940,11 +1215,18 @@ class MyCodecsSuite extends munit.ScalaCheckSuite, boilerplate.testkit.ValueCode
   valueCodecLaws[UserId]("UserId")                          // round trip + canonical encode
   valueCodecNormalisation[HeaderName]("HeaderName", texts)  // decode idempotent through re-encode
   valueCodecRenderWithin[Amount]("Amount")(plainDecimal)    // no exponent or locale leakage
+  valueCodecRefuses[HeaderName]("HeaderName", notTokens)    // every text outside the form is rejected
 ```
+
+`valueCodecRefuses` is the negative law the round-trip ones cannot express: the generator carries the
+shapes the codec must **not** admit - a neighbouring format, a lax spelling, a non-ASCII numeral - so
+a decode that quietly widens is caught here rather than by a consumer.
 
 `boilerplate-effect-testkit` ships ScalaCheck generators (`EffGenerators`) and the
 cats-effect-testkit-based law instances (`EffTestInstances` - `Eq`, `Cogen`, `Prop` conversion
-under a `Ticker`) for property suites over `Eff` and `EffResource`.
+under a `Ticker`) for property suites over `Eff` and `EffResource`. Each instance reifies the typed
+channel before comparing, so it takes the same `ErrorTest[E]` the observers do - derived at the
+suite's concrete law error with nothing written.
 
 ---
 
