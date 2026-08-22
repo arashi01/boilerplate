@@ -90,7 +90,8 @@ object ValueCodec:
 
   given long: Aux[Long, Invalid] = ValueCodec(
     s =>
-      // Negative accumulation so Long.MinValue's magnitude needs no unsigned headroom.
+      // Reads a numeric field on every wire seam this codec sits on, and negative accumulation
+      // keeps Long.MinValue in range without unsigned headroom - neither fits a folding form.
       val negative = s.startsWith("-")
       val digits = if negative then s.substring(1) else s
       if !codec.ASCII.isDigits(digits) then Left(Invalid("not an integer"))

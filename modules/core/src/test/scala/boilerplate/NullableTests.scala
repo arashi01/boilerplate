@@ -64,7 +64,7 @@ class NullableTests extends FunSuite:
   }
 
   test("getOrElse: does not evaluate default when non-null") {
-    var evaluated = false // scalafix:ok
+    var evaluated = false // scalafix:ok DisableSyntax.var
     val value: String | Null = "hello"
     value.getOrElse { evaluated = true; "default" }
     assert(!evaluated)
@@ -120,14 +120,14 @@ class NullableTests extends FunSuite:
   }
 
   test("fold: does not evaluate ifNull when non-null") {
-    var evaluated = false // scalafix:ok
+    var evaluated = false // scalafix:ok DisableSyntax.var
     val value: String | Null = "hello"
     value.fold { evaluated = true; "default" }(identity)
     assert(!evaluated)
   }
 
   test("fold: does not evaluate transform when null") {
-    var evaluated = false // scalafix:ok
+    var evaluated = false // scalafix:ok DisableSyntax.var
     val value: String | Null = null
     value.fold("default") { v => evaluated = true; v }
     assert(!evaluated)

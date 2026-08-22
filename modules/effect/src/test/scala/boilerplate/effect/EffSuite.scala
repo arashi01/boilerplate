@@ -22,7 +22,6 @@ package boilerplate.effect
 
 import scala.concurrent.Future
 import scala.concurrent.duration.*
-import scala.reflect.TypeTest
 import scala.util.Failure
 import scala.util.Try
 
@@ -34,11 +33,54 @@ import cats.effect.testkit.TestControl
 import cats.syntax.parallel.*
 import munit.CatsEffectSuite
 
+import boilerplate.ErrorTest
 import boilerplate.effect.AppError.*
 import boilerplate.effect.IOError.*
 
+// An enum root, for the one arm shape whose singleton the compiler widens away.
+enum Refused extends Exception derives CanEqual:
+  case Malformed
+  case Expired(at: Long)
+
+// Stable paths, so a compile-time row can name them from inside a `typeChecks` snippet.
+object Channel:
+  val io: Eff[IOError, Int] = Eff.succeed(1)
+  val app: Eff[AppError, String] = Eff.succeed("x")
+  val ue: UEff[Int] = Eff.succeed(1)
+
+  val sequenced = io.flatMap(_ => app)
+  val discarded = io *> app
+  val paired = io.product(app)
+  val concurrent = io.both(app)
+  val raced = io.race(app)
+  val tapped = io.flatTap(_ => app)
+  val guarded = io.guarantee(Eff.fail(Timeout))
+  val cancelled = io.onCancel(Eff.fail(Timeout))
+  val timedOut = io.timeout(1.second, Timeout)
+  val fellBack = io.timeoutTo(1.second, app.as(0))
+  val subflat = io.subflatMap(n => if n > 0 then Right(n) else Left(Timeout))
+  val someCaught = (io: Eff[IOError | AppError, Int]).catchSome { case Failed(_) => app.as(0) }
+  val partlyMapped = io.mapErrorPartial { case Closed => Timeout }
+  val bracketed = io.bracket(_ => app)(_ => IO.unit)
+  val tappedError = io.flatTapError(_ => app.void)
+  val attemptTapped = io.attemptTap(_ => app.void)
+  val collectedSome = (Eff.succeed(Some(1)): Eff[IOError, Option[Int]]).collectSome(Timeout)
+  val collectedRight = (Eff.succeed(Right(1)): Eff[IOError, Either[String, Int]]).collectRight(_ => Timeout)
+
+  // A raw `IO` argument names no error type, so it contributes `Nothing` and the channel stays exact.
+  val rawArgument = io.flatMap(_ => IO.pure("x"))
+  val infallibleReceiver = ue.flatMap(_ => app)
+
+  // The two limits: a branch-derived continuation widens to the join, and an enum's simple case
+  // widens to the enum type. Neither is introduced by the union result - both are Scala's own
+  // widening of an inferred union - and both are documented on `Eff`.
+  val branched = ue.flatMap(n => if n > 0 then Eff.fail(Closed) else Eff.fail(Timeout))
+  val ascribed = ue.flatMap(n => if n > 0 then Eff.fail(Closed): Eff[Closed.type | Timeout.type, Nothing] else Eff.fail(Timeout))
+  val enumArm = Eff.fail(Refused.Malformed)
+end Channel
+
 class EffSuite extends CatsEffectSuite:
-  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
+  private def run[E <: Throwable, A](eff: Eff[E, A])(using ErrorTest[E]): IO[Either[E, A]] = eff.either.absolve
 
   // Constructors
 
@@ -228,9 +270,9 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(fm, Right(20))
       assertEquals(skip, Left(Closed))
 
-  test("flatMap and subflatMap widen - never drop - the receiver's typed error"):
-    // Both sequence, so the receiver's `E` must survive into the result. Without the `E2 >: E` lower
-    // bound the error silently vanishes from the type and escapes as a defect.
+  test("flatMap and subflatMap keep the receiver's typed error, joined with the continuation's"):
+    // Both sequence, so the receiver's `E` must survive into the result. Without it in the union the
+    // error silently vanishes from the type and escapes as a defect.
     val viaFlatMap: Eff[IOError, Int] = Eff.fail(Closed).flatMap(_ => Eff.succeed(1))
     val viaSubflatMap: Eff[IOError, Int] = Eff.fail(Closed).subflatMap(_ => Right(1))
 
@@ -257,16 +299,22 @@ class EffSuite extends CatsEffectSuite:
       assertEquals(a, Left(Closed))
       assertEquals(b, Left(Closed))
 
-  test("semiflatMap applies an effectful function and short-circuits on failure"):
+  test("an IO continuation keeps the channel exact rather than widening it"):
+    // `semiflatMap`/`tap` retired into `flatMap`/`flatTap` because `IO[A] <: Eff[Nothing, A]`, so an
+    // `IO` lambda contributes `Nothing` to the union and the receiver's channel survives unchanged.
+    val base: Eff[AppError, Int] = Eff.succeed(2)
+    val mapped = base.flatMap(n => IO.pure(n * 10))
+    val tapped = base.flatTap(n => IO.pure(n))
+    val _ = summon[mapped.type <:< Eff[AppError, Int]]
+    val _ = summon[tapped.type <:< Eff[AppError, Int]]
     for
-      called <- IO.ref(false)
-      ok <- run((Eff.succeed(2): Eff[AppError, Int]).semiflatMap(n => IO.pure(n * 10)))
-      skip <- run((Eff.fail[AppError](Timeout): Eff[AppError, Int]).semiflatMap(_ => called.set(true).flatMap(_ => IO.pure(0))))
-      wasCalled <- called.get
+      m <- run(mapped)
+      t <- run(tapped)
+      skip <- run((Eff.fail[AppError](Timeout): Eff[AppError, Int]).flatMap(_ => IO.pure(0)))
     yield
-      assertEquals(ok, Right(20))
+      assertEquals(m, Right(20))
+      assertEquals(t, Right(2))
       assertEquals(skip, Left(Timeout))
-      assert(!wasCalled)
 
   test("subflatMap and transform reshape through a pure Either"):
     for
@@ -736,61 +784,6 @@ class EffSuite extends CatsEffectSuite:
     val bump: Eff[IOError, Unit] = counter.update(_ + 1)
     bump.flatMap(_ => Eff.fail(e))
 
-  test("retry re-runs a failing effect up to the limit, then propagates the final error"):
-    for
-      attempts <- IO.ref(0)
-      eff: Eff[IOError, Int] =
-        (attempts.updateAndGet(_ + 1): Eff[IOError, Int]).flatMap(n => if n < 3 then Eff.fail(Failed(n)) else Eff.succeed(n))
-      r <- run(Eff.retry(eff, 5))
-      count <- attempts.get
-      exhausted <- IO.ref(0)
-      r2 <- run(Eff.retry(failingEff(exhausted, Closed), 3))
-      count2 <- exhausted.get
-    yield
-      assertEquals(r, Right(3))
-      assertEquals(count, 3)
-      assertEquals(r2, Left(Closed))
-      assertEquals(count2, 4) // 1 initial + 3 retries
-
-  test("retryWithBackoff succeeds after transient failures"):
-    var attempts = 0 // scalafix:ok DisableSyntax.var
-    val step: Eff[IOError, Int] =
-      Eff.suspend(attempts += 1).flatMap(_ => if attempts < 3 then Eff.fail(Failed(attempts)) else Eff.succeed(42))
-    run(Eff.retryWithBackoff(step, 5, 1.millis, Some(10.millis))).map { r =>
-      assertEquals(r, Right(42))
-      assertEquals(attempts, 3)
-    }
-
-  test("retryWithBackoff caps the delay at maxDelay"):
-    // Cap at 1ms with a 10ms initial delay: uncapped the delays would be 10+20+40 = 70ms; capped
-    // they are exactly 1+1+1. Virtual time makes that an equality rather than a wall-clock bound,
-    // which under a loaded four-platform matrix is not a bound at all.
-    TestControl.executeEmbed {
-      var attempts = 0 // scalafix:ok DisableSyntax.var
-      val step: Eff[IOError, Int] = Eff.suspend(attempts += 1).flatMap(_ => Eff.fail(Closed))
-      for
-        start <- IO.monotonic
-        result <- run(Eff.retryWithBackoff(step, 3, 10.millis, Some(1.millis)))
-        end <- IO.monotonic
-      yield
-        assertEquals(result, Left(Closed))
-        assertEquals(attempts, 4) // 1 initial + 3 retries
-        assertEquals(end - start, 3.millis)
-    }
-
-  test("retryWithBackoff survives a doubling progression that would overflow FiniteDuration"):
-    // 1s doubled 40 times exceeds FiniteDuration's range; the progression must hold steady
-    // instead of throwing mid-retry. Virtual time keeps the capped 1ms sleeps instant.
-    TestControl.executeEmbed {
-      for
-        counter <- IO.ref(0)
-        out <- run(Eff.retryWithBackoff(failingEff(counter, Closed), 40, 1.second, Some(1.milli)))
-        n <- counter.get
-      yield
-        assertEquals(out, Left(Closed))
-        assertEquals(n, 41)
-    }
-
   test("policy retry paces the exponential series exactly and stops at maxAttempts"):
     TestControl.executeEmbed {
       for
@@ -999,6 +992,149 @@ class EffSuite extends CatsEffectSuite:
     yield
       assertEquals(ok, Right(3))
       assertEquals(ko, Left(Closed))
+
+  // Channel precision
+
+  test("every binary combinator infers the precise union of the two channels"):
+    val _ = summon[Channel.sequenced.type <:< Eff[IOError | AppError, String]]
+    val _ = summon[Channel.discarded.type <:< Eff[IOError | AppError, String]]
+    val _ = summon[Channel.paired.type <:< Eff[IOError | AppError, (Int, String)]]
+    val _ = summon[Channel.concurrent.type <:< Eff[IOError | AppError, (Int, String)]]
+    val _ = summon[Channel.raced.type <:< Eff[IOError | AppError, Either[Int, String]]]
+    val _ = summon[Channel.tapped.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.guarded.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.cancelled.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.timedOut.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.fellBack.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.subflat.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.someCaught.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.partlyMapped.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.bracketed.type <:< Eff[IOError | AppError, String]]
+    val _ = summon[Channel.tappedError.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.attemptTapped.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.collectedSome.type <:< Eff[IOError | AppError, Int]]
+    val _ = summon[Channel.collectedRight.type <:< Eff[IOError | AppError, Int]]
+    run(Channel.paired).map(r => assertEquals(r, Right((1, "x"))))
+
+  test("a union channel cannot be claimed narrower than it is"):
+    assert(
+      !scala.compiletime.testing.typeChecks(
+        "val bad: boilerplate.effect.Eff[boilerplate.effect.IOError, String] = boilerplate.effect.Channel.sequenced"
+      )
+    )
+    assert(
+      !scala.compiletime.testing.typeChecks(
+        "val bad: boilerplate.effect.Eff[boilerplate.effect.AppError, (Int, String)] = boilerplate.effect.Channel.paired"
+      )
+    )
+
+  test("a raw IO argument contributes Nothing, and an infallible receiver contributes nothing either"):
+    val _ = summon[Channel.rawArgument.type <:< Eff[IOError, String]]
+    val _ = summon[Channel.infallibleReceiver.type <:< Eff[AppError, String]]
+    assert(
+      !scala.compiletime.testing.typeChecks(
+        "val bad: boilerplate.effect.UEff[String] = boilerplate.effect.Channel.rawArgument"
+      )
+    )
+    run(Channel.rawArgument).map(r => assertEquals(r, Right("x")))
+
+  test("the reified union matches exhaustively, so the case set says what happened"):
+    def describe(e: Either[IOError | AppError, String]): String = e match
+      case Left(io: IOError) =>
+        io match
+          case Failed(code) => s"failed:$code"
+          case Closed       => "closed"
+      case Left(app: AppError) =>
+        app match
+          case NotFound(id) => s"missing:$id"
+          case Invalid(r)   => s"invalid:$r"
+          case Timeout      => "timeout"
+      case Right(v) => v
+    Channel.sequenced.either.map(e => assertEquals(describe(e), "x"))
+
+  test("generic code observing an abstract channel without evidence is refused, naming the remedy"):
+    val errors = scala.compiletime.testing.typeCheckErrors(
+      "def f[E <: Throwable, A](e: boilerplate.effect.Eff[E, A]) = e.either"
+    )
+    assert(errors.exists(_.message.contains("using ErrorTest[E]")), errors.map(_.message).mkString("\n"))
+
+  test("LIMIT: a branch-derived continuation infers the branches' join, not their union"):
+    // Scala widens an inferred union to the least product of class and trait types above it, so a
+    // continuation whose channel comes from an `if`/`match` loses precision. Documented on `Eff`;
+    // the remedy is to ascribe the lambda's result or its branches, as `Channel.ascribed` does.
+    assert(
+      !scala.compiletime.testing.typeChecks(
+        "val precise: boilerplate.effect.Eff[boilerplate.effect.IOError.Closed.type | boilerplate.effect.AppError.Timeout.type, Nothing] = boilerplate.effect.Channel.branched"
+      )
+    )
+    val _ = summon[Channel.ascribed.type <:< Eff[Closed.type | Timeout.type, Nothing]]
+
+  test("LIMIT: the join of unrelated roots is an intersection, and observing it is refused"):
+    // The safety pay-off of the limit above: the widened channel is `Exception & NoStackTrace`,
+    // whose test would capture unrelated failures as typed. `ErrorTest` refuses to derive for it.
+    val errors = scala.compiletime.testing.typeCheckErrors("boilerplate.effect.Channel.branched.either")
+    assert(errors.exists(_.message.contains("name the precise union")), errors.map(_.message).mkString("\n"))
+    // The ascribed form observes correctly.
+    Channel.ascribed.either.map(r => assertEquals(r, Left(Closed)))
+
+  test("LIMIT: an enum's simple case widens to the enum type"):
+    // `case object` arms keep their singleton; an enum simple case is a `val` of the enum type, and
+    // generic instantiation widens it. Documented on `Eff`; the remedy is an explicit type argument.
+    val _ = summon[Channel.enumArm.type <:< Eff[Refused, Nothing]]
+    assert(
+      !scala.compiletime.testing.typeChecks(
+        "val precise: boilerplate.effect.Eff[boilerplate.effect.Refused.Malformed.type, Nothing] = boilerplate.effect.Channel.enumArm"
+      )
+    )
+    val pinned: Eff[Refused.Malformed.type, Nothing] = Eff.fail[Refused.Malformed.type](Refused.Malformed)
+    // A `case object` arm is unaffected - the control the limit is measured against.
+    val objectArm = Eff.fail(Closed)
+    val _ = summon[objectArm.type <:< Eff[Closed.type, Nothing]]
+    pinned.either.map(r => assertEquals(r, Left(Refused.Malformed)))
+
+  // Removals: each superseded member is gone, not deprecated.
+
+  test("the superseded members are absent from the surface"):
+    def named(errors: List[scala.compiletime.testing.Error], member: String): Unit =
+      assert(errors.exists(_.message.contains(member)), s"$member: ${errors.map(_.message).mkString("\n")}")
+
+    named(scala.compiletime.testing.typeCheckErrors("boilerplate.effect.Eff.succeed(1).assumeError[Nothing]"), "assumeError")
+    named(scala.compiletime.testing.typeCheckErrors("boilerplate.effect.Eff.succeed(1: Any).assume[Int]"), "assume")
+    named(
+      scala.compiletime.testing.typeCheckErrors("boilerplate.effect.Eff.succeed(1).semiflatMap(n => cats.effect.IO.pure(n))"),
+      "semiflatMap"
+    )
+    named(scala.compiletime.testing.typeCheckErrors("boilerplate.effect.Eff.succeed(1).tap(n => cats.effect.IO.unit)"), "tap")
+    named(
+      scala.compiletime.testing.typeCheckErrors("boilerplate.effect.Eff.succeed(1).productR(boilerplate.effect.Eff.succeed(2))"),
+      "productR"
+    )
+    named(
+      scala.compiletime.testing.typeCheckErrors("boilerplate.effect.Eff.succeed(1).productL(boilerplate.effect.Eff.succeed(2))"),
+      "productL"
+    )
+    named(
+      scala.compiletime.testing.typeCheckErrors(
+        "boilerplate.effect.Eff.retryWithBackoff(boilerplate.effect.Eff.succeed(1), 3, scala.concurrent.duration.Duration.Zero, None)"
+      ),
+      "retryWithBackoff"
+    )
+
+  test("the counted retry overload is gone; only the policy overloads remain"):
+    assert(!scala.compiletime.testing.typeChecks("boilerplate.effect.Eff.retry(boilerplate.effect.Eff.succeed(1), 3)"))
+    assert(
+      scala.compiletime.testing.typeChecks(
+        "boilerplate.effect.Eff.retry(boilerplate.effect.Eff.succeed(1), boilerplate.effect.RetryPolicy.constant(scala.concurrent.duration.Duration.Zero))"
+      )
+    )
+
+  test("the Show, Eq and PartialOrder givens are gone - they delegated to instances only a test kit defines"):
+    assert(!scala.compiletime.testing.typeChecks("summon[cats.Show[boilerplate.effect.UEff[Int]]]"))
+    assert(!scala.compiletime.testing.typeChecks("summon[cats.Eq[boilerplate.effect.UEff[Int]]]"))
+    assert(!scala.compiletime.testing.typeChecks("summon[cats.kernel.PartialOrder[boilerplate.effect.UEff[Int]]]"))
+
+  test("the top-level TypeTest for the empty channel is gone"):
+    assert(!scala.compiletime.testing.typeChecks("summon[scala.reflect.TypeTest[Throwable, Nothing]]"))
 
   test("evalOn preserves both channels across the executor shift"):
     for

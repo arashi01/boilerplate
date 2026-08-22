@@ -25,7 +25,7 @@ import munit.FunSuite
 final case class WireError(detail: String) extends TypedError(detail, None)
 
 opaque type WireId = String
-object WireId extends OpaqueType[WireId, String], OpaqueType.Eq[WireId], OpaqueType.Codec[WireId]:
+object WireId extends OpaqueType[WireId, String], OpaqueType.Eq[WireId], OpaqueType.Codec[WireId, String]:
   type Error = WireError
   protected inline def wrap(s: String): WireId = s
   def unwrap(id: WireId): String = id
@@ -36,7 +36,7 @@ object WireId extends OpaqueType[WireId, String], OpaqueType.Eq[WireId], OpaqueT
 
 // Total accept: the derived codec is infallible.
 opaque type WireToken = String
-object WireToken extends OpaqueType[WireToken, String], OpaqueType.Codec[WireToken]:
+object WireToken extends OpaqueType[WireToken, String], OpaqueType.Codec[WireToken, String]:
   type Error = Nothing
   protected inline def wrap(s: String): WireToken = s
   def unwrap(t: WireToken): String = t
@@ -45,7 +45,7 @@ object WireToken extends OpaqueType[WireToken, String], OpaqueType.Codec[WireTok
 
 // Normalising: validate canonicalises to ASCII lower case; wrap stays a pure cast.
 opaque type WireHeader = String
-object WireHeader extends OpaqueType[WireHeader, String], OpaqueType.Eq[WireHeader], OpaqueType.Codec[WireHeader]:
+object WireHeader extends OpaqueType[WireHeader, String], OpaqueType.Eq[WireHeader], OpaqueType.Codec[WireHeader, String]:
   type Error = WireError
   protected inline def wrap(s: String): WireHeader = s
   def unwrap(h: WireHeader): String = h
@@ -55,9 +55,9 @@ object WireHeader extends OpaqueType[WireHeader, String], OpaqueType.Eq[WireHead
     else Right(codec.ASCII.lower(s))
   inline def apply(inline value: String): WireHeader = ofUnsafe(value)
 
-// Non-String representation: the documented hand-written given through the constructor.
+// Non-String representation: the text stage is the Int codec's, the domain stage the companion's.
 opaque type WirePort = Int
-object WirePort extends OpaqueType[WirePort, Int], OpaqueType.Eq[WirePort]:
+object WirePort extends OpaqueType[WirePort, Int], OpaqueType.Eq[WirePort], OpaqueType.Codec[WirePort, Int]:
   type Error = WireError
   protected inline def wrap(i: Int): WirePort = i
   def unwrap(p: WirePort): Int = p
@@ -65,10 +65,6 @@ object WirePort extends OpaqueType[WirePort, Int], OpaqueType.Eq[WirePort]:
     if i >= 0 && i <= 65535 then Right(i) else Left(WireError("out of range"))
   inline def apply(inline value: Int): WirePort =
     inline if value < 0 || value > 65535 then scala.compiletime.error("port out of range") else wrap(value)
-
-  given valueCodec: ValueCodec.Aux[WirePort, WireError] =
-    ValueCodec(s => codec.ASCII.uint(s).toRight(WireError("not an integer")).flatMap(i => of(i)), p => unwrap(p).toString)
-end WirePort
 
 class ValueCodecSuite extends FunSuite:
 
@@ -125,11 +121,22 @@ class ValueCodecSuite extends FunSuite:
     val once = codec.decode("X-Thing").map(codec.encode)
     assertEquals(once.flatMap(codec.decode).map(codec.encode), once)
 
-  test("a non-String representation writes the given through the constructor, refinement intact"):
-    val codec = summon[ValueCodec.Aux[WirePort, WireError]]
+  test("a non-String representation composes the representation's codec with the companion's of"):
+    val codec = summon[ValueCodec.Aux[WirePort, WireError | ValueCodec.Invalid]]
     assertEquals(codec.decode("8080").map(codec.encode), Right("8080"))
-    assertEquals(codec.decode("x"), Left(WireError("not an integer")))
-    assertEquals(codec.decode("70000"), Left(WireError("out of range")))
+    // Leading zeros normalise in the text stage, exactly as the Int codec does on its own.
+    assertEquals(codec.decode("0080").map(codec.encode), Right("80"))
+
+  test("the two stages of a non-String codec stay distinguishable in the error union"):
+    val codec = summon[ValueCodec[WirePort]]
+    assert(codec.decode("eighty").left.exists(_.isInstanceOf[ValueCodec.Invalid])) // scalafix:ok DisableSyntax.isInstanceOf
+    assert(codec.decode("70000").left.exists(_.isInstanceOf[WireError])) // scalafix:ok DisableSyntax.isInstanceOf
+    // The union is precise, so a decode site branches exhaustively over both stages.
+    assert(
+      scala.compiletime.testing.typeChecks("""(e: boilerplate.WireError | boilerplate.ValueCodec.Invalid) => e match
+        case boilerplate.WireError(d) => d
+        case boilerplate.ValueCodec.Invalid(d) => d""")
+    )
 
   test("a ValueCodec for Secret is refused at compile time with the rationale"):
     val errors = scala.compiletime.testing.typeCheckErrors("summon[boilerplate.ValueCodec[boilerplate.Secret]]")

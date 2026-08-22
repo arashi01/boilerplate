@@ -36,10 +36,10 @@ import scala.language.experimental.captureChecking
   * with the byte comparison, and a concurrent [[Secret$.destroy destroy]] raises "secret is in
   * use" exactly as it does against a scoped read.
   *
-  * The class is a bare carrier; every operation lives as an extension in [[Secret$]]. Construct
-  * with [[Secret$.fill]], read with `use`, erase with `destroy`.
+  * The class is a bare carrier; every operation lives as an extension in [[Secret$ Secret]]. Construct
+  * with [[Secret$.fill fill]], read with `use`, erase with `destroy`.
   */
-final class Secret private (private val bytes: Array[Byte]):
+final class Secret private (private val bytes: Array[Byte]) derives CanEqual:
   // One atomic cell carries the whole lifecycle: 0 idle, n > 0 that many concurrent reads in
   // flight, Int.MinValue destroyed. A separate destroyed flag could not be read-and-acted-on
   // atomically with the reader count, which is exactly the destroy-during-read race.
@@ -71,8 +71,6 @@ end Secret
   * [[boilerplate.Secret Secret]].
   */
 object Secret:
-  given CanEqual[Secret, Secret] = CanEqual.derived
-
   private val Idle: Int = 0
   private val Destroyed: Int = Int.MinValue
 
@@ -90,6 +88,12 @@ object Secret:
         Slice.of(buffer).wipe()
         throw t // scalafix:ok DisableSyntax.throw
     new Secret(buffer)
+
+  /** Copies `source` into a new carrier. The source stays the caller's: nothing here aliases it,
+    * and erasing it once the copy exists is the caller's to do.
+    */
+  def of(source: Slice^): Secret =
+    fill(source.length)(destination => { val _ = source.copyInto(destination) })
 
   extension (s: Secret)
     /** Runs `f` on a view of the bytes, valid for that call alone - the only read path.

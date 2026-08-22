@@ -20,8 +20,6 @@
  */
 package boilerplate.effect.testkit
 
-import scala.reflect.TypeTest
-
 import cats.*
 import cats.effect.*
 import cats.effect.testkit.TestInstances as CatsEffectTestInstances
@@ -30,26 +28,27 @@ import org.scalacheck.Cogen
 import org.scalacheck.Prop
 import org.scalacheck.util.Pretty
 
+import boilerplate.ErrorTest
 import boilerplate.effect.Eff
 
 // The typed error rides `IO`'s channel, so `Eq`/`Cogen` reify it to an `Either` via `either`
-// (needing a `TypeTest[Throwable, E]`, synthesised for the concrete law error) before comparing.
+// (needing an `ErrorTest[E]`, derived for the concrete law error) before comparing.
 trait EffTestInstances extends CatsEffectTestInstances with EffGenerators:
 
-  given eqEff[E <: Throwable: Eq, A: Eq](using ticker: Ticker, tt: TypeTest[Throwable, E]): Eq[Eff[E, A]] =
+  given eqEff: [E <: Throwable: Eq, A: Eq] => (Ticker, ErrorTest[E]) => Eq[Eff[E, A]] =
     Eq.by[Eff[E, A], IO[Either[E, A]]](_.either.absolve)(using eqIOA[Either[E, A]])
 
-  given cogenEff[E <: Throwable: Cogen, A: Cogen](using ticker: Ticker, tt: TypeTest[Throwable, E]): Cogen[Eff[E, A]] =
+  given cogenEff: [E <: Throwable: Cogen, A: Cogen] => (Ticker, ErrorTest[E]) => Cogen[Eff[E, A]] =
     cogenIO[Either[E, A]].contramap(_.either.absolve)
 
-  given prettyEff[E <: Throwable, A](using ticker: Ticker, tt: TypeTest[Throwable, E]): (Eff[E, A] => Pretty) =
+  given prettyEff: [E <: Throwable, A] => (Ticker, ErrorTest[E]) => (Eff[E, A] => Pretty) =
     eff => Pretty(_ => unsafeRun(eff.either.absolve).toString)
 
-  given isomorphismsEff[E <: Throwable]: Isomorphisms[Eff.Of[E]] =
+  given isomorphismsEff: [E <: Throwable] => Isomorphisms[Eff.Of[E]] =
     Isomorphisms.invariant[Eff.Of[E]]
 
   // Passes only when the effect completes successfully with `Right(true)`.
-  given effBooleanToProp[E <: Throwable](using ticker: Ticker, tt: TypeTest[Throwable, E]): Conversion[Eff[E, Boolean], Prop] =
+  given effBooleanToProp: [E <: Throwable] => (Ticker, ErrorTest[E]) => Conversion[Eff[E, Boolean], Prop] =
     eff => Prop(unsafeRun(eff.either.absolve).fold(false, _ => false, _.fold(false)(_.fold(_ => false, identity))))
 end EffTestInstances
 

@@ -98,9 +98,9 @@ object BoilerplateBuild extends AutoPlugin:
   )
 
   private def effectEscapes = List(
-    ("wiping view through an inline constructor", "val x: Eff[Nothing, Slice] = acquire.wiping(v => Eff.succeed(v))", "is boxed but"),
+    ("wiping view through Eff.succeed", "val x: Eff[Nothing, Slice] = acquire.wiping(v => Eff.succeed(v))", "outlives its scope"),
     ("wiping view through IO", "val x: Eff[Nothing, Slice] = acquire.wiping(v => IO.pure(v))", "outlives its scope"),
-    ("useEff view through an inline constructor", "val x: Eff[Nothing, Slice] = secret.useEff(v => Eff.succeed(v))", "is boxed but"),
+    ("useEff view through Eff.succeed", "val x: Eff[Nothing, Slice] = secret.useEff(v => Eff.succeed(v))", "outlives its scope"),
     ("useEff view through IO", "val x: Eff[Nothing, Slice] = secret.useEff(v => IO.pure(v))", "outlives its scope"),
     // Protected today by delegating to the non-inline `Secret.fill`; the row gates the contract, so
     // reimplementing `scoped` to allocate its own buffer cannot silently drop the protection.

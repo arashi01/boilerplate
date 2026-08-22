@@ -27,9 +27,7 @@ import boilerplate.effect.Eff
 
 trait EffGenerators:
 
-  given arbitraryEff[E <: Throwable, A](using
-    arbIO: Arbitrary[IO[Either[E, A]]]
-  ): Arbitrary[Eff[E, A]] =
+  given arbitraryEff: [E <: Throwable, A] => (arbIO: Arbitrary[IO[Either[E, A]]]) => Arbitrary[Eff[E, A]] =
     Arbitrary(arbIO.arbitrary.map(Eff.lift(_)))
 
 object EffGenerators extends EffGenerators

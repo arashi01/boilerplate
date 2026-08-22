@@ -160,6 +160,19 @@ class CodecSuite extends FunSuite:
     assertEquals(ASCII.ulong("9223372036854775808"), None)
     assertEquals(ASCII.ulong("٤١٩"), None)
 
+  test("the width-bounded reads accept exactly that many ASCII digits"):
+    // The fixed-width wire field: a short or over-long group is a different field, not a smaller
+    // number, so it is refused rather than read.
+    assertEquals(ASCII.uint("0042", 4), Some(42))
+    assertEquals(ASCII.uint("42", 4), None)
+    assertEquals(ASCII.uint("00042", 4), None)
+    assertEquals(ASCII.uint("", 0), None)
+    assertEquals(ASCII.uint("00٤2", 4), None)
+    assertEquals(ASCII.uint("-042", 4), None)
+    assertEquals(ASCII.ulong("00000000000000000042", 20), Some(42L))
+    assertEquals(ASCII.ulong("42", 20), None)
+    assertEquals(ASCII.ulong("99999999999999999999", 20), None)
+
   test("byte codecs round-trip arbitrary binary content"):
     val data = Array.tabulate(257)(i => (i * 31 % 256).toByte)
     assertEquals(Base64.decode(Base64.encode(data)).map(_.toList), Right(data.toList))

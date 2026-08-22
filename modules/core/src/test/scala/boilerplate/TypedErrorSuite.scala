@@ -23,13 +23,12 @@ package boilerplate
 import scala.util.control.NoStackTrace
 
 // A consumer module's root, declared exactly as one would downstream: sealed over the non-sealed
-// base, with the payload-free arm in the class+object shape and an idempotent `Unexpected`.
+// base, with the payload-free arm as a plain `case object` and an idempotent `Unexpected`.
 sealed abstract class StoreError(message: String, cause: Option[Throwable]) extends TypedError(message, cause)
 object StoreError:
   sealed trait Read extends StoreError
 
-  sealed abstract class Missing private[StoreError] () extends StoreError("missing", None) with Read
-  case object Missing extends Missing
+  case object Missing extends StoreError("missing", None) with Read
 
   final class Unexpected private (val reason: Throwable) extends StoreError("unexpected read failure", Some(reason)) with Read
   object Unexpected:
@@ -70,4 +69,11 @@ class TypedErrorSuite extends munit.FunSuite:
     val a: StoreError = StoreError.Missing
     val b: StoreError = StoreError.Missing
     assert(a == b)
+
+  test("idempotent observes a payload-free case object arm, so no companion class is needed"):
+    // The shape this replaces was `sealed abstract class Missing` + `case object Missing extends
+    // Missing`, carried only because a synthesised `TypeTest` mis-cast a singleton union arm.
+    val existing: StoreError.Read = StoreError.Missing
+    assert(StoreError.Unexpected(existing) eq existing)
+    assert(summon[ErrorTest[StoreError.Missing.type]].test(StoreError.Missing))
 end TypedErrorSuite

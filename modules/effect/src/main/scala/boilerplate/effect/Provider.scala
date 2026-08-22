@@ -28,7 +28,7 @@ import scala.quoted.Varargs
 import scala.quoted.quotes
 
 /** A recipe for one service: how to build an `A` as an [[EffResource]], given the services it
-  * depends on. Inert until [[Provider$.wire]] assembles a graph of them.
+  * depends on. Inert until [[Provider$.wire wire]] assembles a graph of them.
   *
   * `R` is the tuple of declared dependencies, read off the type by `wire` and never written by hand -
   * construct through the companion's `apply`, which takes either a dependency-free resource or a
@@ -243,16 +243,22 @@ object Provider:
       case AppliedType(tycon, _) => AppliedType(tycon, List(errorUnion, target))
       case other                 => report.errorAndAbort(s"Provider.wire: unexpected EffResource shape ${other.show}")
 
-    // The composition is emitted in `EffResource` terms throughout: the outermost `flatMap` is
-    // applied at the error union, so the tree the transparent inline surfaces already carries the
-    // precise result type without an ascription.
+    // The composition is emitted in `EffResource` terms throughout, each `flatMap` applied at the
+    // error union so the continuation's own result type is the final one.
     def emit(remaining: List[Node], bound: List[(TypeRepr, Term)]): Term =
       remaining match
         case Nil =>
-          val value = bound.collectFirst { case (t, v) if t =:= target => v }.get
+          val value = bound
+            .collectFirst { case (t, v) if t =:= target => v }
+            .getOrElse(report.errorAndAbort("Provider.wire: internal invariant broken - a sorted node's dependency was not bound"))
           Apply(TypeApply(Select.unique(effResource, "pure"), List(Inferred(target))), List(value))
         case node :: rest =>
-          val values = node.inputs.map(i => bound.collectFirst { case (t, v) if t =:= i => v }.get)
+          val values =
+            node.inputs.map(i =>
+              bound
+                .collectFirst { case (t, v) if t =:= i => v }
+                .getOrElse(report.errorAndAbort("Provider.wire: internal invariant broken - a sorted node's dependency was not bound"))
+            )
           val resource = Apply(Select.unique(Select.unique(node.provider.asTerm, "build"), "apply"), List(tuple(node.inputs, values)))
           val continuation = Lambda(
             Symbol.spliceOwner,
@@ -273,6 +279,9 @@ object Provider:
             List(continuation)
           )
 
-    emit(ordered, Nil).asExprOf[EffResource[Throwable, Target]]
+    // Each emitted `flatMap` yields `EffResource[node.error | errorUnion, Target]`; the ascription
+    // collapses that to the computed union, so the transparent result the call site sees is exactly
+    // `EffResource[errorUnion, Target]` rather than a union with a redundant leading arm.
+    Typed(emit(ordered, Nil), Inferred(resultType)).asExprOf[EffResource[Throwable, Target]]
   end wireImpl
 end Provider

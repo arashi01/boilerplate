@@ -20,7 +20,6 @@
  */
 package boilerplate
 
-import scala.reflect.TypeTest
 import scala.util.control.NoStackTrace
 
 /** Base for a module's typed-error root: a stack-trace-free `Exception` carrying a message and an
@@ -33,7 +32,12 @@ import scala.util.control.NoStackTrace
   *
   * {{{
   * sealed abstract class StoreError(message: String, cause: Option[Throwable]) extends TypedError(message, cause)
+  * object StoreError:
+  *   case object Missing extends StoreError("missing", None)
   * }}}
+  *
+  * A payload-free arm is a plain `case object`: [[boilerplate.ErrorTest ErrorTest]] tests a
+  * singleton by identity, so no companion class is needed to make it observable.
   *
   * Refer to [[boilerplate.TypedError$ TypedError]] for the idempotent-wrap constructor.
   */
@@ -54,9 +58,7 @@ object TypedError:
     * }}}
     */
   def idempotent[Root <: Throwable, Arm <: Root](cause: Throwable)(construct: Throwable => Arm)(using
-    tt: TypeTest[Throwable, Root]
+    et: ErrorTest[Root]
   ): Root =
-    cause match
-      case tt(root) => root
-      case other    => construct(other)
+    if et.test(cause) then cause.asInstanceOf[Root] else construct(cause) // scalafix:ok DisableSyntax.asInstanceOf
 end TypedError

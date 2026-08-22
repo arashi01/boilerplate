@@ -21,13 +21,12 @@
 package boilerplate
 
 import scala.language.experimental.captureChecking
-import scala.util.control.NoStackTrace
 
 /** The typed error for the untrusted-bounds reader [[sliceOrError]] - wire input whose bounds are
   * attacker-controlled. Trusted-bounds operations (`take`/`drop`/`slice`,
   * `apply`/`readBE`/`readLE`) raise instead.
   */
-sealed abstract class SliceError(message: String) extends Exception(message) with NoStackTrace derives CanEqual
+sealed abstract class SliceError(message: String) extends TypedError(message, None)
 object SliceError:
   /** The requested range `[from, until)` did not satisfy `0 <= from <= until <= length`. */
   final case class OutOfBounds(from: Int, until: Int, length: Int) extends SliceError(s"slice [$from, $until) is outside [0, $length]")

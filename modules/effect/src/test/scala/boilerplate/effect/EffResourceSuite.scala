@@ -21,18 +21,19 @@
 package boilerplate.effect
 
 import scala.concurrent.duration.*
-import scala.reflect.TypeTest
 
 import cats.effect.IO
 import cats.effect.Ref
 import cats.effect.Resource
+import cats.effect.testkit.TestControl
 import munit.CatsEffectSuite
 
+import boilerplate.ErrorTest
 import boilerplate.effect.AppError.*
 import boilerplate.effect.IOError.*
 
 class EffResourceSuite extends CatsEffectSuite:
-  private def run[E <: Throwable, A](eff: Eff[E, A])(using TypeTest[Throwable, E]): IO[Either[E, A]] = eff.either.absolve
+  private def run[E <: Throwable, A](eff: Eff[E, A])(using ErrorTest[E]): IO[Either[E, A]] = eff.either.absolve
 
   private def traced(trace: Ref[IO, List[String]], label: String): EffResource[Nothing, String] =
     EffResource.make(trace.update(_ :+ s"acquire $label").map(_ => label))(_ => trace.update(_ :+ s"release $label"))
@@ -121,7 +122,7 @@ class EffResourceSuite extends CatsEffectSuite:
       seen <- trace.get
     yield assertEquals(seen, List("acquire a", "release a", "extra"))
 
-  test("evalMap transforms the acquired value and widens the error channel"):
+  test("evalMap transforms the acquired value and unions the error channels"):
     val resource: EffResource[Nothing, Int] = EffResource.pure(2)
     val mapped: EffResource[IOError, Int] = resource.evalMap(n => Eff.succeed(n * 3))
     for
@@ -190,65 +191,93 @@ class EffResourceSuite extends CatsEffectSuite:
     gathered.use(ns => Eff.succeed(ns.sum)).absolve.map(assertEquals(_, 6))
 
   test("retry re-acquires per policy, runs the consumer once, and releases once"):
-    for
-      attempts <- IO.ref(0)
-      released <- IO.ref(0)
-      used <- IO.ref(0)
-      acquire: Eff[IOError, Int] =
-        Eff.flatMap(attempts.updateAndGet(_ + 1))(n => if n < 3 then Eff.fail(Closed) else Eff.succeed(n))
-      retried = EffResource.retry(
-                  EffResource.make(acquire)(_ => released.update(_ + 1)),
-                  RetryPolicy.constant(1.milli).withMaxAttempts(5)
-                )
-      out <- run(retried.use(n => Eff.flatMap(used.update(_ + 1))(_ => Eff.succeed(n))))
-      a <- attempts.get
-      r <- released.get
-      u <- used.get
-    yield
-      assertEquals(out, Right(3))
-      assertEquals(a, 3)
-      assertEquals(r, 1)
-      assertEquals(u, 1)
+    TestControl.executeEmbed {
+      for
+        attempts <- IO.ref(0)
+        released <- IO.ref(0)
+        used <- IO.ref(0)
+        acquire: Eff[IOError, Int] =
+          Eff.flatMap(attempts.updateAndGet(_ + 1))(n => if n < 3 then Eff.fail(Closed) else Eff.succeed(n))
+        retried = EffResource.retry(
+                    EffResource.make(acquire)(_ => released.update(_ + 1)),
+                    RetryPolicy.constant(1.milli).withMaxAttempts(5)
+                  )
+        out <- run(retried.use(n => Eff.flatMap(used.update(_ + 1))(_ => Eff.succeed(n))))
+        a <- attempts.get
+        r <- released.get
+        u <- used.get
+      yield
+        assertEquals(out, Right(3))
+        assertEquals(a, 3)
+        assertEquals(r, 1)
+        assertEquals(u, 1)
+    }
 
   test("retry releases each failed attempt's acquired prefix and exhausts to the typed error"):
-    for
-      trace <- IO.ref(List.empty[String])
-      good = EffResource.make(trace.update(_ :+ "acquire a").map(_ => "a"))(_ => trace.update(_ :+ "release a"))
-      bad: EffResource[IOError, String] =
-        EffResource.make(Eff.flatMap(trace.update(_ :+ "attempt b"))(_ => Eff.fail(Closed)))(_ => trace.update(_ :+ "release b"))
-      out <- run(EffResource.retry(good.flatMap(_ => bad), RetryPolicy.constant(1.milli).withMaxAttempts(3)).use(Eff.succeed))
-      seen <- trace.get
-    yield
-      assertEquals(out, Left(Closed))
-      assertEquals(seen, List.fill(3)(List("acquire a", "attempt b", "release a")).flatten)
+    TestControl.executeEmbed {
+      for
+        trace <- IO.ref(List.empty[String])
+        good = EffResource.make(trace.update(_ :+ "acquire a").map(_ => "a"))(_ => trace.update(_ :+ "release a"))
+        bad: EffResource[IOError, String] =
+          EffResource.make(Eff.flatMap(trace.update(_ :+ "attempt b"))(_ => Eff.fail(Closed)))(_ => trace.update(_ :+ "release b"))
+        out <- run(EffResource.retry(good.flatMap(_ => bad), RetryPolicy.constant(1.milli).withMaxAttempts(3)).use(Eff.succeed))
+        seen <- trace.get
+      yield
+        assertEquals(out, Left(Closed))
+        assertEquals(seen, List.fill(3)(List("acquire a", "attempt b", "release a")).flatten)
+    }
+
+  test("every combinator joining two acquisition channels infers their precise union"):
+    val first: EffResource[NotFound, Int] = EffResource.eval(Eff.succeed(1))
+    val second: EffResource[Invalid, Int] = EffResource.eval(Eff.succeed(2))
+    val sequenced = first.flatMap(_ => second)
+    val paired = first.both(second)
+    val mapped = first.evalMap(_ => Eff.fail[Invalid](Invalid("x")))
+    val tapped = first.evalTap(_ => Eff.fail[Invalid](Invalid("x")))
+    val used = first.use(_ => Eff.fail[Invalid](Invalid("x")))
+    val surrounded = first.surround(Eff.fail[Invalid](Invalid("x")))
+    val _ = summon[sequenced.type <:< EffResource[NotFound | Invalid, Int]]
+    val _ = summon[paired.type <:< EffResource[NotFound | Invalid, (Int, Int)]]
+    val _ = summon[mapped.type <:< EffResource[NotFound | Invalid, Nothing]]
+    val _ = summon[tapped.type <:< EffResource[NotFound | Invalid, Int]]
+    val _ = summon[used.type <:< Eff[NotFound | Invalid, Nothing]]
+    val _ = summon[surrounded.type <:< Eff[NotFound | Invalid, Nothing]]
+    assert(
+      !scala.compiletime.testing.typeChecks(
+        "def f(r: boilerplate.effect.EffResource[boilerplate.effect.AppError.NotFound, Int]): boilerplate.effect.EffResource[boilerplate.effect.AppError.NotFound, Int] = r.evalMap(_ => boilerplate.effect.Eff.fail(boilerplate.effect.IOError.Closed))"
+      )
+    )
+    run(sequenced.use(n => Eff.succeed(n))).map(r => assertEquals(r, Right(2)))
 
   test("retry honours retryOn and the hook observes acquisition attempts"):
-    for
-      rejectCount <- IO.ref(0)
-      rejected <- run(
-                    EffResource
-                      .retry(
-                        EffResource.eval(Eff.flatMap(rejectCount.update(_ + 1))(_ => Eff.fail[IOError](Closed))),
-                        RetryPolicy.constant(1.milli).withMaxAttempts(4),
-                        (_: IOError) => false
-                      )
-                      .use(Eff.succeed)
-                  )
-      n <- rejectCount.get
-      seen <- IO.ref(List.empty[Int])
-      hook = (attempt: Int, _: IOError, _: FiniteDuration) => seen.update(_ :+ attempt)
-      _ <- run(
-             EffResource
-               .retry(
-                 EffResource.eval(Eff.fail[IOError](Closed): Eff[IOError, Int]),
-                 RetryPolicy.constant(1.milli).withMaxAttempts(3),
-                 hook
-               )
-               .use(Eff.succeed)
-           )
-      observed <- seen.get
-    yield
-      assertEquals(rejected, Left(Closed))
-      assertEquals(n, 1)
-      assertEquals(observed, List(1, 2))
+    TestControl.executeEmbed {
+      for
+        rejectCount <- IO.ref(0)
+        rejected <- run(
+                      EffResource
+                        .retry(
+                          EffResource.eval(Eff.flatMap(rejectCount.update(_ + 1))(_ => Eff.fail[IOError](Closed))),
+                          RetryPolicy.constant(1.milli).withMaxAttempts(4),
+                          (_: IOError) => false
+                        )
+                        .use(Eff.succeed)
+                    )
+        n <- rejectCount.get
+        seen <- IO.ref(List.empty[Int])
+        hook = (attempt: Int, _: IOError, _: FiniteDuration) => seen.update(_ :+ attempt)
+        _ <- run(
+               EffResource
+                 .retry(
+                   EffResource.eval(Eff.fail[IOError](Closed): Eff[IOError, Int]),
+                   RetryPolicy.constant(1.milli).withMaxAttempts(3),
+                   hook
+                 )
+                 .use(Eff.succeed)
+             )
+        observed <- seen.get
+      yield
+        assertEquals(rejected, Left(Closed))
+        assertEquals(n, 1)
+        assertEquals(observed, List(1, 2))
+    }
 end EffResourceSuite

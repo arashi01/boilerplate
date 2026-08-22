@@ -30,19 +30,17 @@ import scala.language.experimental.captureChecking
   * vocabulary. A `Slice` never owns, frees, or outlives its backing region: it is a borrower, valid
   * only while the caller keeps that region alive.
   *
-  * The class is a bare carrier; every operation lives as an extension in [[Slice$]]. Construct with
-  * [[Slice$.of]] (bounds-checked); re-slice with `take`/`drop`/`slice` (each a fresh header over
+  * The class is a bare carrier; every operation lives as an extension in [[Slice$ Slice]]. Construct with
+  * [[Slice$.of of]] (bounds-checked); re-slice with `take`/`drop`/`slice` (each a fresh header over
   * the same memory, no copy); read with `apply`/`readBE`/`readLE`/`contentEquals`; write with
   * `update`/`writeBE`/`writeLE`; copy out with `toArray`/`copyInto`; erase in place with `wipe`.
   * The `unsafe*` accessors are the seam for library-author backends and are platform-specific (an
   * array and offset on JVM/JS, an interior pointer on Native); ordinary users never need them.
   */
-final class Slice private (val unsafeArray: Array[Byte], val unsafeOffset: Int, val length: Int)
+final class Slice private (val unsafeArray: Array[Byte], val unsafeOffset: Int, val length: Int) derives CanEqual
 
 /** Provides constructors, readers, and re-slicing extensions for [[boilerplate.Slice Slice]]. */
 object Slice:
-  given CanEqual[Slice, Slice] = CanEqual.derived
-
   /** A view over the whole array. */
   def of(array: Array[Byte]): Slice = new Slice(array, 0, array.length)
 

@@ -27,20 +27,20 @@ class PlatformSuite extends FunSuite:
   test("Platform.linux matches runtime detection"):
     assertEquals(Platform.linux, scala.scalanative.runtime.Platform.isLinux())
 
-  test("Platform.mac matches runtime detection"):
-    assertEquals(Platform.mac, scala.scalanative.runtime.Platform.isMac())
+  test("Platform.darwin matches runtime detection"):
+    assertEquals(Platform.darwin, scala.scalanative.runtime.Platform.isMac())
 
   test("Platform.windows matches runtime detection"):
     assertEquals(Platform.windows, scala.scalanative.runtime.Platform.isWindows())
 
   test("exactly one operating-system constant is true"):
-    assertEquals(List(Platform.linux, Platform.mac, Platform.windows).count(identity), 1)
+    assertEquals(List(Platform.linux, Platform.darwin, Platform.windows).count(identity), 1)
 
   test("Platform.os matches runtime platform"):
     val expected =
-      if scala.scalanative.runtime.Platform.isLinux() then Os.Linux
-      else if scala.scalanative.runtime.Platform.isMac() then Os.Mac
-      else Os.Windows
+      if scala.scalanative.runtime.Platform.isLinux() then OS.Linux
+      else if scala.scalanative.runtime.Platform.isMac() then OS.Darwin
+      else OS.Windows
     assertEquals(Platform.os, expected)
 
   test("exactly one architecture constant is true"):
@@ -55,14 +55,14 @@ class PlatformSuite extends FunSuite:
     // branch-discarded, so all five are checked regardless of host. A downgrade to link-time
     // (LinktimeInfo) would fail to compile here - the runtime assertions above would not catch it.
     inline val linux = Platform.linux
-    inline val mac = Platform.mac
+    inline val darwin = Platform.darwin
     inline val windows = Platform.windows
     inline val x86_64 = Platform.x86_64
     inline val aarch64 = Platform.aarch64
 
     inline def osTag: String =
       inline if linux then "linux"
-      else inline if mac then "mac"
+      else inline if darwin then "darwin"
       else "windows"
 
     inline def archTag: String =
@@ -72,10 +72,10 @@ class PlatformSuite extends FunSuite:
 
     val runtimeOs =
       if scala.scalanative.runtime.Platform.isLinux() then "linux"
-      else if scala.scalanative.runtime.Platform.isMac() then "mac"
+      else if scala.scalanative.runtime.Platform.isMac() then "darwin"
       else "windows"
 
-    assertEquals(List(linux, mac, windows).count(identity), 1)
+    assertEquals(List(linux, darwin, windows).count(identity), 1)
     assertEquals(List(x86_64, aarch64).count(identity), 1)
     assertEquals(osTag, runtimeOs)
     assertEquals(archTag, if x86_64 then "x86_64" else "aarch64")
