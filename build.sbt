@@ -19,9 +19,9 @@ formattingSettings
 nativeSettings
 
 def scala3 = "3.9.0-RC6"
-val `cats-effect` = Def.setting("org.typelevel" %% "cats-effect" % "3.7.0")
-val `cats-effect-laws` = Def.setting("org.typelevel" %% "cats-effect-laws" % "3.7.0")
-val `cats-effect-testkit` = Def.setting("org.typelevel" %% "cats-effect-testkit" % "3.7.0")
+val `cats-effect` = Def.setting("org.typelevel" %% "cats-effect" % "3.7.1")
+val `cats-effect-laws` = Def.setting("org.typelevel" %% "cats-effect-laws" % "3.7.1")
+val `cats-effect-testkit` = Def.setting("org.typelevel" %% "cats-effect-testkit" % "3.7.1")
 val `discipline-munit` = Def.setting("org.typelevel" %% "discipline-munit" % "2.0.0")
 val fs2 = Def.setting("co.fs2" %% "fs2-core" % "3.13.0")
 val munit = Def.setting("org.scalameta" %% "munit" % "1.3.5")
